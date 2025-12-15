@@ -49,10 +49,10 @@ jobs:
       - name: Clippy
         run: |
           cargo fmt -- --check
-          cargo clippy --features "mpi,fftw,fftw_system,strict" -- -D warnings
           cargo clippy -- -D warnings
-          cargo clippy --examples --features "mpi,fftw,fftw_system,strict" -- -D warnings
           cargo clippy --examples -- -D warnings
+          cargo clippy --features "mpi,fftw,fftw_system,strict" -- -D warnings
+          cargo clippy --examples --features "mpi,fftw,fftw_system,strict" -- -D warnings
 
       - name: Run unit tests
         run: RUST_MIN_STACK=8388608 cargo test --features "mpi,fftw,fftw_system,strict"

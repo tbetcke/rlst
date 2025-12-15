@@ -149,7 +149,7 @@ mod test {
 
                 let actual = dot!(z.r().conj().transpose().eval(), z.r());
 
-                crate::assert_array_relative_eq!(actual, a, $tol);
+                crate::assert_array_abs_diff_eq!(actual, a, $tol);
 
                 // Now solve a linear system with Cholesky
 
