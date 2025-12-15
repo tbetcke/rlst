@@ -160,15 +160,15 @@ mod test {
 
                 let x_actual = a.cholesky_solve(UpLo::Upper, &b).unwrap();
 
-                crate::assert_array_relative_eq!(x_actual, x_expected, $tol);
+                crate::assert_array_abs_diff_eq!(x_actual, x_expected, $tol);
             }
 
                     }
         };
     }
 
-    implement_cholesky_test!(f32, 1E-3);
+    implement_cholesky_test!(f32, 1E-5);
     implement_cholesky_test!(f64, 1E-10);
-    implement_cholesky_test!(c32, 1E-3);
+    implement_cholesky_test!(c32, 1E-5);
     implement_cholesky_test!(c64, 1E-10);
 }
