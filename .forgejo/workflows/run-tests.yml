@@ -1,9 +1,6 @@
 name: 🧪 run-tests
 
 on: 
-  push:
-    branches:
-      - "**"
   pull_request:
     branches:
       - main
@@ -58,4 +55,4 @@ jobs:
         run: RUST_MIN_STACK=8388608 cargo test --features "mpi,fftw,fftw_system,strict"
 
       - name: Build docs
-        run: cargo doc --features "mpi,fftw,fftw_system,strict"
+        run: cargo doc --no-deps --features "mpi,fftw,fftw_system,strict"
