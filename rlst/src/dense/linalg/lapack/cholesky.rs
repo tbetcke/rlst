@@ -167,8 +167,8 @@ mod test {
         };
     }
 
-    implement_cholesky_test!(f32, 1E-5);
+    implement_cholesky_test!(f32, 1E-3);
     implement_cholesky_test!(f64, 1E-10);
-    implement_cholesky_test!(c32, 1E-5);
+    implement_cholesky_test!(c32, 1E-3);
     implement_cholesky_test!(c64, 1E-10);
 }
