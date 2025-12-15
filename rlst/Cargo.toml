@@ -4,10 +4,10 @@ version = "0.4.0"
 authors = ["The rlst contributors"]
 edition = "2024"
 description = "A Rust native linear algebra library."
+readme = "../README.md"
 license = "MIT / Apache-2.0"
 homepage = "https://codeberg.org/linalg-rs"
 repository = "https://codeberg.org/linalg-rs/rlst"
-readme = "README.md"
 keywords = ["numerics"]
 categories = ["mathematics", "science"]
 
