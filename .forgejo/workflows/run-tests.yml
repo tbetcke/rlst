@@ -55,9 +55,6 @@ jobs:
           cargo clippy --examples -- -D warnings
 
       - name: Run unit tests
-        run: cargo test
-
-      - name: Run unit tests (debug)
         run: RUST_MIN_STACK=8388608 cargo test --features "mpi,fftw,fftw_system,strict"
 
       - name: Build docs
