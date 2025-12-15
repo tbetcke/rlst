@@ -39,6 +39,7 @@ use crate::{
         data_container::{
             AlignedVectorContainer, SliceContainer, SliceContainerMut, VectorContainer,
         },
+        layout::check_multi_index_in_bounds,
         strided_base_array::StridedBaseArray,
     },
     traits::{
@@ -1913,6 +1914,56 @@ where
     }
 }
 
+impl<Item, ArrayImpl, const NDIM: usize> Array<ArrayImpl, NDIM>
+where
+    ArrayImpl: UnsafeRandomAccessMut<NDIM, Item = Item>,
+    Item: Copy,
+{
+    /// Swap the elements at the positions `pos1` and `pos2`
+    ///
+    /// # Safety
+    ///
+    /// `pos1` and `pos2` must not be out of bounds.
+    #[inline(always)]
+    pub unsafe fn swap_unsafe(&mut self, pos1: [usize; NDIM], pos2: [usize; NDIM]) {
+        let elem1 = *unsafe { self.get_unchecked_mut(pos1) };
+        let elem2 = *unsafe { self.get_unchecked_mut(pos2) };
+
+        *unsafe { self.get_unchecked_mut(pos1) } = elem2;
+        *unsafe { self.get_unchecked_mut(pos2) } = elem1;
+    }
+}
+
+impl<Item, ArrayImpl, const NDIM: usize> Array<ArrayImpl, NDIM>
+where
+    ArrayImpl: UnsafeRandomAccessMut<NDIM, Item = Item> + Shape<NDIM>,
+    Item: Copy,
+{
+    /// Swap the elements at the positions `pos1` and `pos2`.
+    ///
+    /// Returns an error if either `pos1` or `pos2` is out of bounds.
+    #[inline(always)]
+    pub fn swap(&mut self, pos1: [usize; NDIM], pos2: [usize; NDIM]) -> RlstResult<()> {
+        let shape = self.shape();
+        if !check_multi_index_in_bounds(pos1, shape) {
+            Err(RlstError::GeneralError(format!(
+                "Index `pos1` = {:#?} out of bounds.",
+                pos1
+            )))
+        } else if !check_multi_index_in_bounds(pos2, shape) {
+            Err(RlstError::GeneralError(format!(
+                "Index `pos2` = {:#?} out of bounds.",
+                pos2
+            )))
+        } else {
+            unsafe {
+                self.swap_unsafe(pos1, pos2);
+            }
+            Ok(())
+        }
+    }
+}
+
 #[cfg(test)]
 mod test {
 
@@ -2116,5 +2167,16 @@ mod test {
         a.apply(1.0, &x, 0.0, &mut y);
 
         crate::assert_array_relative_eq!(y, a.dot(&x), 1E-10);
+    }
+
+    #[test]
+    pub fn test_swap() {
+        let mut a = DynArray::<usize, 1>::from_shape([2]);
+        a[[0]] = 1;
+        a[[1]] = 2;
+
+        a.swap([0], [1]).unwrap();
+        assert_eq!(a[[0]], 2);
+        assert_eq!(a[[1]], 1);
     }
 }

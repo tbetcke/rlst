@@ -34,6 +34,7 @@ pub fn row_major_stride_from_shape<const NDIM: usize>(shape: [usize; NDIM]) -> [
 }
 
 /// Return true if `multi_index` in bounds with respect to `shape`.
+#[inline(always)]
 pub fn check_multi_index_in_bounds<const N: usize>(
     multi_index: [usize; N],
     shape: [usize; N],
