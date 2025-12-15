@@ -28,6 +28,12 @@ jobs:
       - name: Update package list
         run: sudo apt-get update
 
+      - name: Install libclang
+        run: sudo apt-get install -y libclang-dev
+
+      - name: Install CMake
+        run: sudo apt-get install -y cmake
+        
       - name: Install FFTW
         run: sudo apt-get install -y libfftw3-dev
 
