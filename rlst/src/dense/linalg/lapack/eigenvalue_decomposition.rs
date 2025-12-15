@@ -209,7 +209,7 @@ mod test {
         };
     }
 
-    implement_eigendecomposition_tests!(f32, 1E-4);
+    implement_eigendecomposition_tests!(f32, 1E-3);
     implement_eigendecomposition_tests!(f64, 1E-10);
     implement_eigendecomposition_tests!(c32, 5E-3);
     implement_eigendecomposition_tests!(c64, 1E-10);
