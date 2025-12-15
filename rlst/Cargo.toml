@@ -80,3 +80,27 @@ fftw_mkl = ["fftw-sys/intel-mkl"]
 [lints.clippy]
 wildcard_imports = "forbid"
 
+
+[[example]]
+name = "array_tools"
+required-features = ["mpi"]
+
+[[example]]
+name = "parallel_sort"
+required-features = ["mpi"]
+
+[[example]]
+name = "distributed_array"
+required-features = ["mpi"]
+
+[[example]]
+name = "ghost_communicator"
+required-features = ["mpi"]
+
+[[example]]
+name = "distributed_csr_matrix"
+required-features = ["mpi"]
+
+[[example]]
+name = "distributed_array_operations"
+required-features = ["mpi"]

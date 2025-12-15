@@ -1,12 +1,8 @@
 //! Test and example scripts for array tools.
-#[cfg(feature = "mpi")]
 use itertools::{Itertools, izip};
-#[cfg(feature = "mpi")]
 use rand::prelude::*;
 
-#[cfg(feature = "mpi")]
 use mpi::traits::Communicator;
-#[cfg(feature = "mpi")]
 use rlst::distributed_tools::{
     array_tools::{
         communicate_back, gather_to_all, gather_to_rank, global_inclusive_cumsum, global_max,
@@ -16,7 +12,6 @@ use rlst::distributed_tools::{
 };
 
 /// Test the global exclusive cumsum
-#[cfg(feature = "mpi")]
 fn test_exclusive_cumsum<C: Communicator>(comm: &C) {
     let n = 10;
 
@@ -35,7 +30,6 @@ fn test_exclusive_cumsum<C: Communicator>(comm: &C) {
 }
 
 /// Test scatter and gather data
-#[cfg(feature = "mpi")]
 fn test_scatter_gather<C: Communicator, R: Rng>(comm: &C, rng: &mut R) {
     let n = 1000;
 
@@ -67,7 +61,6 @@ fn test_scatter_gather<C: Communicator, R: Rng>(comm: &C, rng: &mut R) {
     }
 }
 
-#[cfg(feature = "mpi")]
 fn test_gather_to_all<C: Communicator>(comm: &C) {
     let rank = comm.rank();
 
@@ -82,7 +75,6 @@ fn test_gather_to_all<C: Communicator>(comm: &C) {
     }
 }
 
-#[cfg(feature = "mpi")]
 fn test_communicate_back<C: Communicator>(comm: &C) {
     let rank = comm.rank();
 
@@ -97,7 +89,6 @@ fn test_communicate_back<C: Communicator>(comm: &C) {
     }
 }
 
-#[cfg(feature = "mpi")]
 fn test_is_sorted_array<C: Communicator>(comm: &C) {
     let rank = comm.rank();
 
@@ -118,7 +109,6 @@ fn test_is_sorted_array<C: Communicator>(comm: &C) {
     assert!(!is_sorted_array(&arr, comm));
 }
 
-#[cfg(feature = "mpi")]
 fn test_global_min_max<C: Communicator>(comm: &C) {
     let rank = comm.rank();
     let size = comm.size();
@@ -131,7 +121,6 @@ fn test_global_min_max<C: Communicator>(comm: &C) {
     assert_eq!(global_min(&arr, comm), 0);
 }
 
-#[cfg(feature = "mpi")]
 fn main() {
     let universe = mpi::initialize().unwrap();
     let world = universe.world();
@@ -147,9 +136,4 @@ fn main() {
     if world.rank() == 0 {
         println!("All tests passed.");
     }
-}
-
-#[cfg(not(feature = "mpi"))]
-fn main() {
-    println!("Enable the `mpi` feature for this example.");
 }
