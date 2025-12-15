@@ -1,7 +1,8 @@
 //! Test and example scripts for array tools.
 use itertools::{Itertools, izip};
-use mpi::traits::Communicator;
 use rand::prelude::*;
+
+use mpi::traits::Communicator;
 use rlst::distributed_tools::{
     array_tools::{
         communicate_back, gather_to_all, gather_to_rank, global_inclusive_cumsum, global_max,
