@@ -35,6 +35,28 @@ pub trait AsOwnedRefTypeMut {
     fn r_mut(&mut self) -> Self::RefTypeMut<'_>;
 }
 
+/// Allow data to be borrowed using runtime borrowing checks
+pub trait BorrowAtRuntime {
+    /// The result of the borrow
+    type Target<'a>
+    where
+        Self: 'a;
+
+    /// Return a read-only borrow.
+    fn borrow(&self) -> Self::Target<'_>;
+}
+
+/// Allow data to be mutably borrowed using runtime borrowing checks
+pub trait BorrowAtRuntimeMut {
+    /// The
+    type Target<'a>
+    where
+        Self: 'a;
+
+    /// Return a read-write borrow.
+    fn borrow_mut(&self) -> Self::Target<'_>;
+}
+
 /// Associate a shape with a given object.
 pub trait Shape<const NDIM: usize> {
     /// Return the shape of the object.
