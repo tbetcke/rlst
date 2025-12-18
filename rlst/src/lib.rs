@@ -23,6 +23,7 @@
 #![warn(missing_docs)]
 
 pub mod base_types;
+pub mod chebychev;
 pub mod dense;
 #[cfg(feature = "mpi")]
 pub mod distributed_tools;
