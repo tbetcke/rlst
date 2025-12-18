@@ -63,6 +63,7 @@ pub mod operators;
 // pub mod rank1_array;
 pub mod flattened;
 pub mod reference;
+pub mod shared_array;
 pub mod slice;
 pub mod subview;
 
