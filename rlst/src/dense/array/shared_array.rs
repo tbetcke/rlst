@@ -64,7 +64,7 @@ impl<ArrayImpl, const NDIM: usize> BorrowAtRuntimeMut for ArrayAtomicSharedRef<A
 impl<ArrayImpl, const NDIM: usize> Array<ArrayImpl, NDIM> {
     /// Create a non thread-safe runtime shared reference from the array
     ///
-    /// Use [borrow](BorrowAtRuntime::borrow) and [borrow_mut](BorrowAtRuntime::borrow_mut)
+    /// Use [borrow](BorrowAtRuntime::borrow) and [borrow_mut](BorrowAtRuntimeMut::borrow_mut)
     /// to access the underlying array.
     ///
     /// The rational of this function is to obtain a cloneable shared reference structure
@@ -77,7 +77,7 @@ impl<ArrayImpl, const NDIM: usize> Array<ArrayImpl, NDIM> {
     }
 
     /// Create an atomic thread-safe runtime shared reference from the array
-    /// Use [borrow](BorrowAtRuntime::borrow) and [borrow_mut](BorrowAtRuntime::borrow_mut)
+    /// Use [borrow](BorrowAtRuntime::borrow) and [borrow_mut](BorrowAtRuntimeMut::borrow_mut)
     /// to access the underlying array.
     ///
     /// The rational of this function is to obtain a cloneable shared reference structure
