@@ -213,22 +213,3 @@ impl<ArrayImpl: ResizeInPlace<NDIM>, const NDIM: usize> ResizeInPlace<NDIM>
         self.0.resize_in_place(shape)
     }
 }
-
-#[cfg(feature = "fftw")]
-impl<'a, ArrayImpl, const NDIM: usize> crate::fftw::FftPlanInplace<NDIM>
-    for ArrayRefMut<'a, ArrayImpl, NDIM>
-where
-    ArrayImpl: crate::fftw::FftPlanInplace<NDIM>,
-{
-    type Item = <ArrayImpl as crate::fftw::FftPlanInplace<NDIM>>::Item;
-
-    type ArrayImpl = ArrayRefMut<'a, ArrayImpl, NDIM>;
-
-    fn execute_forward(&mut self) {
-        self.0.imp_mut().execute_forward()
-    }
-
-    fn execute_backward(&mut self) {
-        self.0.imp_mut().execute_backward()
-    }
-}

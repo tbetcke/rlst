@@ -10,12 +10,36 @@ use std::{
 use crate::{Array, BorrowAtRuntime, BorrowAtRuntimeMut};
 
 /// A shared runtime non-thread safe reference to an array.
-#[derive(Clone)]
 pub struct ArraySharedRef<ArrayImpl, const NDIM: usize>(Rc<RefCell<Array<ArrayImpl, NDIM>>>);
 
+impl<ArrayImpl, const NDIM: usize> Clone for ArraySharedRef<ArrayImpl, NDIM> {
+    fn clone(&self) -> Self {
+        Self(self.0.clone())
+    }
+}
+
+impl<ArrayImpl, const NDIM: usize> ArraySharedRef<ArrayImpl, NDIM> {
+    /// Crate a new shared reference
+    pub fn new(arr: Array<ArrayImpl, NDIM>) -> Self {
+        ArraySharedRef(Rc::new(RefCell::new(arr)))
+    }
+}
+
 /// A shared runtime thread-safe reference to an array.
-#[derive(Clone)]
 pub struct ArrayAtomicSharedRef<ArrayImpl, const NDIM: usize>(Arc<RwLock<Array<ArrayImpl, NDIM>>>);
+
+impl<ArrayImpl, const NDIM: usize> Clone for ArrayAtomicSharedRef<ArrayImpl, NDIM> {
+    fn clone(&self) -> Self {
+        Self(self.0.clone())
+    }
+}
+
+impl<ArrayImpl, const NDIM: usize> ArrayAtomicSharedRef<ArrayImpl, NDIM> {
+    /// Crate a new thread-safe shared reference
+    pub fn new(arr: Array<ArrayImpl, NDIM>) -> Self {
+        ArrayAtomicSharedRef(Arc::new(RwLock::new(arr)))
+    }
+}
 
 impl<ArrayImpl, const NDIM: usize> BorrowAtRuntime for ArraySharedRef<ArrayImpl, NDIM> {
     type Target<'a>

@@ -13,8 +13,8 @@
 //! The following gives an example of computing the Complex-to-Complex transform
 //! of a given array `arr`.
 //! ```
-//! use rlst::{rlst_dynamic_array, dense::fftw::FftwPlanFlags,
-//!     dense::fftw::C2CInplaceFft, EvaluateObject, c64,
+//! use rlst::{rlst_dynamic_array, fftw::{FftwPlanFlags, C2CDirection, C2CPlan, FftPlanInplace},
+//!     EvaluateObject, c64,
 //!     assert_array_relative_eq};
 //! use num::FromPrimitive;
 //!
@@ -25,13 +25,19 @@
 //! arr.fill_from_seed_equally_distributed(0);
 //!
 //! // We use `eval` to copy the data into a new array before generating the plan
-//! // so that `arr` is not overwritten.
-//! let mut plan = arr.eval().into_c2c_fft(FftwPlanFlags::Estimate).expect("Count not create plan.");
+//! // so that `arr` is not overwritten. If we want to overwrite `arr` with the
+//! // FFT computations we could use `arr.r_mut().into_fft()` instead.
+//! let mut fft = arr.eval().into_fft();
+//! let forward_plan = fft.c2c_fft(FftwPlanFlags::Estimate, C2CDirection::Forward);
+//! let backward_plan = fft.c2c_fft(FftwPlanFlags::Estimate, C2CDirection::Backward);
 //!
-//! let forward = plan.r_mut().fft().eval();
-//! let backward = plan.r_mut().ifft().eval();
+//! forward_plan.unwrap().execute();
+//! backward_plan.unwrap().execute();
 //!
-//! assert_array_relative_eq!(backward, c64::from_usize(30).unwrap() * arr.r(), 1E-10);
+//! // We can get a reference to the array in `fft` using the `borrow` method.
+//! let actual_arr = fft.borrow().unwrap();
+//!
+//! assert_array_relative_eq!(arr, c64::from_usize(30).unwrap() * actual_arr.r(), 1E-10);
 //!
 //! ```
 //! The method [into_c2c_fft](Array::into_c2c_fft) generates the c2c plan.
@@ -56,30 +62,23 @@
 
 pub mod c2c_inplace;
 
+pub use c2c_inplace::{C2CDirection, C2CPlan};
+
 use std::{
     ffi::c_void,
     marker::PhantomData,
-    sync::{LazyLock, Mutex},
+    sync::{LazyLock, LockResult, Mutex, RwLockReadGuard, RwLockWriteGuard},
 };
 
-use crate::{Array, RlstScalar};
+use crate::{
+    Array, BaseItem, BorrowAtRuntime, BorrowAtRuntimeMut, RawAccessMut, RlstScalar, Shape, Stride,
+    c32, c64, dense::array::shared_array::ArrayAtomicSharedRef,
+};
 use fftw_sys;
 use num::Complex;
 
-pub use c2c_inplace::C2CInplaceFft;
-
 static FFTW_PLAN_INTERFACE: LazyLock<Mutex<FftwPlanInterface>> =
     LazyLock::new(|| Mutex::new(FftwPlanInterface::default()));
-
-/// The direction of the FFT
-#[derive(Copy, Clone, Debug)]
-#[repr(i32)]
-pub enum FftDirection {
-    /// Forward FFT
-    Forward = -1,
-    /// Inverse FFT
-    Backward = 1,
-}
 
 /// FFT Precision
 #[derive(Copy, Clone, Debug)]
@@ -111,18 +110,9 @@ pub enum FftwPlanFlags {
 }
 
 /// Description of a plan with different input and output arrays.
-pub trait FftPlanInplace<const NDIM: usize> {
-    /// The input type of the plan
-    type Item: RlstScalar;
-
-    /// The input array implementation
-    type ArrayImpl;
-
-    /// Execute the plan for a forward FFT
-    fn execute_forward(&mut self);
-
-    /// Execute the plan for an inverse FFT
-    fn execute_backward(&mut self);
+pub trait FftPlanInplace {
+    /// Execute the plan
+    fn execute(&mut self);
 }
 
 struct FftwPlanPtrType<T> {
@@ -277,19 +267,119 @@ struct FftwPlanInterface {
     pub fftw_double: ConcretePlanInterface<f64>,
 }
 
-impl<ArrayImpl, const NDIM: usize> Array<ArrayImpl, NDIM>
+/// An in-place FFT plan
+#[allow(private_bounds)]
+pub struct PlanInplace<Item, ArrayImpl, const NDIM: usize>
 where
-    ArrayImpl: FftPlanInplace<NDIM>,
+    Item: RlstScalar + 'static,
+    FftwPlanPtrType<Item::Real>: FftwPlanPtrTypeTrait,
 {
-    /// Compute the forward fft
-    pub fn fft(mut self) -> Self {
-        self.imp_mut().execute_forward();
-        self
+    shared_ref: ArrayAtomicSharedRef<ArrayImpl, NDIM>,
+    plan: FftwPlanPtr<Item::Real>,
+    _marker: std::marker::PhantomData<Item>,
+}
+
+#[allow(private_interfaces, private_bounds)]
+impl<Item, ArrayImpl, const NDIM: usize> PlanInplace<Item, ArrayImpl, NDIM>
+where
+    Item: RlstScalar + 'static,
+    FftwPlanPtrType<Item::Real>: FftwPlanPtrTypeTrait,
+{
+    /// Create a new plan interface
+    pub fn new(
+        shared_ref: ArrayAtomicSharedRef<ArrayImpl, NDIM>,
+        plan: FftwPlanPtr<Item::Real>,
+    ) -> Self {
+        Self {
+            shared_ref,
+            plan,
+            _marker: PhantomData,
+        }
+    }
+}
+
+macro_rules! impl_plan_inplace {
+
+    ($dtype:ty, $execute:ident) => {
+
+impl<ArrayImpl, const NDIM: usize> FftPlanInplace for PlanInplace<$dtype, ArrayImpl, NDIM>
+where
+    ArrayImpl: BaseItem<Item = $dtype>,
+{
+
+    fn execute(&mut self) {
+        // Lock access to the array. This will be returned when `lock` goes out of scope.
+        // We need `lock` to stay in scope until the end of the function. Using `_lock`
+        // as name achieves it without triggering a rust-analyzer warning about unused variables.
+        let mut _lock = self.shared_ref.borrow_mut().unwrap();
+
+        unsafe {
+            fftw_sys::$execute(
+                <FftwPlanPtrType<<$dtype as RlstScalar>::Real> as FftwPlanPtrTypeTrait>::get_fftw_ptr(
+                    self.plan.ptr,
+                ),
+            );
+        }
+
     }
 
-    /// Compute the inverse fft
-    pub fn ifft(mut self) -> Self {
-        self.imp_mut().execute_backward();
-        self
+
+}
+
+
+    };
+
+}
+
+impl_plan_inplace!(f32, fftwf_execute);
+impl_plan_inplace!(f64, fftw_execute);
+impl_plan_inplace!(c32, fftwf_execute);
+impl_plan_inplace!(c64, fftw_execute);
+
+/// The FFT struct is a factory to create FFT plans.
+///
+/// It holds a shared reference to the original array,
+/// which allow cloning so that multiple plans can be created
+/// for the same underlying array without violating borrowing
+/// constraints.
+pub struct Fft<ArrayImpl, const NDIM: usize> {
+    shared_ref: ArrayAtomicSharedRef<ArrayImpl, NDIM>,
+}
+
+#[allow(private_bounds)]
+impl<Item, ArrayImpl, const NDIM: usize> Array<ArrayImpl, NDIM>
+where
+    Item: RlstScalar + 'static,
+    FftwPlanPtrType<Item::Real>: FftwPlanPtrTypeTrait,
+    ArrayImpl: RawAccessMut<Item = Item> + Shape<NDIM> + Stride<NDIM>,
+{
+    /// Initialize a FFT computation.
+    pub fn into_fft(self) -> Fft<ArrayImpl, NDIM> {
+        Fft::from_arr(self)
+    }
+}
+
+#[allow(private_bounds)]
+impl<Item, ArrayImpl, const NDIM: usize> Fft<ArrayImpl, NDIM>
+where
+    Item: RlstScalar + 'static,
+    FftwPlanPtrType<Item::Real>: FftwPlanPtrTypeTrait,
+    ArrayImpl: RawAccessMut<Item = Item> + Shape<NDIM> + Stride<NDIM>,
+{
+    /// Create a new FFT struct from an existing array
+    pub fn from_arr(arr: Array<ArrayImpl, NDIM>) -> Self {
+        Self {
+            shared_ref: arr.into_shared_atomic(),
+        }
+    }
+
+    /// Borrow the array as read-only
+    pub fn borrow(&self) -> LockResult<RwLockReadGuard<'_, Array<ArrayImpl, NDIM>>> {
+        self.shared_ref.borrow()
+    }
+
+    /// Borrow the array as read-write
+    pub fn borrow_mut(&self) -> LockResult<RwLockWriteGuard<'_, Array<ArrayImpl, NDIM>>> {
+        self.shared_ref.borrow_mut()
     }
 }
