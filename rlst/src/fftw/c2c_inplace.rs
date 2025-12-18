@@ -9,7 +9,7 @@ use crate::{
     Array, BaseItem, ContainerType, RawAccess, RawAccessMut, RlstScalar, Shape, Stride,
     UnsafeRandom1DAccessByRef, UnsafeRandom1DAccessByValue, UnsafeRandom1DAccessMut,
     UnsafeRandomAccessByRef, UnsafeRandomAccessByValue, UnsafeRandomAccessMut, c32, c64,
-    dense::fftw::{
+    fftw::{
         FFTW_PLAN_INTERFACE, FftPlanInplace, FftwPlanFlags, FftwPlanPtr, FftwPlanPtrType,
         FftwPlanPtrTypeTrait, PlanInterfaceTrait,
     },
@@ -321,7 +321,7 @@ mod test {
     use crate::{EvaluateObject, c32, c64};
 
     use crate::DynArray;
-    use crate::dense::fftw::FftwPlanFlags;
+    use crate::fftw::FftwPlanFlags;
 
     use super::C2CInplaceFft;
 

@@ -215,12 +215,12 @@ impl<ArrayImpl: ResizeInPlace<NDIM>, const NDIM: usize> ResizeInPlace<NDIM>
 }
 
 #[cfg(feature = "fftw")]
-impl<'a, ArrayImpl, const NDIM: usize> crate::dense::fftw::FftPlanInplace<NDIM>
+impl<'a, ArrayImpl, const NDIM: usize> crate::fftw::FftPlanInplace<NDIM>
     for ArrayRefMut<'a, ArrayImpl, NDIM>
 where
-    ArrayImpl: crate::dense::fftw::FftPlanInplace<NDIM>,
+    ArrayImpl: crate::fftw::FftPlanInplace<NDIM>,
 {
-    type Item = <ArrayImpl as crate::dense::fftw::FftPlanInplace<NDIM>>::Item;
+    type Item = <ArrayImpl as crate::fftw::FftPlanInplace<NDIM>>::Item;
 
     type ArrayImpl = ArrayRefMut<'a, ArrayImpl, NDIM>;
 
