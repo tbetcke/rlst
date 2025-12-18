@@ -27,6 +27,7 @@ pub mod dense;
 #[cfg(feature = "mpi")]
 pub mod distributed_tools;
 pub mod doc;
+pub mod interpolation;
 pub mod io;
 pub mod simd;
 pub mod sparse;
