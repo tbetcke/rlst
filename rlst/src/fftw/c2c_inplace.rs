@@ -209,171 +209,159 @@ mod test {
         );
     }
 
-    //     #[test]
-    //     fn test_c2c_1d_f32() {
-    //         let n = 10;
-    //         let mut arr = DynArray::<c32, _>::from_shape([n]);
-    //         arr.fill_from_seed_equally_distributed(0);
-    //         let expected = arr.eval();
+    #[test]
+    fn test_c2c_2d_f64() {
+        let n = 15;
+        let mut original = DynArray::<c64, _>::from_shape([3, 5]);
+        original.fill_from_seed_equally_distributed(0);
 
-    //         let sum = arr
-    //             .eval()
-    //             .r_mut()
-    //             .into_c2c_fft(FftwPlanFlags::Estimate)
-    //             .unwrap()
-    //             .fft()
-    //             .iter_value()
-    //             .sum::<c32>();
+        let mut copied = original.eval();
+        let sum = copied.iter_value().sum::<c64>();
 
-    //         let actual = arr
-    //             .into_c2c_fft(FftwPlanFlags::Estimate)
-    //             .unwrap()
-    //             .fft()
-    //             .ifft();
+        copied
+            .r_mut()
+            .into_fft()
+            .c2c_fft(FftwPlanFlags::Estimate, C2CDirection::Forward)
+            .unwrap()
+            .execute();
 
-    //         // Check that the zeroth frequency is the sum of all input elements.
-    //         approx::assert_relative_eq!(
-    //             sum,
-    //             c32::from_usize(n).unwrap() * expected[[0]],
-    //             epsilon = 1E-5
-    //         );
-    //         // Compute the forward and inverse FFT and check that the result is still the same.
-    //         crate::assert_array_relative_eq!(actual, c32::from_usize(n).unwrap() * expected.r(), 1E-5);
-    //     }
+        approx::assert_relative_eq!(sum, copied[[0, 0]], epsilon = 1E-10);
 
-    //     #[test]
-    //     fn test_c2c_2d_f64() {
-    //         let shape = [5, 2];
-    //         let n = shape.iter().product();
-    //         let mut arr = DynArray::<c64, _>::from_shape(shape);
-    //         arr.fill_from_seed_equally_distributed(0);
+        let fft = original.eval().into_fft();
 
-    //         let expected = arr.eval();
+        fft.c2c_fft(FftwPlanFlags::Estimate, C2CDirection::Forward)
+            .unwrap()
+            .execute();
 
-    //         let sum = arr
-    //             .eval()
-    //             .r_mut()
-    //             .into_c2c_fft(FftwPlanFlags::Estimate)
-    //             .unwrap()
-    //             .fft()
-    //             .iter_value()
-    //             .sum::<c64>();
+        fft.c2c_fft(FftwPlanFlags::Estimate, C2CDirection::Backward)
+            .unwrap()
+            .execute();
 
-    //         let actual = arr
-    //             .into_c2c_fft(FftwPlanFlags::Estimate)
-    //             .unwrap()
-    //             .fft()
-    //             .ifft();
+        let actual = fft.borrow().unwrap().eval();
 
-    //         // Check that the zeroth frequency is the sum of all input elements.
-    //         approx::assert_relative_eq!(
-    //             sum,
-    //             c64::from_usize(n).unwrap() * expected[[0, 0]],
-    //             epsilon = 1E-10
-    //         );
-    //         // Compute the forward and inverse FFT and check that the result is still the same.
-    //         crate::assert_array_relative_eq!(actual, c64::from_usize(n).unwrap() * expected.r(), 1E-10);
-    //     }
+        // Check that the zeroth frequency is the sum of all input elements.
+        // Compute the forward and inverse FFT and check that the result is still the same.
+        crate::assert_array_relative_eq!(
+            c64::from_usize(n).unwrap() * original.r(),
+            actual.r(),
+            1E-10
+        );
+    }
 
-    //     #[test]
-    //     fn test_c2c_2d_f32() {
-    //         let shape = [5, 2];
-    //         let n = shape.iter().product();
-    //         let mut arr = DynArray::<c32, _>::from_shape(shape);
-    //         arr.fill_from_seed_equally_distributed(0);
+    #[test]
+    fn test_c2c_2d_f32() {
+        let n = 15;
+        let mut original = DynArray::<c32, _>::from_shape([3, 5]);
+        original.fill_from_seed_equally_distributed(0);
 
-    //         let expected = arr.eval();
+        let mut copied = original.eval();
+        let sum = copied.iter_value().sum::<c32>();
 
-    //         let sum = arr
-    //             .eval()
-    //             .r_mut()
-    //             .into_c2c_fft(FftwPlanFlags::Estimate)
-    //             .unwrap()
-    //             .fft()
-    //             .iter_value()
-    //             .sum::<c32>();
+        copied
+            .r_mut()
+            .into_fft()
+            .c2c_fft(FftwPlanFlags::Estimate, C2CDirection::Forward)
+            .unwrap()
+            .execute();
 
-    //         let actual = arr
-    //             .into_c2c_fft(FftwPlanFlags::Estimate)
-    //             .unwrap()
-    //             .fft()
-    //             .ifft();
+        approx::assert_relative_eq!(sum, copied[[0, 0]], epsilon = 1E-10);
 
-    //         // Check that the zeroth frequency is the sum of all input elements.
-    //         approx::assert_relative_eq!(
-    //             sum,
-    //             c32::from_usize(n).unwrap() * expected[[0, 0]],
-    //             epsilon = 1E-5
-    //         );
-    //         // Compute the forward and inverse FFT and check that the result is still the same.
-    //         crate::assert_array_relative_eq!(actual, c32::from_usize(n).unwrap() * expected.r(), 1E-5);
-    //     }
+        let fft = original.eval().into_fft();
 
-    //     #[test]
-    //     fn test_c2c_3d_f64() {
-    //         let shape = [5, 2, 4];
-    //         let n = shape.iter().product();
-    //         let mut arr = DynArray::<c64, _>::from_shape(shape);
-    //         arr.fill_from_seed_equally_distributed(0);
+        fft.c2c_fft(FftwPlanFlags::Estimate, C2CDirection::Forward)
+            .unwrap()
+            .execute();
 
-    //         let expected = arr.eval();
+        fft.c2c_fft(FftwPlanFlags::Estimate, C2CDirection::Backward)
+            .unwrap()
+            .execute();
 
-    //         let sum = arr
-    //             .eval()
-    //             .r_mut()
-    //             .into_c2c_fft(FftwPlanFlags::Estimate)
-    //             .unwrap()
-    //             .fft()
-    //             .iter_value()
-    //             .sum::<c64>();
+        let actual = fft.borrow().unwrap().eval();
 
-    //         let actual = arr
-    //             .into_c2c_fft(FftwPlanFlags::Estimate)
-    //             .unwrap()
-    //             .fft()
-    //             .ifft();
+        // Check that the zeroth frequency is the sum of all input elements.
+        // Compute the forward and inverse FFT and check that the result is still the same.
+        crate::assert_array_relative_eq!(
+            c32::from_usize(n).unwrap() * original.r(),
+            actual.r(),
+            1E-5
+        );
+    }
 
-    //         // Check that the zeroth frequency is the sum of all input elements.
-    //         approx::assert_relative_eq!(
-    //             sum,
-    //             c64::from_usize(n).unwrap() * expected[[0, 0, 0]],
-    //             epsilon = 1E-10
-    //         );
-    //         // Compute the forward and inverse FFT and check that the result is still the same.
-    //         crate::assert_array_relative_eq!(actual, c64::from_usize(n).unwrap() * expected.r(), 1E-10);
-    //     }
+    #[test]
+    fn test_c2c_3d_f64() {
+        let n = 30;
+        let mut original = DynArray::<c64, _>::from_shape([3, 5, 2]);
+        original.fill_from_seed_equally_distributed(0);
 
-    //     #[test]
-    //     fn test_c2c_3d_f32() {
-    //         let shape = [5, 2, 4];
-    //         let n = shape.iter().product();
-    //         let mut arr = DynArray::<c32, _>::from_shape(shape);
-    //         arr.fill_from_seed_equally_distributed(0);
+        let mut copied = original.eval();
+        let sum = copied.iter_value().sum::<c64>();
 
-    //         let expected = arr.eval();
+        copied
+            .r_mut()
+            .into_fft()
+            .c2c_fft(FftwPlanFlags::Estimate, C2CDirection::Forward)
+            .unwrap()
+            .execute();
 
-    //         let sum = arr
-    //             .eval()
-    //             .r_mut()
-    //             .into_c2c_fft(FftwPlanFlags::Estimate)
-    //             .unwrap()
-    //             .fft()
-    //             .iter_value()
-    //             .sum::<c32>();
+        approx::assert_relative_eq!(sum, copied[[0, 0, 0]], epsilon = 1E-10);
 
-    //         let actual = arr
-    //             .into_c2c_fft(FftwPlanFlags::Estimate)
-    //             .unwrap()
-    //             .fft()
-    //             .ifft();
+        let fft = original.eval().into_fft();
 
-    //         // Check that the zeroth frequency is the sum of all input elements.
-    //         approx::assert_relative_eq!(
-    //             sum,
-    //             c32::from_usize(n).unwrap() * expected[[0, 0, 0]],
-    //             epsilon = 1E-5
-    //         );
-    //         // Compute the forward and inverse FFT and check that the result is still the same.
-    //         crate::assert_array_relative_eq!(actual, c32::from_usize(n).unwrap() * expected.r(), 1E-5);
-    //     }
+        fft.c2c_fft(FftwPlanFlags::Estimate, C2CDirection::Forward)
+            .unwrap()
+            .execute();
+
+        fft.c2c_fft(FftwPlanFlags::Estimate, C2CDirection::Backward)
+            .unwrap()
+            .execute();
+
+        let actual = fft.borrow().unwrap().eval();
+
+        // Check that the zeroth frequency is the sum of all input elements.
+        // Compute the forward and inverse FFT and check that the result is still the same.
+        crate::assert_array_relative_eq!(
+            c64::from_usize(n).unwrap() * original.r(),
+            actual.r(),
+            1E-10
+        );
+    }
+
+    #[test]
+    fn test_c2c_3d_f32() {
+        let n = 30;
+        let mut original = DynArray::<c32, _>::from_shape([3, 5, 2]);
+        original.fill_from_seed_equally_distributed(0);
+
+        let mut copied = original.eval();
+        let sum = copied.iter_value().sum::<c32>();
+
+        copied
+            .r_mut()
+            .into_fft()
+            .c2c_fft(FftwPlanFlags::Estimate, C2CDirection::Forward)
+            .unwrap()
+            .execute();
+
+        approx::assert_relative_eq!(sum, copied[[0, 0, 0]], epsilon = 1E-10);
+
+        let fft = original.eval().into_fft();
+
+        fft.c2c_fft(FftwPlanFlags::Estimate, C2CDirection::Forward)
+            .unwrap()
+            .execute();
+
+        fft.c2c_fft(FftwPlanFlags::Estimate, C2CDirection::Backward)
+            .unwrap()
+            .execute();
+
+        let actual = fft.borrow().unwrap().eval();
+
+        // Check that the zeroth frequency is the sum of all input elements.
+        // Compute the forward and inverse FFT and check that the result is still the same.
+        crate::assert_array_relative_eq!(
+            c32::from_usize(n).unwrap() * original.r(),
+            actual.r(),
+            1E-5
+        );
+    }
 }

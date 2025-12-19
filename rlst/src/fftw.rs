@@ -37,7 +37,7 @@
 //! // We can get a reference to the array in `fft` using the `borrow` method.
 //! let actual_arr = fft.borrow().unwrap();
 //!
-//! assert_array_relative_eq!(arr, c64::from_usize(30).unwrap() * actual_arr.r(), 1E-10);
+//! assert_array_relative_eq!(c64::from_usize(30).unwrap() * arr.r(), actual_arr.r(), 1E-10);
 //!
 //! ```
 //! The method [into_c2c_fft](Array::into_c2c_fft) generates the c2c plan.
@@ -59,6 +59,18 @@
 //! generation inside a mutex. However, if other libraries access FFTW at the same time as `rlst`
 //! a race condition may occur. The execution of a plan to compute the forward or backward FFT
 //! is thread-safe.
+//!
+//! ## A note on ownership
+//!
+//! In the example above we are creating two plans, `forward_plan` and `backward_plan`. Both require
+//! mutable access to the array. This is solved by storing the array as an `Arc<RwLock<...>>` object
+//! in the `fft` struct. Each plan generation creates another shared reference by cloning the `Arc`
+//! and write access is then controlled at runtime through the `RwLock`, which prevents two plans
+//! writing into the data at the same time. Since `Arc` and `RwLock` are thread-safe this works
+//! also across multiple threads.
+//! Moving an array into this shared reference is why `into_fft` is necessary in the first place.
+//! Calling `borrow` or `borrow_mut` on `fft` creates a new read or write lock and allows the user
+//! to access the array data directly without other threads being able to write at the same time.
 
 pub mod c2c_inplace;
 
