@@ -40,5 +40,5 @@
 //! - Use the `fftw_mkl` flag to link against Intel MKL, which provides an FFTW compatible interface.
 //!   For this option the license conditions of Intel MKL rather than FFTW apply.
 //!
-//! Instructions on how to use the FFT can be found in the documentation of `rlst::dense::fftw` when
+//! Instructions on how to use the FFT can be found in the documentation of `rlst::fftw` when
 //! the `fftw` feature flag is activated.
