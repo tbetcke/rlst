@@ -73,6 +73,7 @@
 //! to access the array data directly without other threads being able to write at the same time.
 
 pub mod c2c_inplace;
+pub mod r2r_inplace;
 
 pub use c2c_inplace::{C2CDirection, C2CPlan};
 
@@ -181,6 +182,17 @@ trait PlanInterfaceTrait {
         sign: i32,
         flags: u32,
     ) -> Self::PlanPtr;
+
+    /// Create a r2r plan
+    unsafe fn create_r2r(
+        &self,
+        rank: i32,
+        shape: *const i32,
+        arr_in: *mut Self::RealType,
+        arr_out: *mut Self::RealType,
+        kind: *const super::fftw::r2r_inplace::R2RPlanKind,
+        flags: u32,
+    ) -> Self::PlanPtr;
 }
 
 impl<T> Drop for FftwPlanPtr<T>
@@ -246,6 +258,18 @@ impl PlanInterfaceTrait for ConcretePlanInterface<f64> {
     ) -> Self::PlanPtr {
         unsafe { fftw_sys::fftw_plan_dft(rank, shape, arr_in, arr_out, sign, flags) }
     }
+
+    unsafe fn create_r2r(
+        &self,
+        rank: i32,
+        shape: *const i32,
+        arr_in: *mut Self::RealType,
+        arr_out: *mut Self::RealType,
+        kind: *const crate::fftw::r2r_inplace::R2RPlanKind,
+        flags: u32,
+    ) -> Self::PlanPtr {
+        unsafe { fftw_sys::fftw_plan_r2r(rank, shape, arr_in, arr_out, kind, flags) }
+    }
 }
 
 impl PlanInterfaceTrait for ConcretePlanInterface<f32> {
@@ -269,6 +293,18 @@ impl PlanInterfaceTrait for ConcretePlanInterface<f32> {
         flags: u32,
     ) -> Self::PlanPtr {
         unsafe { fftw_sys::fftwf_plan_dft(rank, shape, arr_in, arr_out, sign, flags) }
+    }
+
+    unsafe fn create_r2r(
+        &self,
+        rank: i32,
+        shape: *const i32,
+        arr_in: *mut Self::RealType,
+        arr_out: *mut Self::RealType,
+        kind: *const crate::fftw::r2r_inplace::R2RPlanKind,
+        flags: u32,
+    ) -> Self::PlanPtr {
+        unsafe { fftw_sys::fftwf_plan_r2r(rank, shape, arr_in, arr_out, kind, flags) }
     }
 }
 
