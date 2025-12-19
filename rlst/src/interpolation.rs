@@ -93,7 +93,7 @@ pub enum Kind {
 /// - For Chebychev points of the second kind require `n > 1`.
 pub fn chebychev_points<Item: RlstScalar>(kind: Kind, n: usize) -> DynArray<Item, 1> {
     let mut output = DynArray::<Item, 1>::from_shape([n]);
-    let indices = (0..n).rev();
+    let indices = 0..n;
 
     let pi = num::cast::<_, Item>(f64::PI()).unwrap();
 
