@@ -40,7 +40,7 @@
 //! assert_array_relative_eq!(c64::from_usize(30).unwrap() * arr.r(), actual_arr.r(), 1E-10);
 //!
 //! ```
-//! The method [into_c2c_fft](Array::into_c2c_fft) generates the c2c plan.
+//! The method [c2c_fft](C2CPlan::c2c_fft) generates the c2c plan.
 //! One can then execute a forward or backward fft as shown above.
 //! By default the FFT overwrites the original array. With the `eval` function
 //! the result is written into a new array. Note that the array in `backward`
@@ -52,6 +52,56 @@
 //! The `plan` struct satisfies all the usual traits for mutable array access. Hence,
 //! it can be used itself like any other array. The underlying data is that of the original array
 //! for who a plan was computed.
+//!
+//! ## Real-to-Real transform
+//!
+//! The FFTW library supports a number of real-to-real transformations which are accessible
+//! through RLST. The following example demonstrates the use of the DCT-II transform in three
+//! dimensions.  
+//!
+//! ```
+//! use rlst::{rlst_dynamic_array, fftw::{FftwPlanFlags, R2RPlanKind, R2RPlan, FftPlanInplace},
+//!     EvaluateObject, c64,
+//!     assert_array_relative_eq};
+//! use num::FromPrimitive;
+//!
+//! let shape = [3, 5, 2];
+//! // We create a 16 byte aligned array. This is
+//! // the required alignment for FFTW to use SIMD features.
+//! let mut arr = rlst_dynamic_array!(f64, shape | rlst::FFTW_ALIGNED);
+//! arr.fill_from_seed_equally_distributed(0);
+//!
+//! // We use `eval` to copy the data into a new array before generating the plan
+//! // so that `arr` is not overwritten. If we want to overwrite `arr` with the
+//! // FFT computations we could use `arr.r_mut().into_fft()` instead.
+//! let mut fft = arr.eval().into_fft();
+//! let forward_plan = fft.r2r_fft(FftwPlanFlags::Estimate,
+//!   &[
+//!     R2RPlanKind::FFTW_REDFT10,
+//!     R2RPlanKind::FFTW_REDFT10,
+//!     R2RPlanKind::FFTW_REDFT10
+//!   ]);
+//! let backward_plan = fft.r2r_fft(FftwPlanFlags::Estimate,
+//!   &[
+//!     R2RPlanKind::FFTW_REDFT01,
+//!     R2RPlanKind::FFTW_REDFT01,
+//!     R2RPlanKind::FFTW_REDFT01
+//!   ]);
+//!
+//! forward_plan.unwrap().execute();
+//! backward_plan.unwrap().execute();
+//!
+//! // We can get a reference to the array in `fft` using the `borrow` method.
+//! let actual_arr = fft.borrow().unwrap();
+//!
+//! assert_array_relative_eq!(f64::from_usize(240).unwrap() * arr.r(), actual_arr.r(), 1E-10);
+//!
+//! ```
+//! The `FFTW_REDFT10` plan is the standard DCT and `FFTW_REDFT01` is its inverse. For an overview
+//! of real-to-real transformations in FFTW
+//! see also [here](https://www.fftw.org/fftw3_doc/Real_002dto_002dReal-Transform-Kinds.html).
+//! In multi-dimensional transformation a different kind of real-to-real transform can be assigned
+//! to each dimension. Hence, the `kind` is a vector with the same dimension as the input array.
 //!
 //! ## Thread Safety
 //!
@@ -76,6 +126,7 @@ pub mod c2c_inplace;
 pub mod r2r_inplace;
 
 pub use c2c_inplace::{C2CDirection, C2CPlan};
+pub use r2r_inplace::{R2RPlan, R2RPlanKind};
 
 use std::{
     ffi::c_void,
@@ -190,7 +241,7 @@ trait PlanInterfaceTrait {
         shape: *const i32,
         arr_in: *mut Self::RealType,
         arr_out: *mut Self::RealType,
-        kind: *const super::fftw::r2r_inplace::R2RPlanKind,
+        kind: &[R2RPlanKind],
         flags: u32,
     ) -> Self::PlanPtr;
 }
@@ -265,10 +316,10 @@ impl PlanInterfaceTrait for ConcretePlanInterface<f64> {
         shape: *const i32,
         arr_in: *mut Self::RealType,
         arr_out: *mut Self::RealType,
-        kind: *const crate::fftw::r2r_inplace::R2RPlanKind,
+        kind: &[R2RPlanKind],
         flags: u32,
     ) -> Self::PlanPtr {
-        unsafe { fftw_sys::fftw_plan_r2r(rank, shape, arr_in, arr_out, kind, flags) }
+        unsafe { fftw_sys::fftw_plan_r2r(rank, shape, arr_in, arr_out, kind.as_ptr(), flags) }
     }
 }
 
@@ -301,10 +352,10 @@ impl PlanInterfaceTrait for ConcretePlanInterface<f32> {
         shape: *const i32,
         arr_in: *mut Self::RealType,
         arr_out: *mut Self::RealType,
-        kind: *const crate::fftw::r2r_inplace::R2RPlanKind,
+        kind: &[R2RPlanKind],
         flags: u32,
     ) -> Self::PlanPtr {
-        unsafe { fftw_sys::fftwf_plan_r2r(rank, shape, arr_in, arr_out, kind, flags) }
+        unsafe { fftw_sys::fftwf_plan_r2r(rank, shape, arr_in, arr_out, kind.as_ptr(), flags) }
     }
 }
 

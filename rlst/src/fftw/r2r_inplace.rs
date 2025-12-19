@@ -1,4 +1,4 @@
-//! Definition of a real 2 real inplace FFT plan
+//! Definition of a real-to-real inplace FFT plan
 
 use std::{
     ffi::{c_int, c_void},
@@ -24,11 +24,13 @@ where
     Item: RlstScalar + 'static,
     FftwPlanPtrType<Item::Real>: FftwPlanPtrTypeTrait,
 {
-    /// Create a new c2c plan
+    /// Create a new r2r plan.
+    ///
+    /// For details see the [FFTW module description](crate::fftw).
     fn r2r_fft(
         &self,
         flags: FftwPlanFlags,
-        kind: R2RPlanKind,
+        kind: &[R2RPlanKind],
     ) -> Option<PlanInplace<Item, ArrayImpl, NDIM>>;
 }
 
@@ -42,9 +44,15 @@ macro_rules! impl_r2r_inplace {
             fn r2r_fft(
                 &self,
                 flags: FftwPlanFlags,
-                kind: R2RPlanKind,
+                kind: &[R2RPlanKind],
             ) -> Option<PlanInplace<$ty, ArrayImpl, NDIM>> {
                 let mut arr = self.borrow_mut().unwrap();
+                assert_eq!(
+                    kind.len(),
+                    NDIM,
+                    "`kind` has {} dimensions but {NDIM} required",
+                    kind.len()
+                );
 
                 // Return None if NDIM > 3 as FFTW only supports up to three dimensions
                 if NDIM > 3 {
@@ -86,7 +94,7 @@ macro_rules! impl_r2r_inplace {
                         shape.as_ptr(),
                         data,
                         data,
-                        &kind,
+                        kind,
                         flags as u32,
                     )
                 };
@@ -109,3 +117,97 @@ macro_rules! impl_r2r_inplace {
 
 impl_r2r_inplace!(f64, fftw_double);
 impl_r2r_inplace!(f32, fftw_single);
+
+#[cfg(test)]
+mod test {
+
+    use crate::{
+        DynArray, EvaluateObject,
+        fftw::{
+            FftPlanInplace, FftwPlanFlags,
+            r2r_inplace::{R2RPlan, R2RPlanKind},
+        },
+    };
+
+    #[test]
+    fn test_r2r_1d_f64() {
+        let n = 10;
+        let mut original = DynArray::<f64, _>::from_shape([10]);
+        original.fill_from_seed_equally_distributed(0);
+
+        let fft = original.eval().into_fft();
+
+        fft.r2r_fft(FftwPlanFlags::Estimate, &[R2RPlanKind::FFTW_REDFT10])
+            .unwrap()
+            .execute();
+
+        fft.r2r_fft(FftwPlanFlags::Estimate, &[R2RPlanKind::FFTW_REDFT01])
+            .unwrap()
+            .execute();
+
+        let actual = fft.borrow().unwrap().eval();
+
+        // Check that the zeroth frequency is the sum of all input elements.
+        // Compute the forward and inverse FFT and check that the result is still the same.
+        crate::assert_array_relative_eq!((2 * n) as f64 * original.r(), actual.r(), 1E-10);
+    }
+
+    #[test]
+    fn test_r2r_1d_f32() {
+        let n = 10;
+        let mut original = DynArray::<f32, _>::from_shape([10]);
+        original.fill_from_seed_equally_distributed(0);
+
+        let fft = original.eval().into_fft();
+
+        fft.r2r_fft(FftwPlanFlags::Estimate, &[R2RPlanKind::FFTW_REDFT10])
+            .unwrap()
+            .execute();
+
+        fft.r2r_fft(FftwPlanFlags::Estimate, &[R2RPlanKind::FFTW_REDFT01])
+            .unwrap()
+            .execute();
+
+        let actual = fft.borrow().unwrap().eval();
+
+        // Check that the zeroth frequency is the sum of all input elements.
+        // Compute the forward and inverse FFT and check that the result is still the same.
+        crate::assert_array_relative_eq!((2 * n) as f32 * original.r(), actual.r(), 1E-5);
+    }
+
+    #[test]
+    fn test_r2r_3d_f64() {
+        let mut original = DynArray::<f64, _>::from_shape([4, 6, 2]);
+        original.fill_from_seed_equally_distributed(0);
+
+        let fft = original.eval().into_fft();
+
+        fft.r2r_fft(
+            FftwPlanFlags::Estimate,
+            &[
+                R2RPlanKind::FFTW_REDFT10,
+                R2RPlanKind::FFTW_REDFT10,
+                R2RPlanKind::FFTW_REDFT10,
+            ],
+        )
+        .unwrap()
+        .execute();
+
+        fft.r2r_fft(
+            FftwPlanFlags::Estimate,
+            &[
+                R2RPlanKind::FFTW_REDFT01,
+                R2RPlanKind::FFTW_REDFT01,
+                R2RPlanKind::FFTW_REDFT01,
+            ],
+        )
+        .unwrap()
+        .execute();
+
+        let actual = fft.borrow().unwrap().eval();
+
+        // Check that the zeroth frequency is the sum of all input elements.
+        // Compute the forward and inverse FFT and check that the result is still the same.
+        crate::assert_array_relative_eq!(384.0_f64 * original.r(), actual.r(), 1E-10);
+    }
+}

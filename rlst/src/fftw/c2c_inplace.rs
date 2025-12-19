@@ -1,4 +1,4 @@
-//! Definition of a complex 2 complex inplace FFT plan
+//! Definition of a complex-to-complex inplace FFT plan
 
 use std::{
     ffi::{c_int, c_void},
@@ -32,7 +32,9 @@ where
     Item: RlstScalar + 'static,
     FftwPlanPtrType<Item::Real>: FftwPlanPtrTypeTrait,
 {
-    /// Create a new c2c plan
+    /// Create a new c2c plan.
+    ///
+    /// For details see the [FFTW module description](crate::fftw).
     fn c2c_fft(
         &self,
         flags: FftwPlanFlags,
