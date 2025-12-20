@@ -9,3 +9,6 @@ pub trait IsGreaterZero {}
 
 /// Is smaller than a given number a
 pub trait IsSmallerThan<const N: usize> {}
+
+/// D is the result of a difference
+pub trait SubtractEqual<const D: usize> {}
