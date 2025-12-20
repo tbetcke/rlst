@@ -212,13 +212,13 @@ where
         if self.slice[0] == 0 && matches!(self.arr.memory_layout(), MemoryLayout::RowMajor) {
             // The layout is row-major and we are slicing at the left-most dimension
             let step = *self.arr.stride().first().unwrap();
-            Some(&self.arr.data().unwrap()[self.slice[1] * step..(1 + self.slice[1]) * step])
+            Some(&self.arr.data()?[self.slice[1] * step..(1 + self.slice[1]) * step])
         } else if self.slice[0] == ADIM - 1
             && matches!(self.arr.memory_layout(), MemoryLayout::ColumnMajor)
         {
             // The layout is column-major and we are slicing at the right-most dimension
             let step = *self.arr.stride().last().unwrap();
-            Some(&self.arr.data().unwrap()[self.slice[1] * step..(1 + self.slice[1]) * step])
+            Some(&self.arr.data()?[self.slice[1] * step..(1 + self.slice[1]) * step])
         } else {
             None
         }
