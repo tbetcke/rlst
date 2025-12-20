@@ -258,6 +258,7 @@ where
 
 // ////////////////////
 
+#[inline(always)]
 fn multi_index_to_orig<const ADIM: usize, const NDIM: usize>(
     multi_index: [usize; NDIM],
     mask: [usize; NDIM],
