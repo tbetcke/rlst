@@ -21,6 +21,7 @@ use typenum::Unsigned;
 use crate::ContainerTypeRepr;
 use crate::ContainerTypeSelector;
 use crate::IsSmallerThan;
+use crate::SubtractEqual;
 use crate::traits::number_relations::{IsGreaterByOne, IsGreaterZero, IsSmallerByOne};
 
 use typenum;
@@ -133,6 +134,9 @@ pub type LapackResult<T> = std::result::Result<T, LapackError>;
 /// Empty type for number relations.
 pub struct NumberType<const N: usize>;
 
+/// Empty type for difference M - N of numbers;
+pub struct NumberDifference<const M: usize, const N: usize>;
+
 // the condition that M = 1 + N.
 impl<const M: usize, const N: usize> IsGreaterByOne<N> for NumberType<M>
 where
@@ -141,6 +145,20 @@ where
     Const<M>: ToUInt,
     <Const<N> as ToUInt>::Output: Unsigned + NonZero,
     <Const<M> as ToUInt>::Output: Unsigned + NonZero,
+{
+}
+
+// The condition that D + N = M
+impl<const D: usize, const M: usize, const N: usize> SubtractEqual<D> for NumberDifference<M, N>
+where
+    Const<M>: ToUInt,
+    Const<N>: ToUInt,
+    Const<D>: ToUInt,
+    <Const<N> as ToUInt>::Output: Unsigned + NonZero,
+    <Const<M> as ToUInt>::Output: Unsigned + NonZero,
+    <Const<D> as ToUInt>::Output: Unsigned + NonZero,
+    NumberType<N>: IsSmallerThan<M>,
+    PInt<U<D>>: Add<PInt<U<N>>, Output = PInt<U<M>>>,
 {
 }
 
