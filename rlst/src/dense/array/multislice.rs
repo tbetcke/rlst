@@ -4,7 +4,7 @@ use itertools::{Itertools, izip};
 
 use crate::{
     Array, BaseItem, ContainerType, IsSmallerThan, MemoryLayout, NumberDifference, NumberType,
-    RawAccess, Shape, Stride, SubtractEqual, Unknown, UnsafeRandom1DAccessByRef,
+    RawAccess, RawAccessMut, Shape, Stride, SubtractEqual, Unknown, UnsafeRandom1DAccessByRef,
     UnsafeRandom1DAccessByValue, UnsafeRandom1DAccessMut, UnsafeRandomAccessByRef,
     UnsafeRandomAccessByValue, UnsafeRandomAccessMut, dense::layout::convert_1d_nd_from_shape,
 };
@@ -243,6 +243,60 @@ where
             // Compute end index. The end index is the start index + the stride `stride[SDIM - 1]`.
             let end_index = start_index + stride[ADIM - SDIM];
             Some(&self.arr.data()?[start_index..end_index])
+        } else {
+            None
+        }
+    }
+}
+
+impl<Item, ArrayImpl, const ADIM: usize, const SDIM: usize, const NDIM: usize> RawAccessMut
+    for Multislice<ArrayImpl, ADIM, SDIM, NDIM>
+where
+    NumberType<SDIM>: IsSmallerThan<ADIM>,
+    NumberDifference<ADIM, SDIM>: SubtractEqual<NDIM>,
+    ArrayImpl: RawAccessMut<Item = Item> + Stride<ADIM> + Shape<ADIM>,
+{
+    fn data_mut(&mut self) -> Option<&mut [Self::Item]> {
+        // We first check whether the data is contiguous
+
+        // Asser that the mask is contiguous
+        if !self
+            .mask
+            .iter()
+            .tuple_windows()
+            .all(|(&elem1, &elem2)| elem2 == 1 + elem1)
+        {
+            return None;
+        }
+
+        let stride = self.arr.stride();
+
+        // First Case: We are row-major
+        // For a row-major the mask should point to the last elements
+        // of the original multi-index
+        // If ADIM = 7 and SDIM = 3 the mask should be [4, 5, 6].
+        // The mask is already contiguous. So check that mask[0] = ADIM - SDIM
+        // and check that the original array is row-major
+        if self.mask[0] == ADIM - SDIM && matches!(self.arr.memory_layout(), MemoryLayout::RowMajor)
+        {
+            // Compute the start index.
+            let start_index = izip!(stride.iter(), self.offset.iter())
+                .take(SDIM)
+                .map(|(s, i)| s * i)
+                .sum::<usize>();
+            // Compute end index. The end index is the start index + the stride `stride[SDIM - 1]`.
+            let end_index = start_index + stride[SDIM - 1];
+            Some(&mut self.arr.data_mut()?[start_index..end_index])
+        } else if self.mask[0] == 0 && matches!(self.arr.memory_layout(), MemoryLayout::ColumnMajor)
+        {
+            // Compute the start index. We need to get the memory index skip from the last SDIM elements in the stride.
+            let start_index = izip!(stride.iter(), self.offset.iter())
+                .skip(ADIM - SDIM)
+                .map(|(s, i)| s * i)
+                .sum::<usize>();
+            // Compute end index. The end index is the start index + the stride `stride[SDIM - 1]`.
+            let end_index = start_index + stride[ADIM - SDIM];
+            Some(&mut self.arr.data_mut()?[start_index..end_index])
         } else {
             None
         }
