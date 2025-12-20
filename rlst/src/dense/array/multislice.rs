@@ -327,7 +327,7 @@ where
 #[cfg(test)]
 mod test {
 
-    use itertools::izip;
+    use itertools::{Itertools, izip};
 
     use crate::{DynArray, StridedDynArray, dense::layout::convert_nd_raw};
 
@@ -436,5 +436,63 @@ mod test {
         // Make sure that for non-contiguous slices we get `None` returned.
 
         assert!(arr.r().multislice::<2, 2>([1, 3], [0, 1]).data().is_none());
+    }
+
+    #[test]
+    fn test_multislice_data_mut_col_major() {
+        let mut arr = DynArray::<f64, 4>::from_shape([3, 2, 5, 4]);
+        arr.fill_from_seed_equally_distributed(0);
+
+        let axes = [3, 2];
+        let indices = [2, 3];
+
+        let expected = arr
+            .r()
+            .multislice::<2, 2>(axes, indices)
+            .data()
+            .unwrap()
+            .iter()
+            .copied()
+            .collect_vec();
+
+        for (a, e) in izip!(
+            arr.r_mut()
+                .multislice::<2, 2>(axes, indices)
+                .data_mut()
+                .unwrap()
+                .iter(),
+            expected.iter()
+        ) {
+            assert_eq!(*a, *e);
+        }
+    }
+
+    #[test]
+    fn test_multislice_data_mut_row_major() {
+        let mut arr = StridedDynArray::<f64, 4>::row_major([3, 2, 5, 4]);
+        arr.fill_from_seed_equally_distributed(0);
+
+        let axes = [1, 0];
+        let indices = [1, 2];
+
+        let expected = arr
+            .r()
+            .multislice::<2, 2>(axes, indices)
+            .data()
+            .unwrap()
+            .iter()
+            .copied()
+            .collect_vec();
+
+        for (a, e) in izip!(
+            arr.r_mut()
+                .multislice::<2, 2>(axes, indices)
+                .data_mut()
+                .unwrap()
+                .iter(),
+            expected.iter()
+        ) {
+            assert_eq!(*a, *e);
+        }
     }
 }
