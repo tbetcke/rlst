@@ -326,3 +326,11 @@ pub trait ToType<T> {
     where
         Self::Item: Into<T>;
 }
+
+/// Fill an array with equidistant values.
+pub trait Linspace<Item> {
+    /// Fill an array with equidistant points with start `a` and last value `b`.
+    ///
+    /// The function panics if `b <= a` or the array has less than two elements.
+    fn linspace(&mut self, a: Item, b: Item);
+}

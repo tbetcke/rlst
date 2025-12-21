@@ -2,37 +2,75 @@
 
 use std::ops::{DivAssign, MulAssign};
 
+use itertools::izip;
 use num::PrimInt;
 
 use crate::fftw::{FftPlanInplace, R2RPlanKind};
 use crate::{Array, fftw::R2RPlan};
-use crate::{DynArray, EvaluateObject};
+use crate::{
+    DynArray, EvaluateObject, MutableArrayImpl, Shape, UnsafeRandomAccessByValue, ValueArrayImpl,
+};
 
 /// Interface to tools for working with Chebychev expansions
-pub trait ChebychevCoefficientsToData<const NDIM: usize> {
-    /// The associated item type
-    type Item;
+pub trait ChebychevCoefficientsToData<Item, const NDIM: usize> {
     /// Compute Chebychev coefficients from values at Chebychev points
-    fn chebychev_coeffs_from_data_first_kind(&self) -> DynArray<Self::Item, NDIM>;
+    fn chebychev_coeffs_from_data_second_kind(&self) -> DynArray<Item, NDIM>;
     /// Compute data at Chebychev points from series coefficients
-    fn chebychev_data_from_coeffs_first_kind(&self) -> DynArray<Self::Item, NDIM>;
+    fn chebychev_data_from_coeffs_second_kind(&self) -> DynArray<Item, NDIM>;
 }
 
-pub trait EvaluateChebychevCoefficients<const NDIM: usize> {
-    type Item;
-
+/// Evaluation of Chebychev Coefficients
+pub trait EvaluateChebychevCoefficients<Item, const NDIM: usize> {
     /// Evaluate a 1d array assuming that its entries are Chebychev coefficients
-    fn evaluate_chebychev_series_1d<ArrayImpl>(
-        eval_points: &Array<ArrayImpl, 1>,
-    ) -> DynArray<Self::Item, NDIM>;
+    ///
+    /// The implementation uses the [Clenshaw algorithm](https://en.wikipedia.org/wiki/Clenshaw_algorithm).
+    fn evaluate_chebychev_series_1d_second_kind<ArrayImplPoints, ArrayImplResult>(
+        &self,
+        eval_points: &Array<ArrayImplPoints, NDIM>,
+        result: &mut Array<ArrayImplResult, NDIM>,
+    ) where
+        ArrayImplPoints: ValueArrayImpl<Item, NDIM>,
+        ArrayImplResult: MutableArrayImpl<Item, NDIM>;
 }
 
-impl<ArrayImpl, const NDIM: usize> ChebychevCoefficientsToData<NDIM> for Array<ArrayImpl, NDIM>
+impl<ArrayImpl> EvaluateChebychevCoefficients<f64, 1> for Array<ArrayImpl, 1>
+where
+    ArrayImpl: ValueArrayImpl<f64, 1>,
+{
+    fn evaluate_chebychev_series_1d_second_kind<ArrayImplPoints, ArrayImplResult>(
+        &self,
+        eval_points: &Array<ArrayImplPoints, 1>,
+        result: &mut Array<ArrayImplResult, 1>,
+    ) where
+        ArrayImplPoints: ValueArrayImpl<f64, 1>,
+        ArrayImplResult: MutableArrayImpl<f64, 1>,
+    {
+        // Make sure that the arrays make sense
+        assert!(!self.is_empty());
+        assert_eq!(eval_points.len(), result.len());
+
+        // The degree of the Chebychev expansion
+        let n = self.len() - 1;
+        let mut bkp1 = f64::default();
+        let mut bkp2 = f64::default();
+        let a0 = self.get_value([0]).unwrap();
+
+        for (x, r) in izip!(eval_points.iter_value(), result.iter_mut()) {
+            // We only do the coefficients a_n up to a_1.
+            // The coefficient a_0 is treated separately
+            for cheb_coeff in self.r().reverse_axis(0).iter_value().take(n) {
+                (bkp1, bkp2) = (cheb_coeff + 2.0 * x * bkp1 - bkp2, bkp1);
+            }
+            *r = a0 + x * bkp1 - bkp2;
+        }
+    }
+}
+
+impl<ArrayImpl, const NDIM: usize> ChebychevCoefficientsToData<f64, NDIM> for Array<ArrayImpl, NDIM>
 where
     Array<ArrayImpl, NDIM>: EvaluateObject<Output = DynArray<f64, NDIM>>,
 {
-    type Item = f64;
-    fn chebychev_coeffs_from_data_first_kind(&self) -> DynArray<Self::Item, NDIM> {
+    fn chebychev_coeffs_from_data_second_kind(&self) -> DynArray<f64, NDIM> {
         if NDIM > 3 {
             unimplemented!();
         }
@@ -92,7 +130,7 @@ where
         result
     }
 
-    fn chebychev_data_from_coeffs_first_kind(&self) -> DynArray<Self::Item, NDIM> {
+    fn chebychev_data_from_coeffs_second_kind(&self) -> DynArray<f64, NDIM> {
         if NDIM > 3 {
             unimplemented!();
         }
@@ -153,6 +191,7 @@ where
 #[cfg(test)]
 mod test {
     use crate::{
+        Linspace,
         dense::tools::PrettyPrint,
         interpolation::{Kind, chebychev_points},
     };
@@ -169,9 +208,9 @@ mod test {
 
         let data = 2.0_f64 * points.r() * points.r() + points.r();
 
-        let coeffs = data.chebychev_coeffs_from_data_first_kind();
+        let coeffs = data.chebychev_coeffs_from_data_second_kind();
 
-        let data_out = coeffs.chebychev_data_from_coeffs_first_kind();
+        let data_out = coeffs.chebychev_data_from_coeffs_second_kind();
 
         crate::assert_array_relative_eq!(coeffs, one, 1E-10);
         crate::assert_array_relative_eq!(data, data_out, 1E-10);
@@ -199,13 +238,13 @@ mod test {
         coeffs_expected[[1, 1]] = 1.0;
         coeffs_expected[[0, 2]] = 1.0;
 
-        let coeffs = data.chebychev_coeffs_from_data_first_kind();
+        let coeffs = data.chebychev_coeffs_from_data_second_kind();
 
         coeffs.pretty_print();
 
         crate::assert_array_relative_eq!(coeffs_expected, coeffs, 1E-10);
 
-        let data_out = coeffs.chebychev_data_from_coeffs_first_kind();
+        let data_out = coeffs.chebychev_data_from_coeffs_second_kind();
 
         crate::assert_array_abs_diff_eq!(data, data_out, 1E-10);
     }
@@ -236,11 +275,11 @@ mod test {
         coeffs_expected[[0, 2, 0]] = 1.0;
         coeffs_expected[[0, 0, 1]] = 3.0;
 
-        let coeffs = data.chebychev_coeffs_from_data_first_kind();
+        let coeffs = data.chebychev_coeffs_from_data_second_kind();
 
         crate::assert_array_relative_eq!(coeffs_expected, coeffs, 1E-10);
 
-        let data_out = coeffs.chebychev_data_from_coeffs_first_kind();
+        let data_out = coeffs.chebychev_data_from_coeffs_second_kind();
 
         crate::assert_array_abs_diff_eq!(data, data_out, 1E-10);
     }
@@ -252,9 +291,9 @@ mod test {
         let mut expected = DynArray::<f64, _>::from_shape([n]);
         expected.fill_from_seed_normally_distributed(0);
 
-        let coeffs = expected.chebychev_coeffs_from_data_first_kind();
+        let coeffs = expected.chebychev_coeffs_from_data_second_kind();
 
-        let actual = coeffs.chebychev_data_from_coeffs_first_kind();
+        let actual = coeffs.chebychev_data_from_coeffs_second_kind();
 
         crate::assert_array_relative_eq!(actual, expected, 1E-10);
     }
@@ -267,9 +306,9 @@ mod test {
         let mut expected = DynArray::<f64, _>::from_shape([m, n]);
         expected.fill_from_seed_normally_distributed(0);
 
-        let coeffs = expected.chebychev_coeffs_from_data_first_kind();
+        let coeffs = expected.chebychev_coeffs_from_data_second_kind();
 
-        let actual = coeffs.chebychev_data_from_coeffs_first_kind();
+        let actual = coeffs.chebychev_data_from_coeffs_second_kind();
 
         crate::assert_array_relative_eq!(actual, expected, 1E-10);
     }
@@ -283,10 +322,16 @@ mod test {
         let mut expected = DynArray::<f64, _>::from_shape([m, n, k]);
         expected.fill_from_seed_normally_distributed(0);
 
-        let coeffs = expected.chebychev_coeffs_from_data_first_kind();
+        let coeffs = expected.chebychev_coeffs_from_data_second_kind();
 
-        let actual = coeffs.chebychev_data_from_coeffs_first_kind();
+        let actual = coeffs.chebychev_data_from_coeffs_second_kind();
 
         crate::assert_array_relative_eq!(actual, expected, 1E-10);
+    }
+
+    #[test]
+    pub fn test_eval_cheb_series_1d_second_kind() {
+        let mut eval_points = DynArray::<f64, 1>::from_shape([5]);
+        eval_points.linspace(-1.0, 1.0);
     }
 }

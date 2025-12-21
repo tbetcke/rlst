@@ -31,9 +31,9 @@ use subview::ArraySubView;
 use crate::{
     AsMatrixApply, AsMultiIndex, AsOwnedRefType, AsOwnedRefTypeMut, DispatchEval,
     DispatchEvalRowMajor, EvaluateObject, EvaluateRowMajorArray, Gemm, IsGreaterByOne,
-    IsGreaterZero, IsSmallerThan, Max, MemoryLayout, NumberDifference, NumberType, RandScalar,
-    RandomAccessByValue, RlstError, RlstResult, RlstScalar, Stack, SubtractEqual, TransMode,
-    Unknown,
+    IsGreaterZero, IsSmallerThan, Linspace, Max, MemoryLayout, MutableArrayImpl, NumberDifference,
+    NumberType, RandScalar, RandomAccessByValue, RlstError, RlstResult, RlstScalar, Stack,
+    SubtractEqual, TransMode, Unknown,
     base_types::{c32, c64},
     dense::{
         array::multislice::Multislice,
@@ -1985,6 +1985,33 @@ where
         }
     }
 }
+
+macro_rules! impl_linspace_float {
+    ($dtype:ty) => {
+        impl<ArrayImpl> Linspace<$dtype> for Array<ArrayImpl, 1>
+        where
+            ArrayImpl: MutableArrayImpl<$dtype, 1>,
+        {
+            fn linspace(&mut self, a: $dtype, b: $dtype) {
+                let n = self.len() - 1;
+
+                assert!(b > a, "`linspace` requires `{b} = b > a = {a} ");
+                assert!(n > 1, "`linspace` requires `{n} = self.len() > 1");
+
+                let delta = (b - a) / (n as $dtype);
+
+                for (ind, elem) in self.iter_mut().enumerate().take(n) {
+                    *elem = a + delta * ind as $dtype;
+                }
+
+                self[[n]] = b;
+            }
+        }
+    };
+}
+
+impl_linspace_float!(f32);
+impl_linspace_float!(f64);
 
 #[cfg(test)]
 mod test {
