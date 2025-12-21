@@ -51,11 +51,13 @@ where
 
         // The degree of the Chebychev expansion
         let n = self.len() - 1;
-        let mut bkp1 = f64::default();
-        let mut bkp2 = f64::default();
+        let mut bkp1;
+        let mut bkp2;
         let a0 = self.get_value([0]).unwrap();
 
         for (x, r) in izip!(eval_points.iter_value(), result.iter_mut()) {
+            bkp1 = f64::default();
+            bkp2 = f64::default();
             // We only do the coefficients a_n up to a_1.
             // The coefficient a_0 is treated separately
             for cheb_coeff in self.r().reverse_axis(0).iter_value().take(n) {
@@ -331,7 +333,27 @@ mod test {
 
     #[test]
     pub fn test_eval_cheb_series_1d_second_kind() {
-        let mut eval_points = DynArray::<f64, 1>::from_shape([5]);
+        let n = 3;
+        let m = 11;
+        let mut eval_points = DynArray::<f64, 1>::from_shape([m]);
         eval_points.linspace(-1.0, 1.0);
+
+        let mut coeffs = DynArray::<f64, 1>::from_shape([n]);
+
+        // This defines the polynomial p(x) = 5.0x^2 + 2x - 1.5
+
+        coeffs[[0]] = 1.0;
+        coeffs[[1]] = 2.0;
+        coeffs[[2]] = 2.5;
+
+        let mut result = DynArray::<f64, 1>::from_shape([m]);
+        coeffs.evaluate_chebychev_series_1d_second_kind(&eval_points, &mut result);
+
+        let mut expected = eval_points.eval();
+        expected
+            .iter_mut()
+            .for_each(|x| *x = 5.0 * *x * *x + 2.0 * *x - 1.5);
+
+        crate::assert_array_relative_eq!(result, expected, 1E-13);
     }
 }
