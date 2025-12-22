@@ -31,10 +31,12 @@ use subview::ArraySubView;
 use crate::{
     AsMatrixApply, AsMultiIndex, AsOwnedRefType, AsOwnedRefTypeMut, DispatchEval,
     DispatchEvalRowMajor, EvaluateObject, EvaluateRowMajorArray, Gemm, IsGreaterByOne,
-    IsGreaterZero, Max, MemoryLayout, NumberType, RandScalar, RandomAccessByValue, RlstError,
-    RlstResult, RlstScalar, Stack, TransMode, Unknown,
+    IsGreaterZero, IsSmallerThan, Max, MemoryLayout, NumberDifference, NumberType, RandScalar,
+    RandomAccessByValue, RlstError, RlstResult, RlstScalar, Stack, SubtractEqual, TransMode,
+    Unknown,
     base_types::{c32, c64},
     dense::{
+        array::multislice::Multislice,
         base_array::BaseArray,
         data_container::{
             AlignedVectorContainer, SliceContainer, SliceContainerMut, VectorContainer,
@@ -62,7 +64,9 @@ pub mod operations;
 pub mod operators;
 // pub mod rank1_array;
 pub mod flattened;
+pub mod multislice;
 pub mod reference;
+pub mod shared_array;
 pub mod slice;
 pub mod subview;
 
@@ -1461,6 +1465,24 @@ where
         NumberType<NDIM>: IsGreaterZero,
     {
         Array::new(ArraySlice::new(self, [axis, index]))
+    }
+
+    /// Create a multislice from a given array.
+    ///
+    /// A multislice works like [Array::slice] but allows the slicing along multiple dimensions at the same time.
+    /// The `axes` array determines which axes are fixed and the `indices` array determines the value
+    /// in each fixed axis. The dimension `SDIM` is the number of axes along which we slice. The parameter `NDIM`
+    /// is the number of dimensions after slicing.
+    pub fn multislice<const SDIM: usize, const NDIM: usize>(
+        self,
+        axes: [usize; SDIM],
+        indices: [usize; SDIM],
+    ) -> Array<Multislice<ArrayImpl, ADIM, SDIM, NDIM>, NDIM>
+    where
+        NumberType<SDIM>: IsSmallerThan<ADIM>,
+        NumberDifference<ADIM, SDIM>: SubtractEqual<NDIM>,
+    {
+        Array::new(Multislice::new(self, axes, indices))
     }
 }
 
