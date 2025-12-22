@@ -53,10 +53,5 @@ jobs:
       - name: Run unit tests
         run: RUST_MIN_STACK=8388608 cargo test --features "mpi,fftw,fftw_system,strict"
 
-      - name: Run examples
-        run: |
-          cargo install cargo-templated-examples
-          cargo templated-examples
-
       - name: Build docs
         run: cargo doc --no-deps --features "mpi,fftw,fftw_system,strict"

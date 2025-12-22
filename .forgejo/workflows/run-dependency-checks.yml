@@ -1,6 +1,6 @@
 name: 🧪 run-dependency-checks
 
-on: 
+on:
   workflow_dispatch:
   schedule:
   - cron: "1 0 * * FRI"
@@ -12,8 +12,6 @@ jobs:
     steps:
       - name: Install Rust
         uses: https://github.com/dtolnay/rust-toolchain@stable
-        with:
-          components: clippy, rustfmt
 
       - uses: actions/checkout@v6
         with:
@@ -23,4 +21,4 @@ jobs:
         run: cargo install cargo-upgrades
 
       - name: Check if dependencies are up-to-date
-        run: cargo upgrades 
+        run: cargo upgrades
