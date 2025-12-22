@@ -8,7 +8,8 @@ use num::PrimInt;
 use crate::fftw::{FftPlanInplace, R2RPlanKind};
 use crate::{Array, fftw::R2RPlan};
 use crate::{
-    DynArray, EvaluateObject, MutableArrayImpl, Shape, UnsafeRandomAccessByValue, ValueArrayImpl,
+    DynArray, EvaluateObject, EvaluateRowMajorArray, MutableArrayImpl, Shape,
+    UnsafeRandomAccessByValue, ValueArrayImpl,
 };
 
 /// Interface to tools for working with Chebychev expansions
@@ -19,25 +20,68 @@ pub trait ChebychevCoefficientsToData<Item, const NDIM: usize> {
     fn chebychev_data_from_coeffs_second_kind(&self) -> DynArray<Item, NDIM>;
 }
 
-/// Evaluation of Chebychev Coefficients
-pub trait EvaluateChebychevCoefficients<Item, const NDIM: usize> {
+/// Evaluation of Chebychev Coefficients in one dimension
+pub trait EvaluateChebychevCoefficients1d<Item> {
     /// Evaluate a 1d array assuming that its entries are Chebychev coefficients
     ///
     /// The implementation uses the [Clenshaw algorithm](https://en.wikipedia.org/wiki/Clenshaw_algorithm).
-    fn evaluate_chebychev_series_1d_second_kind<ArrayImplPoints, ArrayImplResult>(
+    fn evaluate_chebychev_series_second_kind<ArrayImplPoints, ArrayImplResult>(
         &self,
-        eval_points: &Array<ArrayImplPoints, NDIM>,
-        result: &mut Array<ArrayImplResult, NDIM>,
+        eval_points: &Array<ArrayImplPoints, 1>,
+        result: &mut Array<ArrayImplResult, 1>,
     ) where
-        ArrayImplPoints: ValueArrayImpl<Item, NDIM>,
-        ArrayImplResult: MutableArrayImpl<Item, NDIM>;
+        ArrayImplPoints: ValueArrayImpl<Item, 1>,
+        ArrayImplResult: MutableArrayImpl<Item, 1>;
 }
 
-impl<ArrayImpl> EvaluateChebychevCoefficients<f64, 1> for Array<ArrayImpl, 1>
+/// Evaluation of Chebychev Coefficients in two dimensions
+pub trait EvaluateChebychevCoefficients2d<Item> {
+    /// Evaluate a 2d array assuming that its entries are Chebychev coefficients
+    ///
+    /// The implementation uses the [Clenshaw algorithm](https://en.wikipedia.org/wiki/Clenshaw_algorithm).
+    fn tensor_evaluate_chebychev_series_second_kind<
+        ArrayImplPointsX,
+        ArrayImplPointsY,
+        ArrayImplResult,
+    >(
+        &self,
+        eval_points_x: &Array<ArrayImplPointsX, 1>,
+        eval_points_y: &Array<ArrayImplPointsY, 1>,
+        result: &mut Array<ArrayImplResult, 2>,
+    ) where
+        ArrayImplPointsX: ValueArrayImpl<Item, 1>,
+        ArrayImplPointsY: ValueArrayImpl<Item, 1>,
+        ArrayImplResult: MutableArrayImpl<Item, 2>;
+}
+
+/// Evaluation of Chebychev coefficients in three dimensions
+pub trait EvaluateChebychevCoefficients3d<Item> {
+    /// Evaluate a 3d array assuming that its entries are Chebychev coefficients
+    ///
+    /// The implementation uses the [Clenshaw algorithm](https://en.wikipedia.org/wiki/Clenshaw_algorithm).
+    fn tensor_evaluate_chebychev_series_second_kind<
+        ArrayImplPointsX,
+        ArrayImplPointsY,
+        ArrayImplPointsZ,
+        ArrayImplResult,
+    >(
+        &self,
+        eval_points_x: &Array<ArrayImplPointsX, 1>,
+        eval_points_y: &Array<ArrayImplPointsY, 1>,
+        eval_points_z: &Array<ArrayImplPointsZ, 1>,
+        result: &mut Array<ArrayImplResult, 3>,
+    ) where
+        ArrayImplPointsX: ValueArrayImpl<Item, 1>,
+        ArrayImplPointsY: ValueArrayImpl<Item, 1>,
+        ArrayImplPointsZ: ValueArrayImpl<Item, 1>,
+        ArrayImplResult: MutableArrayImpl<Item, 3>;
+}
+
+impl<ArrayImpl> EvaluateChebychevCoefficients1d<f64> for Array<ArrayImpl, 1>
 where
     ArrayImpl: ValueArrayImpl<f64, 1>,
 {
-    fn evaluate_chebychev_series_1d_second_kind<ArrayImplPoints, ArrayImplResult>(
+    fn evaluate_chebychev_series_second_kind<ArrayImplPoints, ArrayImplResult>(
         &self,
         eval_points: &Array<ArrayImplPoints, 1>,
         result: &mut Array<ArrayImplResult, 1>,
@@ -64,6 +108,53 @@ where
                 (bkp1, bkp2) = (cheb_coeff + 2.0 * x * bkp1 - bkp2, bkp1);
             }
             *r = a0 + x * bkp1 - bkp2;
+        }
+    }
+}
+
+impl<ArrayImpl> EvaluateChebychevCoefficients2d<f64> for Array<ArrayImpl, 2>
+where
+    ArrayImpl: ValueArrayImpl<f64, 2>,
+{
+    fn tensor_evaluate_chebychev_series_second_kind<
+        ArrayImplPointsX,
+        ArrayImplPointsY,
+        ArrayImplResult,
+    >(
+        &self,
+        eval_points_x: &Array<ArrayImplPointsX, 1>,
+        eval_points_y: &Array<ArrayImplPointsY, 1>,
+        result: &mut Array<ArrayImplResult, 2>,
+    ) where
+        ArrayImplPointsX: ValueArrayImpl<f64, 1>,
+        ArrayImplPointsY: ValueArrayImpl<f64, 1>,
+        ArrayImplResult: MutableArrayImpl<f64, 2>,
+    {
+        // Check that the dimensions are correct
+
+        let [mx, my] = result.shape();
+
+        let [_nx, ny] = self.shape();
+
+        assert_eq!(mx, eval_points_x.len());
+        assert_eq!(my, eval_points_y.len());
+
+        // We need to create a temporary matrix that holds the intermediate result
+        // of transforming along one direction.
+
+        let mut tmp = DynArray::<f64, 2>::from_shape([mx, ny]);
+
+        // Now iterate through the columns of the input matrix and evaluate each column into tmp
+
+        for (col_in, mut col_tmp) in izip!(self.col_iter(), tmp.col_iter_mut()) {
+            col_in.evaluate_chebychev_series_second_kind(eval_points_x, &mut col_tmp);
+        }
+
+        // And now we iterate through the rows and evaluate along y to get the result for each row.
+        // This is stored in the output array.
+
+        for (row_tmp, mut row_res) in izip!(tmp.row_iter(), result.row_iter_mut()) {
+            row_tmp.evaluate_chebychev_series_second_kind(eval_points_y, &mut row_res);
         }
     }
 }
@@ -347,7 +438,7 @@ mod test {
         coeffs[[2]] = 2.5;
 
         let mut result = DynArray::<f64, 1>::from_shape([m]);
-        coeffs.evaluate_chebychev_series_1d_second_kind(&eval_points, &mut result);
+        coeffs.evaluate_chebychev_series_second_kind(&eval_points, &mut result);
 
         let mut expected = eval_points.eval();
         expected
@@ -355,5 +446,20 @@ mod test {
             .for_each(|x| *x = 5.0 * *x * *x + 2.0 * *x - 1.5);
 
         crate::assert_array_relative_eq!(result, expected, 1E-13);
+    }
+
+    #[test]
+    pub fn test_eval_cheb_series2d_second_kind() {
+        let nx = 5;
+        let ny = 10;
+        let mx = 60;
+        let my = 70;
+
+        let mut eval_points_x = DynArray::<f64, 1>::from_shape([mx]);
+        let mut eval_points_y = DynArray::<f64, 1>::from_shape([my]);
+        eval_points_x.linspace(-1.0, 1.0);
+        eval_points_y.linspace(-1.0, 1.0);
+
+        let mut coffs = DynArray::<f64, 2>::from_shape([nx, ny]);
     }
 }

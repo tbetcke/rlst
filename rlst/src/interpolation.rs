@@ -72,8 +72,8 @@
 use itertools::izip;
 
 use crate::{
-    Array, DynArray, RlstScalar, Shape, UnsafeRandom1DAccessByValue, UnsafeRandom1DAccessMut,
-    UnsafeRandomAccessByValue, UnsafeRandomAccessMut,
+    Array, DynArray, MutableArrayImpl, RlstScalar, Shape, UnsafeRandom1DAccessByValue,
+    UnsafeRandom1DAccessMut, UnsafeRandomAccessByValue, UnsafeRandomAccessMut, ValueArrayImpl,
 };
 
 use num::{One, traits::FloatConst};
@@ -193,6 +193,7 @@ pub fn barycentric_chebychev_weights<T: RlstScalar>(kind: Kind, n: usize) -> Dyn
 /// - [barycentric_chebychev_weights]: Use an analytic formula to compute the weights for Chebychev points of the first or second kind.
 ///
 /// The output `result` is an array with the same length as the array `eval_points`.
+#[inline(always)]
 pub fn barycentric_evaluate_1d<
     Item,
     ArrayImplEvalPoints,
@@ -203,8 +204,8 @@ pub fn barycentric_evaluate_1d<
 >(
     eval_points: &Array<ArrayImplEvalPoints, 1>,
     interp_nodes: &Array<ArrayImplInterpNodes, 1>,
-    interp_values: &Array<ArrayImplInterpValues, 1>,
     interp_weights: &Array<ArrayImplInterpWeights, 1>,
+    interp_values: &Array<ArrayImplInterpValues, 1>,
     result: &mut Array<ArrayImplResult, 1>,
 ) where
     ArrayImplEvalPoints: UnsafeRandom1DAccessByValue<Item = Item::Real> + Shape<1>,
@@ -254,6 +255,98 @@ pub fn barycentric_evaluate_1d<
 
     for (index, &val_index) in exact.iter().enumerate().filter(|(_, v)| **v != -1) {
         *result.get_mut([index]).unwrap() = interp_values.get_value([val_index as usize]).unwrap();
+    }
+}
+
+/// Barycentric evaluation in two dimension.
+///
+/// Evaluate an interpolation polynomial on a tensor grid defined by points in the x and y directions.
+///
+/// # Arguments
+/// - `eval_points_x`: The coordinates of the points along the x-direction.
+/// - `eval_points_y`: The coordinates of the points along the y-direction.
+/// - `interp_nodes_x`: The interpolation nodes in the x-direction
+/// - `interp_nodes_y`: The interpolation nodes in the y-direction
+/// - `interp_values`: A `[interp_nodes_x.len(), interp_nodes_y.len()]` array of values at the tensor product of the interpolation nodes.
+///   The values of the interpolation polynomial at the nodes.
+/// - `interp_weights_x`: The interpolation weights in the x-direction.
+/// - `interp_weights_y`: The interpolation weights in the y-direction.
+///
+/// The following routines are provides to compute the interpolation weights.
+/// - [barycentric_weights]: Given an array of interpolation points directly compute the associated weights.
+/// - [barycentric_chebychev_weights]: Use an analytic formula to compute the weights for Chebychev points of the first or second kind.
+///
+/// The output `result` is an array of dimension `[eval_points_x.len(), eval_points_y.len()]` and contains the
+/// evaluation of the interpolation polynomial at the tensor grid defined by the direct product of `eval_points_x` and `eval_points_y`.
+#[allow(clippy::too_many_arguments)]
+#[inline(always)]
+pub fn tensor_barycentric_evaluate_2d<
+    Item,
+    ArrayImplEvalPointsX,
+    ArrayImplEvalPointsY,
+    ArrayImplInterpNodesX,
+    ArrayImplInterpNodesY,
+    ArrayImplInterpValues,
+    ArrayImplInterpWeightsX,
+    ArrayImplInterpWeightsY,
+    ArrayImplResult,
+>(
+    eval_points_x: &Array<ArrayImplEvalPointsX, 1>,
+    eval_points_y: &Array<ArrayImplEvalPointsY, 1>,
+    interp_nodes_x: &Array<ArrayImplInterpNodesX, 1>,
+    interp_nodes_y: &Array<ArrayImplInterpNodesY, 1>,
+    interp_weights_x: &Array<ArrayImplInterpWeightsX, 1>,
+    interp_weights_y: &Array<ArrayImplInterpWeightsY, 1>,
+    interp_values: &Array<ArrayImplInterpValues, 2>,
+    result: &mut Array<ArrayImplResult, 2>,
+) where
+    Item: RlstScalar,
+    ArrayImplEvalPointsX: ValueArrayImpl<Item::Real, 1>,
+    ArrayImplEvalPointsY: ValueArrayImpl<Item::Real, 1>,
+    ArrayImplInterpNodesX: ValueArrayImpl<Item::Real, 1>,
+    ArrayImplInterpNodesY: ValueArrayImpl<Item::Real, 1>,
+    ArrayImplInterpWeightsX: ValueArrayImpl<Item::Real, 1>,
+    ArrayImplInterpWeightsY: ValueArrayImpl<Item::Real, 1>,
+    ArrayImplInterpValues: ValueArrayImpl<Item, 2>,
+    ArrayImplResult: MutableArrayImpl<Item, 2>,
+{
+    // Make sure that the dimensions make sense
+
+    let [nx, ny] = interp_values.shape();
+    let mx = eval_points_x.len();
+    let my = eval_points_y.len();
+
+    assert_eq!(nx, interp_nodes_x.len());
+    assert_eq!(ny, interp_nodes_y.len());
+    assert_eq!(nx, interp_weights_x.len());
+    assert_eq!(ny, interp_weights_y.len());
+
+    assert_eq!([mx, my], result.shape());
+
+    // We first evaluate for yeach y-point along the x-direction.
+
+    let mut tmp = DynArray::<Item, 2>::from_shape([mx, ny]);
+
+    for (col_values, mut col_tmp) in izip!(interp_values.col_iter(), tmp.col_iter_mut()) {
+        barycentric_evaluate_1d(
+            eval_points_x,
+            interp_nodes_x,
+            interp_weights_x,
+            &col_values,
+            &mut col_tmp,
+        );
+    }
+
+    // Now we can evaluate tmp into result
+
+    for (row_tmp, mut row_result) in izip!(tmp.row_iter(), result.row_iter_mut()) {
+        barycentric_evaluate_1d(
+            eval_points_y,
+            interp_nodes_y,
+            interp_weights_y,
+            &row_tmp,
+            &mut row_result,
+        );
     }
 }
 
@@ -358,8 +451,8 @@ mod test {
         barycentric_evaluate_1d(
             &eval_points,
             &cheb_points,
-            &interp_values,
             &weights,
+            &interp_values,
             &mut eval_values,
         );
 
@@ -400,8 +493,8 @@ mod test {
         barycentric_evaluate_1d(
             &eval_points,
             &cheb_points,
-            &interp_values,
             &weights,
+            &interp_values,
             &mut eval_values,
         );
 
