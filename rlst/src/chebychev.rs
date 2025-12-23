@@ -101,7 +101,7 @@ pub trait DerivativeOfChebychevSeries2d<Item> {
     /// The parameter `order` determines how many derivatives are taken. `order=[0, 2]` means
     /// that the output has no derivative along the x-axis and two derivatives
     /// along the y-axis.
-    fn chebychev_derivative_second_kind(&mut self, order: usize);
+    fn chebychev_derivative_second_kind(&mut self, order: [usize; 2]);
 }
 
 /// Compute the series coefficients of the derivative of a three-dimensional Chebychev series
@@ -112,7 +112,7 @@ pub trait DerivativeOfChebychevSeries3d<Item> {
     /// The parameter `order` determines how many derivatives are taken. `order=[0, 2, 1]` means
     /// that the output has no derivative along the x-axis, two derivatives
     /// along the y-axis and one derivative along the z axis.
-    fn chebychev_derivative_second_kind(&mut self, order: usize);
+    fn chebychev_derivative_second_kind(&mut self, order: [usize; 3]);
 }
 
 impl<Item, ArrayImpl> DerivativeOfChebychevSeries1d<Item> for Array<ArrayImpl, 1>
@@ -123,6 +123,11 @@ where
     #[inline(always)]
     fn chebychev_derivative_second_kind(&mut self, order: usize) {
         let n = self.len();
+
+        // If the order is zero there is nothing to do
+        if order == 0 {
+            return;
+        }
 
         // We repeat the derivative loop `order` times
 
@@ -151,6 +156,51 @@ where
             // Finally, the zero coefficient.
 
             self[[0]] = bkp1 + half * dp2;
+        }
+    }
+}
+
+impl<Item, ArrayImpl> DerivativeOfChebychevSeries2d<Item> for Array<ArrayImpl, 2>
+where
+    Item: RlstScalar,
+    ArrayImpl: MutableArrayImpl<Item, 2>,
+{
+    fn chebychev_derivative_second_kind(&mut self, order: [usize; 2]) {
+        // We first compute the derivatives in the x-direction.
+        // The axes parameter `multislice` is 1 for this since we evaluate for each fixed y-value the derivative over all x-values
+
+        for (_, mut slice) in self.multislice_iter_mut::<1, 1>([1]) {
+            slice.chebychev_derivative_second_kind(order[0]);
+        }
+
+        // And now the derivatives in the y-direction
+        for (_, mut slice) in self.multislice_iter_mut::<1, 1>([0]) {
+            slice.chebychev_derivative_second_kind(order[1]);
+        }
+    }
+}
+
+impl<Item, ArrayImpl> DerivativeOfChebychevSeries3d<Item> for Array<ArrayImpl, 3>
+where
+    Item: RlstScalar,
+    ArrayImpl: MutableArrayImpl<Item, 3>,
+{
+    fn chebychev_derivative_second_kind(&mut self, order: [usize; 3]) {
+        // We first compute the derivatives in the x-direction.
+        // The axes parameter `multislice` is 1 for this since we evaluate for each fixed y-value the derivative over all x-values
+
+        for (_, mut slice) in self.multislice_iter_mut::<2, 1>([1, 2]) {
+            slice.chebychev_derivative_second_kind(order[0]);
+        }
+
+        // And now the derivatives in the y-direction
+        for (_, mut slice) in self.multislice_iter_mut::<2, 1>([0, 2]) {
+            slice.chebychev_derivative_second_kind(order[1]);
+        }
+
+        // And finally in the z direction
+        for (_, mut slice) in self.multislice_iter_mut::<2, 1>([0, 1]) {
+            slice.chebychev_derivative_second_kind(order[2]);
         }
     }
 }
