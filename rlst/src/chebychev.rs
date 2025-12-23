@@ -18,7 +18,10 @@ pub trait ChebychevCoefficientsToData<Item, const NDIM: usize> {
 }
 
 /// Evaluation of Chebychev Coefficients in one dimension
-pub trait EvaluateChebychevCoefficients1d<Item> {
+pub trait EvaluateChebychevCoefficients1d<Item>
+where
+    Item: RlstScalar,
+{
     /// Evaluate a 1d array assuming that its entries are Chebychev coefficients
     ///
     /// The implementation uses the [Clenshaw algorithm](https://en.wikipedia.org/wiki/Clenshaw_algorithm).
@@ -27,12 +30,15 @@ pub trait EvaluateChebychevCoefficients1d<Item> {
         eval_points: &Array<ArrayImplPoints, 1>,
         result: &mut Array<ArrayImplResult, 1>,
     ) where
-        ArrayImplPoints: ValueArrayImpl<Item, 1>,
+        ArrayImplPoints: ValueArrayImpl<Item::Real, 1>,
         ArrayImplResult: MutableArrayImpl<Item, 1>;
 }
 
 /// Evaluation of Chebychev Coefficients in two dimensions
-pub trait EvaluateChebychevCoefficients2d<Item> {
+pub trait EvaluateChebychevCoefficients2d<Item>
+where
+    Item: RlstScalar,
+{
     /// Evaluate a 2d array assuming that its entries are Chebychev coefficients
     ///
     /// The implementation uses the [Clenshaw algorithm](https://en.wikipedia.org/wiki/Clenshaw_algorithm).
@@ -46,13 +52,16 @@ pub trait EvaluateChebychevCoefficients2d<Item> {
         eval_points_y: &Array<ArrayImplPointsY, 1>,
         result: &mut Array<ArrayImplResult, 2>,
     ) where
-        ArrayImplPointsX: ValueArrayImpl<Item, 1>,
-        ArrayImplPointsY: ValueArrayImpl<Item, 1>,
+        ArrayImplPointsX: ValueArrayImpl<Item::Real, 1>,
+        ArrayImplPointsY: ValueArrayImpl<Item::Real, 1>,
         ArrayImplResult: MutableArrayImpl<Item, 2>;
 }
 
 /// Evaluation of Chebychev coefficients in three dimensions
-pub trait EvaluateChebychevCoefficients3d<Item> {
+pub trait EvaluateChebychevCoefficients3d<Item>
+where
+    Item: RlstScalar,
+{
     /// Evaluate a 3d array assuming that its entries are Chebychev coefficients
     ///
     /// The implementation uses the [Clenshaw algorithm](https://en.wikipedia.org/wiki/Clenshaw_algorithm).
@@ -68,9 +77,53 @@ pub trait EvaluateChebychevCoefficients3d<Item> {
         eval_points_z: &Array<ArrayImplPointsZ, 1>,
         result: &mut Array<ArrayImplResult, 3>,
     ) where
-        ArrayImplPointsX: ValueArrayImpl<Item, 1>,
-        ArrayImplPointsY: ValueArrayImpl<Item, 1>,
-        ArrayImplPointsZ: ValueArrayImpl<Item, 1>,
+        ArrayImplPointsX: ValueArrayImpl<Item::Real, 1>,
+        ArrayImplPointsY: ValueArrayImpl<Item::Real, 1>,
+        ArrayImplPointsZ: ValueArrayImpl<Item::Real, 1>,
+        ArrayImplResult: MutableArrayImpl<Item, 3>;
+}
+
+/// Compute the series coefficients of the derivative of a Chebychev series
+pub trait DerivativeOfChebychevSeries1d<Item> {
+    /// Compute the series coefficients of the derivative of a chebychev series.
+    ///
+    /// The coefficients of the derivative are stored in `result`.
+    /// Although the last Chebychev coefficient of the derivative is zero for practical reasons
+    /// `result` is required to be the same length as the input coefficient array.
+    /// The parameter `order` determines how many derivatives are taken. `order=1` corresponds
+    /// to the first derivative and `order=0` just copies the series coefficients into `result`.
+    fn chebychev_derivative<ArrayImplResult>(order: usize, result: &mut Array<ArrayImplResult, 1>)
+    where
+        ArrayImplResult: MutableArrayImpl<Item, 1>;
+}
+
+/// Compute the series coefficients of the derivative of a two-dimensional Chebychev series
+pub trait DerivativeOfChebychevSeries2d<Item> {
+    /// Compute the series coefficients of the derivative of a two dimensional Chebychev series.
+    ///
+    /// The coefficients of the derivative are stored in `result`.
+    /// Although the last Chebychev coefficient of the derivative is zero for practical reasons
+    /// `result` is required to be the same shape as the input coefficient array.
+    /// The parameter `order` determines how many derivatives are taken. `order=[0, 2]` means
+    /// that the output has no derivative along the x-axis and two derivatives
+    /// along the y-axis.
+    fn chebychev_derivative<ArrayImplResult>(order: usize, result: &mut Array<ArrayImplResult, 2>)
+    where
+        ArrayImplResult: MutableArrayImpl<Item, 2>;
+}
+
+/// Compute the series coefficients of the derivative of a three-dimensional Chebychev series
+pub trait DerivativeOfChebychevSeries3d<Item> {
+    /// Compute the series coefficients of the derivative of a three-dimensional Chebychev series.
+    ///
+    /// The coefficients of the derivative are stored in `result`.
+    /// Although the last Chebychev coefficient of the derivative is zero for practical reasons
+    /// `result` is required to be the same shape as the input coefficient array.
+    /// The parameter `order` determines how many derivatives are taken. `order=[0, 2, 1]` means
+    /// that the output has no derivative along the x-axis, two derivatives
+    /// along the y-axis and one derivative along the z axis.
+    fn chebychev_derivative<ArrayImplResult>(order: usize, result: &mut Array<ArrayImplResult, 3>)
+    where
         ArrayImplResult: MutableArrayImpl<Item, 3>;
 }
 
@@ -84,7 +137,7 @@ where
         eval_points: &Array<ArrayImplPoints, 1>,
         result: &mut Array<ArrayImplResult, 1>,
     ) where
-        ArrayImplPoints: ValueArrayImpl<Item, 1>,
+        ArrayImplPoints: ValueArrayImpl<Item::Real, 1>,
         ArrayImplResult: MutableArrayImpl<Item, 1>,
     {
         // Make sure that the arrays make sense
@@ -104,6 +157,7 @@ where
             bkp2 = Item::default();
             // We only do the coefficients a_n up to a_1.
             // The coefficient a_0 is treated separately
+            let x = Item::from_real(x);
             for cheb_coeff in self.r().reverse_axis(0).iter_value().take(n) {
                 (bkp1, bkp2) = (cheb_coeff + two * x * bkp1 - bkp2, bkp1);
             }
@@ -127,8 +181,8 @@ where
         eval_points_y: &Array<ArrayImplPointsY, 1>,
         result: &mut Array<ArrayImplResult, 2>,
     ) where
-        ArrayImplPointsX: ValueArrayImpl<Item, 1>,
-        ArrayImplPointsY: ValueArrayImpl<Item, 1>,
+        ArrayImplPointsX: ValueArrayImpl<Item::Real, 1>,
+        ArrayImplPointsY: ValueArrayImpl<Item::Real, 1>,
         ArrayImplResult: MutableArrayImpl<Item, 2>,
     {
         // Check that the dimensions are correct
@@ -177,9 +231,9 @@ where
         eval_points_z: &Array<ArrayImplPointsZ, 1>,
         result: &mut Array<ArrayImplResult, 3>,
     ) where
-        ArrayImplPointsX: ValueArrayImpl<Item, 1>,
-        ArrayImplPointsY: ValueArrayImpl<Item, 1>,
-        ArrayImplPointsZ: ValueArrayImpl<Item, 1>,
+        ArrayImplPointsX: ValueArrayImpl<Item::Real, 1>,
+        ArrayImplPointsY: ValueArrayImpl<Item::Real, 1>,
+        ArrayImplPointsZ: ValueArrayImpl<Item::Real, 1>,
         ArrayImplResult: MutableArrayImpl<Item, 3>,
     {
         // Check that the dimensions are correct

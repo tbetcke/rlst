@@ -86,7 +86,7 @@ pub enum Kind {
     Second,
 }
 
-/// Return the n Chebychev points of type `kind` in [-1, 1].
+/// Return the n + 1 Chebychev points of type `kind` in [-1, 1].
 ///
 /// - The Chebychev points are returned in descending order.
 /// - Chebychev points of the first kind include the end points. Chebychev points of the second kind don't.
@@ -146,7 +146,8 @@ pub fn barycentric_weights<
     result
 }
 
-/// Return the barycentric weights required for barycentric interpolation
+/// Return the n + 1 barycentric weights required for barycentric interpolation on Chebychev points of order n
+///
 pub fn barycentric_chebychev_weights<T: RlstScalar>(kind: Kind, n: usize) -> DynArray<T, 1> {
     let mut output = DynArray::<T, 1>::from_shape([n]);
     match kind {
@@ -549,7 +550,7 @@ mod test {
     }
 
     #[test]
-    fn test_barycentric_interp_with_barycentric_first_kind_1d() {
+    fn test_barycentric_interp_with_barycentric_first_kind() {
         let n = 20;
         let m = 1000;
 
