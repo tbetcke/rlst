@@ -85,46 +85,74 @@ where
 
 /// Compute the series coefficients of the derivative of a Chebychev series
 pub trait DerivativeOfChebychevSeries1d<Item> {
-    /// Compute the series coefficients of the derivative of a chebychev series.
+    /// Compute the series coefficients of the derivative of a chebychev series of the second kind.
     ///
-    /// The coefficients of the derivative are stored in `result`.
-    /// Although the last Chebychev coefficient of the derivative is zero for practical reasons
-    /// `result` is required to be the same length as the input coefficient array.
+    /// The coefficients of the derivative overwrite the original array.
     /// The parameter `order` determines how many derivatives are taken. `order=1` corresponds
     /// to the first derivative and `order=0` just copies the series coefficients into `result`.
-    fn chebychev_derivative<ArrayImplResult>(order: usize, result: &mut Array<ArrayImplResult, 1>)
-    where
-        ArrayImplResult: MutableArrayImpl<Item, 1>;
+    fn chebychev_derivative_second_kind(&mut self, order: usize);
 }
 
 /// Compute the series coefficients of the derivative of a two-dimensional Chebychev series
 pub trait DerivativeOfChebychevSeries2d<Item> {
-    /// Compute the series coefficients of the derivative of a two dimensional Chebychev series.
+    /// Compute the series coefficients of the derivative of a two dimensional Chebychev series of the second kind.
     ///
-    /// The coefficients of the derivative are stored in `result`.
-    /// Although the last Chebychev coefficient of the derivative is zero for practical reasons
-    /// `result` is required to be the same shape as the input coefficient array.
+    /// The coefficients of the derivative overwrite the original array.
     /// The parameter `order` determines how many derivatives are taken. `order=[0, 2]` means
     /// that the output has no derivative along the x-axis and two derivatives
     /// along the y-axis.
-    fn chebychev_derivative<ArrayImplResult>(order: usize, result: &mut Array<ArrayImplResult, 2>)
-    where
-        ArrayImplResult: MutableArrayImpl<Item, 2>;
+    fn chebychev_derivative_second_kind(&mut self, order: usize);
 }
 
 /// Compute the series coefficients of the derivative of a three-dimensional Chebychev series
 pub trait DerivativeOfChebychevSeries3d<Item> {
-    /// Compute the series coefficients of the derivative of a three-dimensional Chebychev series.
+    /// Compute the series coefficients of the derivative of a three-dimensional Chebychev series of the second kind.
     ///
-    /// The coefficients of the derivative are stored in `result`.
-    /// Although the last Chebychev coefficient of the derivative is zero for practical reasons
-    /// `result` is required to be the same shape as the input coefficient array.
+    /// The coefficients of the derivative overwrite the original array.
     /// The parameter `order` determines how many derivatives are taken. `order=[0, 2, 1]` means
     /// that the output has no derivative along the x-axis, two derivatives
     /// along the y-axis and one derivative along the z axis.
-    fn chebychev_derivative<ArrayImplResult>(order: usize, result: &mut Array<ArrayImplResult, 3>)
-    where
-        ArrayImplResult: MutableArrayImpl<Item, 3>;
+    fn chebychev_derivative_second_kind(&mut self, order: usize);
+}
+
+impl<Item, ArrayImpl> DerivativeOfChebychevSeries1d<Item> for Array<ArrayImpl, 1>
+where
+    Item: RlstScalar,
+    ArrayImpl: MutableArrayImpl<Item, 1>,
+{
+    #[inline(always)]
+    fn chebychev_derivative_second_kind(&mut self, order: usize) {
+        let n = self.len();
+
+        // We repeat the derivative loop `order` times
+
+        for _ in 0..order {
+            let mut bkp1 = Item::default(); // The series element k + 1;
+            let mut dp1 = Item::default(); // The cofficient d_{k+1} of the derivative series.
+            let mut dp2 = Item::default(); // The coefficient d_{k+2} of the derivative series.
+            let two = Item::from_f64(2.0).unwrap();
+            let half = two.recip();
+
+            for (index, d) in self
+                .r_mut()
+                .reverse_axis(0)
+                .iter_mut()
+                .take(n - 1)
+                .enumerate()
+            {
+                // The coefficients up to 1
+                let kp1 = Item::from_usize(n - index).unwrap();
+                let tmp = *d;
+                *d = dp2 + two * kp1 * bkp1;
+                bkp1 = tmp;
+                (dp1, dp2) = (*d, dp1); // We need this in the next iteration
+            }
+
+            // Finally, the zero coefficient.
+
+            self[[0]] = bkp1 + half * dp2;
+        }
+    }
 }
 
 impl<Item, ArrayImpl> EvaluateChebychevCoefficients1d<Item> for Array<ArrayImpl, 1>
@@ -679,5 +707,49 @@ mod test {
         );
 
         assert_array_relative_eq!(actual, expected, 1E-10);
+    }
+
+    #[test]
+    fn test_derivative_1d() {
+        // We simple the sine function from -1 to 1, compute the coefficients, take the derivative
+        // and transform back. The result is compared with the cosine function.
+
+        let n = 20; // Order of the Chebychev expansion
+
+        let points = chebychev_points::<f64>(Kind::Second, n);
+
+        // We fill the data array
+        let mut values = points.eval();
+        values.iter_mut().for_each(|elem| *elem = elem.sin());
+
+        // and the array of expected values.
+        let mut expected = points.eval();
+        expected.iter_mut().for_each(|elem| *elem = elem.cos());
+
+        // We compute the coefficients of the expansion
+        let coeffs = values.chebychev_coeffs_from_data_second_kind();
+
+        // Now compute the derivative of the coefficients
+        let mut deriv = coeffs.eval();
+        deriv.chebychev_derivative_second_kind(1);
+
+        // We transform back
+        let values_deriv = deriv.chebychev_data_from_coeffs_second_kind();
+
+        // We compare with the sine of the original values.
+
+        crate::assert_array_relative_eq!(values_deriv, expected, 1E-10);
+
+        // Now check the second derivative
+        let mut deriv_2 = coeffs.eval();
+        deriv_2.chebychev_derivative_second_kind(2);
+
+        let values_deriv_2 = deriv_2.chebychev_data_from_coeffs_second_kind();
+
+        // The result should be close to -sin(x)
+        let mut expected = points.eval();
+        expected.iter_mut().for_each(|elem| *elem = -elem.sin());
+
+        crate::assert_array_relative_eq!(values_deriv_2, expected, 1E-10);
     }
 }
