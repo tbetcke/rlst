@@ -1,7 +1,7 @@
 //! Various iterator implementations.
 
 use std::marker::PhantomData;
-use std::ops::{Add, Sub};
+use std::ops::Add;
 
 use itertools::Itertools;
 use typenum::{Const, NonZero, PInt, ToUInt, U, Unsigned};
@@ -9,19 +9,13 @@ use typenum::{Const, NonZero, PInt, ToUInt, U, Unsigned};
 use crate::dense::array::multislice::Multislice;
 use crate::dense::array::reference::ArrayRef;
 use crate::dense::array::{Array, Shape};
-use crate::dense::layout::{
-    check_multi_index_in_bounds, col_major_stride_from_shape, convert_1d_nd_from_shape,
-    convert_nd_raw,
-};
+use crate::dense::layout::{col_major_stride_from_shape, convert_1d_nd_from_shape, convert_nd_raw};
 use crate::traits::accessors::{
     UnsafeRandom1DAccessByValue, UnsafeRandom1DAccessMut, UnsafeRandomAccessByValue,
     UnsafeRandomAccessMut,
 };
 use crate::traits::{base_operations::BaseItem, iterators::AsMultiIndex};
-use crate::{
-    IsSmallerThan, MutableArrayImpl, NumberType, UnsafeRandom1DAccessByRef,
-    UnsafeRandomAccessByRef, ValueArrayImpl,
-};
+use crate::{IsSmallerThan, NumberType, UnsafeRandom1DAccessByRef, UnsafeRandomAccessByRef};
 
 use super::reference::{self, ArrayRefMut};
 use super::slice::ArraySlice;

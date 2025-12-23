@@ -26,7 +26,7 @@ use typenum::{Const, NonZero, PInt, ToUInt, U, Unsigned};
 use crate::base_types::{c32, c64};
 
 use crate::dense::array::iterators::{MultisliceIterator, MultisliceIteratorMut};
-use crate::{Linspace, MutableArrayImpl, ValueArrayImpl};
+use crate::{Linspace, MutableArrayImpl};
 
 use paste::paste;
 use rand::{Rng, SeedableRng};

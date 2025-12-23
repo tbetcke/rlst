@@ -12,5 +12,6 @@ pub trait IsSmallerThan<const N: usize> {}
 
 /// D is the result of a difference
 pub trait SubtractEqual<const D: usize> {
+    /// The Output value of the subtraction
     const OUTPUT: usize;
 }

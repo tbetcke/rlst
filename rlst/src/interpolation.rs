@@ -549,7 +549,7 @@ mod test {
     }
 
     #[test]
-    fn test_barycentric_interp_with_barycentric_first_kind() {
+    fn test_barycentric_interp_with_barycentric_first_kind_1d() {
         let n = 20;
         let m = 1000;
 

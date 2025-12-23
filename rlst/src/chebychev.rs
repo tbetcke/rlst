@@ -7,10 +7,7 @@ use num::PrimInt;
 
 use crate::fftw::{FftPlanInplace, R2RPlanKind};
 use crate::{Array, fftw::R2RPlan};
-use crate::{
-    DynArray, EvaluateObject, EvaluateRowMajorArray, MutableArrayImpl, RlstScalar, Shape,
-    UnsafeRandomAccessByValue, ValueArrayImpl,
-};
+use crate::{DynArray, EvaluateObject, MutableArrayImpl, RlstScalar, ValueArrayImpl};
 
 /// Interface to tools for working with Chebychev expansions
 pub trait ChebychevCoefficientsToData<Item, const NDIM: usize> {
@@ -163,6 +160,71 @@ where
     }
 }
 
+impl<Item, ArrayImpl> EvaluateChebychevCoefficients3d<Item> for Array<ArrayImpl, 3>
+where
+    Item: RlstScalar,
+    ArrayImpl: ValueArrayImpl<Item, 3>,
+{
+    fn tensor_evaluate_chebychev_series_second_kind<
+        ArrayImplPointsX,
+        ArrayImplPointsY,
+        ArrayImplPointsZ,
+        ArrayImplResult,
+    >(
+        &self,
+        eval_points_x: &Array<ArrayImplPointsX, 1>,
+        eval_points_y: &Array<ArrayImplPointsY, 1>,
+        eval_points_z: &Array<ArrayImplPointsZ, 1>,
+        result: &mut Array<ArrayImplResult, 3>,
+    ) where
+        ArrayImplPointsX: ValueArrayImpl<Item, 1>,
+        ArrayImplPointsY: ValueArrayImpl<Item, 1>,
+        ArrayImplPointsZ: ValueArrayImpl<Item, 1>,
+        ArrayImplResult: MutableArrayImpl<Item, 3>,
+    {
+        // Check that the dimensions are correct
+
+        let [mx, my, mz] = result.shape();
+
+        let [_nx, ny, nz] = self.shape();
+
+        assert_eq!(mx, eval_points_x.len());
+        assert_eq!(my, eval_points_y.len());
+        assert_eq!(mz, eval_points_z.len());
+
+        // We first evaluate along the x direction.
+
+        let mut tmp_x = DynArray::<Item, 3>::from_shape([mx, ny, nz]);
+
+        for (indices, slice) in self.r().multislice_iter::<_, 1>([1, 2]) {
+            slice.evaluate_chebychev_series_second_kind(
+                eval_points_x,
+                &mut tmp_x.r_mut().multislice([1, 2], indices),
+            );
+        }
+
+        // Now we evaluate along the y direction
+
+        let mut tmp_y = DynArray::<Item, 3>::from_shape([mx, my, nz]);
+
+        for (indices, slice) in tmp_x.r().multislice_iter::<_, 1>([0, 2]) {
+            slice.evaluate_chebychev_series_second_kind(
+                eval_points_y,
+                &mut tmp_y.r_mut().multislice([0, 2], indices),
+            );
+        }
+
+        // And now along the z direction
+
+        for (indices, slice) in tmp_y.r().multislice_iter::<_, 1>([0, 1]) {
+            slice.evaluate_chebychev_series_second_kind(
+                eval_points_z,
+                &mut result.r_mut().multislice([0, 1], indices),
+            );
+        }
+    }
+}
+
 impl<ArrayImpl, const NDIM: usize> ChebychevCoefficientsToData<f64, NDIM> for Array<ArrayImpl, NDIM>
 where
     Array<ArrayImpl, NDIM>: EvaluateObject<Output = DynArray<f64, NDIM>>,
@@ -292,6 +354,7 @@ mod test {
         dense::tools::PrettyPrint,
         interpolation::{
             Kind, barycentric_chebychev_weights, chebychev_points, tensor_barycentric_evaluate_2d,
+            tensor_barycentric_evaluate_3d,
         },
     };
 
@@ -501,6 +564,66 @@ mod test {
             &mut expected,
         );
 
-        assert_array_relative_eq!(actual, expected, 1E-5);
+        assert_array_relative_eq!(actual, expected, 1E-10);
+    }
+
+    #[test]
+    pub fn test_eval_cheb_series_3d_second_kind() {
+        let nx = 5;
+        let ny = 10;
+        let nz = 13;
+        let mx = 18;
+        let my = 19;
+        let mz = 14;
+
+        let mut eval_points_x = DynArray::<f64, 1>::from_shape([mx]);
+        let mut eval_points_y = DynArray::<f64, 1>::from_shape([my]);
+        let mut eval_points_z = DynArray::<f64, 1>::from_shape([mz]);
+        eval_points_x.linspace(-1.0, 1.0);
+        eval_points_y.linspace(-1.0, 1.0);
+        eval_points_z.linspace(-1.0, 1.0);
+
+        let mut coeffs = DynArray::<f64, 3>::from_shape([nx, ny, nz]);
+        coeffs.fill_from_seed_equally_distributed(0);
+
+        // We fill the coefficients with random values. We then compare the direct evaluation with
+        // the evaluation obtained by a DCT to physical space, followed by barycentric evaluation.
+
+        let mut actual = DynArray::<f64, 3>::from_shape([mx, my, mz]);
+        coeffs.tensor_evaluate_chebychev_series_second_kind(
+            &eval_points_x,
+            &eval_points_y,
+            &eval_points_z,
+            &mut actual,
+        );
+
+        // We now compute the same by doing a DFT followed by barycentric evaluation.
+
+        let data = coeffs.chebychev_data_from_coeffs_second_kind();
+
+        let mut expected = DynArray::<f64, 3>::from_shape([mx, my, mz]);
+
+        let cheb_points_x = chebychev_points(Kind::Second, nx);
+        let cheb_points_y = chebychev_points(Kind::Second, ny);
+        let cheb_points_z = chebychev_points(Kind::Second, nz);
+        let weights_x = barycentric_chebychev_weights::<f64>(Kind::Second, nx);
+        let weights_y = barycentric_chebychev_weights::<f64>(Kind::Second, ny);
+        let weights_z = barycentric_chebychev_weights::<f64>(Kind::Second, nz);
+
+        tensor_barycentric_evaluate_3d(
+            &eval_points_x,
+            &eval_points_y,
+            &eval_points_z,
+            &cheb_points_x,
+            &cheb_points_y,
+            &cheb_points_z,
+            &weights_x,
+            &weights_y,
+            &weights_z,
+            &data,
+            &mut expected,
+        );
+
+        assert_array_relative_eq!(actual, expected, 1E-10);
     }
 }
