@@ -8,7 +8,7 @@ use num::PrimInt;
 use crate::fftw::{FftPlanInplace, R2RPlanKind};
 use crate::{Array, fftw::R2RPlan};
 use crate::{
-    DynArray, EvaluateObject, EvaluateRowMajorArray, MutableArrayImpl, Shape,
+    DynArray, EvaluateObject, EvaluateRowMajorArray, MutableArrayImpl, RlstScalar, Shape,
     UnsafeRandomAccessByValue, ValueArrayImpl,
 };
 
@@ -77,17 +77,18 @@ pub trait EvaluateChebychevCoefficients3d<Item> {
         ArrayImplResult: MutableArrayImpl<Item, 3>;
 }
 
-impl<ArrayImpl> EvaluateChebychevCoefficients1d<f64> for Array<ArrayImpl, 1>
+impl<Item, ArrayImpl> EvaluateChebychevCoefficients1d<Item> for Array<ArrayImpl, 1>
 where
-    ArrayImpl: ValueArrayImpl<f64, 1>,
+    Item: RlstScalar,
+    ArrayImpl: ValueArrayImpl<Item, 1>,
 {
     fn evaluate_chebychev_series_second_kind<ArrayImplPoints, ArrayImplResult>(
         &self,
         eval_points: &Array<ArrayImplPoints, 1>,
         result: &mut Array<ArrayImplResult, 1>,
     ) where
-        ArrayImplPoints: ValueArrayImpl<f64, 1>,
-        ArrayImplResult: MutableArrayImpl<f64, 1>,
+        ArrayImplPoints: ValueArrayImpl<Item, 1>,
+        ArrayImplResult: MutableArrayImpl<Item, 1>,
     {
         // Make sure that the arrays make sense
         assert!(!self.is_empty());
@@ -99,13 +100,15 @@ where
         let mut bkp2;
         let a0 = self.get_value([0]).unwrap();
 
+        let two = Item::from_f64(2.0).unwrap();
+
         for (x, r) in izip!(eval_points.iter_value(), result.iter_mut()) {
-            bkp1 = f64::default();
-            bkp2 = f64::default();
+            bkp1 = Item::default();
+            bkp2 = Item::default();
             // We only do the coefficients a_n up to a_1.
             // The coefficient a_0 is treated separately
             for cheb_coeff in self.r().reverse_axis(0).iter_value().take(n) {
-                (bkp1, bkp2) = (cheb_coeff + 2.0 * x * bkp1 - bkp2, bkp1);
+                (bkp1, bkp2) = (cheb_coeff + two * x * bkp1 - bkp2, bkp1);
             }
             *r = a0 + x * bkp1 - bkp2;
         }
@@ -284,9 +287,11 @@ where
 #[cfg(test)]
 mod test {
     use crate::{
-        Linspace,
+        Linspace, assert_array_relative_eq,
         dense::tools::PrettyPrint,
-        interpolation::{Kind, chebychev_points},
+        interpolation::{
+            Kind, barycentric_chebychev_weights, chebychev_points, tensor_barycentric_evaluate_2d,
+        },
     };
 
     use super::*;
@@ -449,7 +454,7 @@ mod test {
     }
 
     #[test]
-    pub fn test_eval_cheb_series2d_second_kind() {
+    pub fn test_eval_cheb_series_2d_second_kind() {
         let nx = 5;
         let ny = 10;
         let mx = 60;
@@ -460,6 +465,41 @@ mod test {
         eval_points_x.linspace(-1.0, 1.0);
         eval_points_y.linspace(-1.0, 1.0);
 
-        let mut coffs = DynArray::<f64, 2>::from_shape([nx, ny]);
+        let mut coeffs = DynArray::<f64, 2>::from_shape([nx, ny]);
+        coeffs.fill_from_seed_equally_distributed(0);
+
+        // We fill the coefficients with random values. We then compare the direct evaluation with
+        // the evaluation obtained by a DCT to physical space, followed by barycentric evaluation.
+
+        let mut actual = DynArray::<f64, 2>::from_shape([mx, my]);
+        coeffs.tensor_evaluate_chebychev_series_second_kind(
+            &eval_points_x,
+            &eval_points_y,
+            &mut actual,
+        );
+
+        // We now compute the same by doing a DFT followed by barycentric evaluation.
+
+        let data = coeffs.chebychev_data_from_coeffs_second_kind();
+
+        let mut expected = DynArray::<f64, 2>::from_shape([mx, my]);
+
+        let cheb_points_x = chebychev_points(Kind::Second, nx);
+        let cheb_points_y = chebychev_points(Kind::Second, ny);
+        let weights_x = barycentric_chebychev_weights::<f64>(Kind::Second, nx);
+        let weights_y = barycentric_chebychev_weights::<f64>(Kind::Second, ny);
+
+        tensor_barycentric_evaluate_2d(
+            &eval_points_x,
+            &eval_points_y,
+            &cheb_points_x,
+            &cheb_points_y,
+            &weights_x,
+            &weights_y,
+            &data,
+            &mut expected,
+        );
+
+        assert_array_relative_eq!(actual, expected, 1E-5);
     }
 }
