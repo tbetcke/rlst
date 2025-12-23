@@ -391,13 +391,13 @@ pub fn tensor_barycentric_evaluate_3d<
 >(
     eval_points_x: &Array<ArrayImplEvalPointsX, 1>,
     eval_points_y: &Array<ArrayImplEvalPointsY, 1>,
-    eval_points_z: &Array<ArrayImplEvalPointsY, 1>,
+    eval_points_z: &Array<ArrayImplEvalPointsZ, 1>,
     interp_nodes_x: &Array<ArrayImplInterpNodesX, 1>,
     interp_nodes_y: &Array<ArrayImplInterpNodesY, 1>,
-    interp_nodes_z: &Array<ArrayImplInterpNodesY, 1>,
+    interp_nodes_z: &Array<ArrayImplInterpNodesZ, 1>,
     interp_weights_x: &Array<ArrayImplInterpWeightsX, 1>,
     interp_weights_y: &Array<ArrayImplInterpWeightsY, 1>,
-    interp_weights_z: &Array<ArrayImplInterpWeightsY, 1>,
+    interp_weights_z: &Array<ArrayImplInterpWeightsZ, 1>,
     interp_values: &Array<ArrayImplInterpValues, 3>,
     result: &mut Array<ArrayImplResult, 3>,
 ) where
@@ -432,38 +432,44 @@ pub fn tensor_barycentric_evaluate_3d<
 
     // We first evaluate for each (y,z)-point along the x-direction.
 
-    let mut tmp = DynArray::<Item, 3>::from_shape([mx, ny, nz]);
+    let mut tmp_x = DynArray::<Item, 3>::from_shape([mx, ny, nz]);
 
-    // for (indices, slice) in interp_values.multislice_iter::<_, 1>([1, 2]) {
-    //     barycentric_evaluate_1d(
-    //         eval_points_x,
-    //         interp_nodes_x,
-    //         interp_weights_x,
+    for (indices, interp_slice) in interp_values.multislice_iter::<_, 1>([1, 2]) {
+        barycentric_evaluate_1d(
+            eval_points_x,
+            interp_nodes_x,
+            interp_weights_x,
+            &interp_slice,
+            &mut tmp_x.r_mut().multislice([1, 2], indices),
+        )
+    }
 
-    //     )
-    // }
+    // We now evaluate for each (x, z) value along the y-direction
 
-    // for (col_values, mut col_tmp) in izip!(interp_values.col_iter(), tmp.col_iter_mut()) {
-    //     barycentric_evaluate_1d(
-    //         eval_points_x,
-    //         interp_nodes_x,
-    //         interp_weights_x,
-    //         &col_values,
-    //         &mut col_tmp,
-    //     );
-    // }
+    let mut tmp_y = DynArray::<Item, 3>::from_shape([mx, my, nz]);
 
-    // // Now we can evaluate tmp into result
+    for (indices, interp_slice) in tmp_x.multislice_iter::<_, 1>([0, 2]) {
+        barycentric_evaluate_1d(
+            eval_points_y,
+            interp_nodes_y,
+            interp_weights_y,
+            &interp_slice,
+            &mut tmp_y.r_mut().multislice([0, 2], indices),
+        )
+    }
 
-    // for (row_tmp, mut row_result) in izip!(tmp.row_iter(), result.row_iter_mut()) {
-    //     barycentric_evaluate_1d(
-    //         eval_points_y,
-    //         interp_nodes_y,
-    //         interp_weights_y,
-    //         &row_tmp,
-    //         &mut row_result,
-    //     );
-    // }
+    // Finally, we evaluate for each (x, y) value along the z direction.
+    // The results are directly written into `result`
+
+    for (indices, interp_slice) in tmp_y.multislice_iter::<_, 1>([0, 1]) {
+        barycentric_evaluate_1d(
+            eval_points_z,
+            interp_nodes_z,
+            interp_weights_z,
+            &interp_slice,
+            &mut result.r_mut().multislice([0, 1], indices),
+        )
+    }
 }
 
 #[cfg(test)]
@@ -478,7 +484,7 @@ mod test {
         DynArray, assert_array_relative_eq,
         interpolation::{
             Kind, barycentric_chebychev_weights, barycentric_evaluate_1d, barycentric_weights,
-            chebychev_points, tensor_barycentric_evaluate_2d,
+            chebychev_points, tensor_barycentric_evaluate_2d, tensor_barycentric_evaluate_3d,
         },
         linspace,
     };
@@ -668,6 +674,67 @@ mod test {
             &cheb_y,
             &weights_x,
             &weights_y,
+            &values,
+            &mut result,
+        );
+
+        assert_array_relative_eq!(expected, result, 1E-10);
+    }
+
+    #[test]
+    fn test_barycentric_interp_with_barycentric_second_kind_3d() {
+        let nx = 20;
+        let ny = 25;
+        let nz = 30;
+
+        let mx = 50;
+        let my = 60;
+        let mz = 70;
+
+        let cheb_x = chebychev_points::<f64>(Kind::Second, nx);
+        let cheb_y = chebychev_points::<f64>(Kind::Second, ny);
+        let cheb_z = chebychev_points::<f64>(Kind::Second, nz);
+
+        let mut values = DynArray::<f64, 3>::from_shape([nx, ny, nz]);
+
+        for (xind, px) in cheb_x.iter_value().enumerate() {
+            for (yind, py) in cheb_y.iter_value().enumerate() {
+                for (zind, pz) in cheb_z.iter_value().enumerate() {
+                    values[[xind, yind, zind]] = f64::exp(2.0 * px + 3.0 * py + 4.0 * pz);
+                }
+            }
+        }
+
+        let eval_points_x = linspace!(f64, -1.0, 1.0, mx);
+        let eval_points_y = linspace!(f64, -1.0, 1.0, my);
+        let eval_points_z = linspace!(f64, -1.0, 1.0, mz);
+
+        let mut expected = DynArray::<f64, 3>::from_shape([mx, my, mz]);
+
+        for (xind, px) in eval_points_x.iter_value().enumerate() {
+            for (yind, py) in eval_points_y.iter_value().enumerate() {
+                for (zind, pz) in eval_points_z.iter_value().enumerate() {
+                    expected[[xind, yind, zind]] = f64::exp(2.0 * px + 3.0 * py + 4.0 * pz);
+                }
+            }
+        }
+
+        let weights_x = barycentric_chebychev_weights::<f64>(Kind::Second, nx);
+        let weights_y = barycentric_chebychev_weights::<f64>(Kind::Second, ny);
+        let weights_z = barycentric_chebychev_weights::<f64>(Kind::Second, nz);
+
+        let mut result = DynArray::<f64, 3>::from_shape([mx, my, mz]);
+
+        tensor_barycentric_evaluate_3d(
+            &eval_points_x,
+            &eval_points_y,
+            &eval_points_z,
+            &cheb_x,
+            &cheb_y,
+            &cheb_z,
+            &weights_x,
+            &weights_y,
+            &weights_z,
             &values,
             &mut result,
         );
