@@ -152,7 +152,7 @@ pub fn barycentric_chebychev_weights<T: RlstScalar>(kind: Kind, n: usize) -> Dyn
     match kind {
         Kind::First => {
             assert!(n > 0);
-            let indices = (0..n).rev();
+            let indices = 0..n;
             let mut pm_one = <T as One>::one();
             let pi = num::cast::<_, T>(f64::PI()).unwrap();
             let pi_div_two_n = pi / num::cast::<_, T>(2 * n).unwrap();
@@ -495,7 +495,7 @@ mod test {
 
         let points = chebychev_points::<f64>(Kind::First, n);
 
-        for (index, &value) in points.data().unwrap().iter().rev().enumerate() {
+        for (index, &value) in points.data().unwrap().iter().enumerate() {
             assert_relative_eq!(
                 value,
                 f64::cos((2 * index + 1) as f64 * (f64::PI()) / (2.0 * n as f64)),
@@ -510,7 +510,7 @@ mod test {
 
         let values = chebychev_points::<f64>(Kind::Second, n);
 
-        for (index, &value) in values.data().unwrap().iter().rev().enumerate() {
+        for (index, &value) in values.data().unwrap().iter().enumerate() {
             assert_relative_eq!(
                 value,
                 f64::cos((index) as f64 * (f64::PI()) / (n - 1) as f64),

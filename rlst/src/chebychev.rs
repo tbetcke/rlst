@@ -115,9 +115,10 @@ where
     }
 }
 
-impl<ArrayImpl> EvaluateChebychevCoefficients2d<f64> for Array<ArrayImpl, 2>
+impl<Item, ArrayImpl> EvaluateChebychevCoefficients2d<Item> for Array<ArrayImpl, 2>
 where
-    ArrayImpl: ValueArrayImpl<f64, 2>,
+    Item: RlstScalar,
+    ArrayImpl: ValueArrayImpl<Item, 2>,
 {
     fn tensor_evaluate_chebychev_series_second_kind<
         ArrayImplPointsX,
@@ -129,9 +130,9 @@ where
         eval_points_y: &Array<ArrayImplPointsY, 1>,
         result: &mut Array<ArrayImplResult, 2>,
     ) where
-        ArrayImplPointsX: ValueArrayImpl<f64, 1>,
-        ArrayImplPointsY: ValueArrayImpl<f64, 1>,
-        ArrayImplResult: MutableArrayImpl<f64, 2>,
+        ArrayImplPointsX: ValueArrayImpl<Item, 1>,
+        ArrayImplPointsY: ValueArrayImpl<Item, 1>,
+        ArrayImplResult: MutableArrayImpl<Item, 2>,
     {
         // Check that the dimensions are correct
 
@@ -145,7 +146,7 @@ where
         // We need to create a temporary matrix that holds the intermediate result
         // of transforming along one direction.
 
-        let mut tmp = DynArray::<f64, 2>::from_shape([mx, ny]);
+        let mut tmp = DynArray::<Item, 2>::from_shape([mx, ny]);
 
         // Now iterate through the columns of the input matrix and evaluate each column into tmp
 
