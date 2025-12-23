@@ -359,11 +359,12 @@ mod test {
     use rand_chacha::ChaCha8Rng;
 
     use crate::{
-        DynArray,
+        DynArray, assert_array_relative_eq,
         interpolation::{
             Kind, barycentric_chebychev_weights, barycentric_evaluate_1d, barycentric_weights,
-            chebychev_points,
+            chebychev_points, tensor_barycentric_evaluate_2d,
         },
+        linspace,
     };
 
     #[test]
@@ -468,7 +469,7 @@ mod test {
     }
 
     #[test]
-    fn test_barycentric_interp_with_barycentric_second_kind() {
+    fn test_barycentric_interp_with_barycentric_second_kind_1d() {
         let n = 20;
         let m = 1000;
 
@@ -507,5 +508,54 @@ mod test {
             .unwrap();
 
         assert!(max_error < 1E-9);
+    }
+
+    #[test]
+    fn test_barycentric_interp_with_barycentric_second_kind_2d() {
+        let nx = 20;
+        let ny = 25;
+
+        let mx = 50;
+        let my = 60;
+
+        let cheb_x = chebychev_points::<f64>(Kind::Second, nx);
+        let cheb_y = chebychev_points::<f64>(Kind::Second, ny);
+
+        let mut values = DynArray::<f64, 2>::from_shape([nx, ny]);
+
+        for (xind, px) in cheb_x.iter_value().enumerate() {
+            for (yind, py) in cheb_y.iter_value().enumerate() {
+                values[[xind, yind]] = f64::exp(px * py);
+            }
+        }
+
+        let eval_points_x = linspace!(f64, -1.0, 1.0, mx);
+        let eval_points_y = linspace!(f64, -1.0, 1.0, my);
+
+        let mut expected = DynArray::<f64, 2>::from_shape([mx, my]);
+
+        for (xind, px) in eval_points_x.iter_value().enumerate() {
+            for (yind, py) in eval_points_y.iter_value().enumerate() {
+                expected[[xind, yind]] = f64::exp(px * py);
+            }
+        }
+
+        let weights_x = barycentric_chebychev_weights::<f64>(Kind::Second, nx);
+        let weights_y = barycentric_chebychev_weights::<f64>(Kind::Second, ny);
+
+        let mut result = DynArray::<f64, 2>::from_shape([mx, my]);
+
+        tensor_barycentric_evaluate_2d(
+            &eval_points_x,
+            &eval_points_y,
+            &cheb_x,
+            &cheb_y,
+            &weights_x,
+            &weights_y,
+            &values,
+            &mut result,
+        );
+
+        assert_array_relative_eq!(expected, result, 1E-10);
     }
 }

@@ -19,6 +19,20 @@ macro_rules! dot {
 
 }
 
+/// Create an array of `n` equidistant points with first value `a` and second value `b`.
+///
+/// The invocation `let arr = linspace!(dtype, a, b, n)` creates an array of n equidistant
+/// points with start value `a` and final value `b`. `dtype` can be either `f32` or `f64`.
+#[macro_export]
+macro_rules! linspace {
+    ($dtype:ty, $a:expr, $b:expr, $n:expr) => {{
+        use $crate::traits::base_operations::Linspace;
+        let mut arr = $crate::dense::array::DynArray::<$dtype, 1>::from_shape([$n]);
+        arr.linspace($a, $b);
+        arr
+    }};
+}
+
 /// Create a new n-dimensional diagonal array from a list of diagonal entries.
 ///
 /// Call with `diag!(d)` where `d` is a one-dimensional array to obtain a two-dimensional array with `d` on the
