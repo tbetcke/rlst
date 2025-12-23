@@ -761,7 +761,7 @@ mod test {
 
     #[test]
     fn test_derivative_1d() {
-        // We simple the sine function from -1 to 1, compute the coefficients, take the derivative
+        // We sample the sine function from -1 to 1, compute the coefficients, take the derivative
         // and transform back. The result is compared with the cosine function.
 
         let n = 20; // Order of the Chebychev expansion
