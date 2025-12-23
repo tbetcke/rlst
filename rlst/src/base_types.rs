@@ -160,6 +160,7 @@ where
     NumberType<N>: IsSmallerThan<M>,
     PInt<U<D>>: Add<PInt<U<N>>, Output = PInt<U<M>>>,
 {
+    const OUTPUT: usize = D;
 }
 
 // the condition that M = N - 1

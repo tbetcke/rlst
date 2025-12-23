@@ -10,31 +10,6 @@ pub trait BaseItem {
     type Item: Copy + Default;
 }
 
-///  Define a type that holds a reference to the current object.
-///
-/// This is useful to avoid double definition of operations for
-/// references and owned types.
-pub trait AsOwnedRefType {
-    /// The reference type of the array.
-    type RefType<'a>
-    where
-        Self: 'a;
-
-    /// Return the reference type.
-    fn r(&self) -> Self::RefType<'_>;
-}
-
-/// Define a type that holds a mutable reference to the current object.
-pub trait AsOwnedRefTypeMut {
-    /// The mutable reference type of the array.
-    type RefTypeMut<'a>
-    where
-        Self: 'a;
-
-    /// Return the mutable reference type.
-    fn r_mut(&mut self) -> Self::RefTypeMut<'_>;
-}
-
 /// Allow data to be borrowed using runtime borrowing checks
 pub trait BorrowAtRuntime {
     /// The result of the borrow

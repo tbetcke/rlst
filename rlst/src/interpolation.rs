@@ -350,6 +350,122 @@ pub fn tensor_barycentric_evaluate_2d<
     }
 }
 
+/// Barycentric evaluation in three dimension.
+///
+/// Evaluate an interpolation polynomial on a tensor grid defined by points in the x, y and z directions.
+///
+/// # Arguments
+/// - `eval_points_x`: The coordinates of the points along the x-direction.
+/// - `eval_points_y`: The coordinates of the points along the y-direction.
+/// - `eval_points_z`: The coordinates of the points along the y-direction.
+/// - `interp_nodes_x`: The interpolation nodes in the x-direction
+/// - `interp_nodes_y`: The interpolation nodes in the y-direction
+/// - `interp_nodes_z`: The interpolation nodes in the y-direction
+/// - `interp_values`: A `[interp_nodes_x.len(), interp_nodes_y.len(), interp_nodes_z.len()]` array of values at the tensor product of the interpolation nodes.
+///   The values of the interpolation polynomial at the nodes.
+/// - `interp_weights_x`: The interpolation weights in the x-direction.
+/// - `interp_weights_y`: The interpolation weights in the y-direction.
+/// - `interp_weights_z`: The interpolation weights in the y-direction.
+///
+/// The following routines are provides to compute the interpolation weights.
+/// - [barycentric_weights]: Given an array of interpolation points directly compute the associated weights.
+/// - [barycentric_chebychev_weights]: Use an analytic formula to compute the weights for Chebychev points of the first or second kind.
+///
+/// The output `result` is an array of dimension `[eval_points_x.len(), eval_points_y.len(), eval_points_z.len()]` and contains the
+/// evaluation of the interpolation polynomial at the tensor grid defined by the direct product of `eval_points_x`, `eval_points_y` and `eval_points_z`.
+#[allow(clippy::too_many_arguments)]
+#[inline(always)]
+pub fn tensor_barycentric_evaluate_3d<
+    Item,
+    ArrayImplEvalPointsX,
+    ArrayImplEvalPointsY,
+    ArrayImplEvalPointsZ,
+    ArrayImplInterpNodesX,
+    ArrayImplInterpNodesY,
+    ArrayImplInterpNodesZ,
+    ArrayImplInterpValues,
+    ArrayImplInterpWeightsX,
+    ArrayImplInterpWeightsY,
+    ArrayImplInterpWeightsZ,
+    ArrayImplResult,
+>(
+    eval_points_x: &Array<ArrayImplEvalPointsX, 1>,
+    eval_points_y: &Array<ArrayImplEvalPointsY, 1>,
+    eval_points_z: &Array<ArrayImplEvalPointsY, 1>,
+    interp_nodes_x: &Array<ArrayImplInterpNodesX, 1>,
+    interp_nodes_y: &Array<ArrayImplInterpNodesY, 1>,
+    interp_nodes_z: &Array<ArrayImplInterpNodesY, 1>,
+    interp_weights_x: &Array<ArrayImplInterpWeightsX, 1>,
+    interp_weights_y: &Array<ArrayImplInterpWeightsY, 1>,
+    interp_weights_z: &Array<ArrayImplInterpWeightsY, 1>,
+    interp_values: &Array<ArrayImplInterpValues, 3>,
+    result: &mut Array<ArrayImplResult, 3>,
+) where
+    Item: RlstScalar,
+    ArrayImplEvalPointsX: ValueArrayImpl<Item::Real, 1>,
+    ArrayImplEvalPointsY: ValueArrayImpl<Item::Real, 1>,
+    ArrayImplEvalPointsZ: ValueArrayImpl<Item::Real, 1>,
+    ArrayImplInterpNodesX: ValueArrayImpl<Item::Real, 1>,
+    ArrayImplInterpNodesY: ValueArrayImpl<Item::Real, 1>,
+    ArrayImplInterpNodesZ: ValueArrayImpl<Item::Real, 1>,
+    ArrayImplInterpWeightsX: ValueArrayImpl<Item::Real, 1>,
+    ArrayImplInterpWeightsY: ValueArrayImpl<Item::Real, 1>,
+    ArrayImplInterpWeightsZ: ValueArrayImpl<Item::Real, 1>,
+    ArrayImplInterpValues: ValueArrayImpl<Item, 3>,
+    ArrayImplResult: MutableArrayImpl<Item, 3>,
+{
+    // Make sure that the dimensions make sense
+
+    let [nx, ny, nz] = interp_values.shape();
+    let mx = eval_points_x.len();
+    let my = eval_points_y.len();
+    let mz = eval_points_z.len();
+
+    assert_eq!(nx, interp_nodes_x.len());
+    assert_eq!(ny, interp_nodes_y.len());
+    assert_eq!(nz, interp_nodes_z.len());
+    assert_eq!(nx, interp_weights_x.len());
+    assert_eq!(ny, interp_weights_y.len());
+    assert_eq!(nz, interp_weights_z.len());
+
+    assert_eq!([mx, my, mz], result.shape());
+
+    // We first evaluate for each (y,z)-point along the x-direction.
+
+    let mut tmp = DynArray::<Item, 3>::from_shape([mx, ny, nz]);
+
+    // for (indices, slice) in interp_values.multislice_iter::<_, 1>([1, 2]) {
+    //     barycentric_evaluate_1d(
+    //         eval_points_x,
+    //         interp_nodes_x,
+    //         interp_weights_x,
+
+    //     )
+    // }
+
+    // for (col_values, mut col_tmp) in izip!(interp_values.col_iter(), tmp.col_iter_mut()) {
+    //     barycentric_evaluate_1d(
+    //         eval_points_x,
+    //         interp_nodes_x,
+    //         interp_weights_x,
+    //         &col_values,
+    //         &mut col_tmp,
+    //     );
+    // }
+
+    // // Now we can evaluate tmp into result
+
+    // for (row_tmp, mut row_result) in izip!(tmp.row_iter(), result.row_iter_mut()) {
+    //     barycentric_evaluate_1d(
+    //         eval_points_y,
+    //         interp_nodes_y,
+    //         interp_weights_y,
+    //         &row_tmp,
+    //         &mut row_result,
+    //     );
+    // }
+}
+
 #[cfg(test)]
 mod test {
     use approx::assert_relative_eq;
