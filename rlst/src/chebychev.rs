@@ -802,4 +802,122 @@ mod test {
 
         crate::assert_array_relative_eq!(values_deriv_2, expected, 1E-10);
     }
+
+    #[test]
+    fn test_derivative_2d() {
+        // We sample sin(x * y) in the unit cube, compute the coefficients, take two derivatives
+        // with respect to y and one derivative with respect to x
+        // and transform back. The result is compared with the analytical derivative.
+
+        let nx = 20; // Order of the Chebychev expansion
+        let ny = 30; // Order of the Chebychev expansion
+
+        let points_x = chebychev_points::<f64>(Kind::Second, nx);
+        let points_y = chebychev_points::<f64>(Kind::Second, ny);
+
+        // We fill the data array
+        let mut values = DynArray::from_shape([nx, ny]);
+        for (indx, px) in points_x.iter_value().enumerate() {
+            for (indy, py) in points_y.iter_value().enumerate() {
+                values[[indx, indy]] = f64::sin(px * py);
+            }
+        }
+
+        // and the array of expected values.
+        let mut expected = DynArray::from_shape([nx, ny]);
+        for (indx, px) in points_x.iter_value().enumerate() {
+            for (indy, py) in points_y.iter_value().enumerate() {
+                expected[[indx, indy]] =
+                    // 2 derivatives with respect to y and one derivative with respect to x
+                    -px * px * py * f64::cos(px * py) - 2.0 * px * f64::sin(px * py);
+            }
+        }
+
+        // We compute the coefficients of the expansion
+        let coeffs = values.chebychev_coeffs_from_data_second_kind();
+
+        // Now compute the derivative of the coefficients
+        let mut deriv = coeffs.eval();
+        deriv.chebychev_derivative_second_kind([1, 2]);
+
+        // We transform back
+        let values_deriv = deriv.chebychev_data_from_coeffs_second_kind();
+
+        // We compare with the sine of the original values.
+
+        crate::assert_array_relative_eq!(values_deriv, expected, 1E-8);
+    }
+
+    #[test]
+    fn test_derivative_3d() {
+        // We sample sin(x * y * z) in the unit cube, compute the coefficients, take two derivatives
+        // with respect to y, one derivative with respect to x, and 3 derivatives with
+        // respect to z and transform back. The result is compared with the analytical derivative.
+
+        let nx = 14; // Order of the Chebychev expansion
+        let ny = 15; // Order of the Chebychev expansion
+        let nz = 16; // Order of the Chebychev expansion
+
+        let points_x = chebychev_points::<f64>(Kind::Second, nx);
+        let points_y = chebychev_points::<f64>(Kind::Second, ny);
+        let points_z = chebychev_points::<f64>(Kind::Second, nz);
+
+        // We fill the data array
+        let mut values = DynArray::from_shape([nx, ny, nz]);
+        for (indx, px) in points_x.iter_value().enumerate() {
+            for (indy, py) in points_y.iter_value().enumerate() {
+                for (indz, pz) in points_z.iter_value().enumerate() {
+                    values[[indx, indy, indz]] = f64::sin(px * py * pz);
+                }
+            }
+        }
+
+        // and the array of expected values.
+        let mut expected = DynArray::from_shape([nx, ny, nz]);
+        for (indx, px) in points_x.iter_value().enumerate() {
+            for (indy, py) in points_y.iter_value().enumerate() {
+                for (indz, pz) in points_z.iter_value().enumerate() {
+                    expected[[indx, indy, indz]] = -18.0 * px * px * py * f64::cos(px * py * pz)
+                        + px * px
+                            * px
+                            * px
+                            * py
+                            * py
+                            * py
+                            * 11.0
+                            * pz
+                            * pz
+                            * f64::cos(px * py * pz)
+                        + px * px * px * py * py * 30.0 * pz * f64::sin(px * py * pz)
+                        - px * px
+                            * px
+                            * px
+                            * px
+                            * py
+                            * py
+                            * py
+                            * py
+                            * pz
+                            * pz
+                            * pz
+                            * f64::sin(px * py * pz);
+                }
+                // 2 derivatives with respect to y and one derivative with respect to x
+            }
+        }
+
+        // We compute the coefficients of the expansion
+        let coeffs = values.chebychev_coeffs_from_data_second_kind();
+
+        // Now compute the derivative of the coefficients
+        let mut deriv = coeffs.eval();
+        deriv.chebychev_derivative_second_kind([1, 2, 3]);
+
+        // We transform back
+        let values_deriv = deriv.chebychev_data_from_coeffs_second_kind();
+
+        // We compare with the sine of the original values.
+
+        crate::assert_array_abs_diff_eq!(values_deriv, expected, 5E-5);
+    }
 }
