@@ -23,12 +23,15 @@
 #![warn(missing_docs)]
 
 pub mod base_types;
+#[cfg(feature = "fftw")]
+pub mod chebychev;
 pub mod dense;
 #[cfg(feature = "mpi")]
 pub mod distributed_tools;
 pub mod doc;
 #[cfg(feature = "fftw")]
 pub mod fftw;
+pub mod interpolation;
 pub mod io;
 pub mod simd;
 pub mod sparse;

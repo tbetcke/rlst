@@ -1,13 +1,21 @@
 //! Various iterator implementations.
 
+use std::marker::PhantomData;
+use std::ops::Add;
+
+use itertools::Itertools;
+use typenum::{Const, NonZero, PInt, ToUInt, U, Unsigned};
+
+use crate::dense::array::multislice::Multislice;
+use crate::dense::array::reference::ArrayRef;
 use crate::dense::array::{Array, Shape};
-use crate::dense::layout::convert_1d_nd_from_shape;
+use crate::dense::layout::{col_major_stride_from_shape, convert_1d_nd_from_shape, convert_nd_raw};
 use crate::traits::accessors::{
     UnsafeRandom1DAccessByValue, UnsafeRandom1DAccessMut, UnsafeRandomAccessByValue,
     UnsafeRandomAccessMut,
 };
 use crate::traits::{base_operations::BaseItem, iterators::AsMultiIndex};
-use crate::{UnsafeRandom1DAccessByRef, UnsafeRandomAccessByRef};
+use crate::{IsSmallerThan, NumberType, UnsafeRandom1DAccessByRef, UnsafeRandomAccessByRef};
 
 use super::reference::{self, ArrayRefMut};
 use super::slice::ArraySlice;
@@ -423,6 +431,252 @@ impl<'a, ArrayImpl: UnsafeRandomAccessMut<NDIM>, const NDIM: usize> Iterator
             };
             self.pos += 1;
             Some(value)
+        }
+    }
+}
+
+/// Multislice iterator.
+pub struct MultisliceIterator<
+    'a,
+    Item,
+    ArrayImpl,
+    const NDIM: usize,
+    const SDIM: usize,
+    const OUTDIM: usize,
+> where
+    Const<NDIM>: ToUInt,
+    Const<SDIM>: ToUInt,
+    Const<OUTDIM>: ToUInt,
+    <Const<NDIM> as ToUInt>::Output: Unsigned + NonZero,
+    <Const<SDIM> as ToUInt>::Output: Unsigned + NonZero,
+    <Const<OUTDIM> as ToUInt>::Output: Unsigned + NonZero,
+    NumberType<SDIM>: IsSmallerThan<NDIM>,
+    PInt<U<OUTDIM>>: Add<PInt<U<SDIM>>, Output = PInt<U<NDIM>>>,
+    ArrayImpl: UnsafeRandom1DAccessByValue<Item = Item>
+        + UnsafeRandomAccessByValue<NDIM, Item = Item>
+        + Shape<NDIM>,
+{
+    arr: &'a Array<ArrayImpl, NDIM>,
+    axes: [usize; SDIM],
+    axes_shape: [usize; SDIM],
+    nindices: usize,
+    indices: [usize; SDIM],
+    is_finished: bool,
+    _marker: PhantomData<Item>,
+}
+
+impl<'a, Item, ArrayImpl, const NDIM: usize, const SDIM: usize, const OUTDIM: usize>
+    MultisliceIterator<'a, Item, ArrayImpl, NDIM, SDIM, OUTDIM>
+where
+    Const<NDIM>: ToUInt,
+    Const<SDIM>: ToUInt,
+    Const<OUTDIM>: ToUInt,
+    <Const<NDIM> as ToUInt>::Output: Unsigned + NonZero,
+    <Const<SDIM> as ToUInt>::Output: Unsigned + NonZero,
+    <Const<OUTDIM> as ToUInt>::Output: Unsigned + NonZero,
+    NumberType<SDIM>: IsSmallerThan<NDIM>,
+    PInt<U<OUTDIM>>: Add<PInt<U<SDIM>>, Output = PInt<U<NDIM>>>,
+    ArrayImpl: UnsafeRandom1DAccessByValue<Item = Item>
+        + UnsafeRandomAccessByValue<NDIM, Item = Item>
+        + Shape<NDIM>,
+{
+    /// Create a new multislice iterator.
+    ///
+    /// See [Array::multislice_iter] for details.
+    pub fn new(arr: &'a Array<ArrayImpl, NDIM>, axes: [usize; SDIM]) -> Self {
+        if !axes
+            .iter()
+            .tuple_windows()
+            .all(|(elem1, elem2)| elem2 > elem1)
+        {
+            panic!("`axes` must be sorted in ascending order.");
+        }
+
+        let shape = arr.shape();
+        let axes_shape = {
+            let mut tmp = [0; SDIM];
+
+            for (index, elem) in tmp.iter_mut().enumerate() {
+                *elem = shape[axes[index]];
+            }
+            tmp
+        };
+
+        Self {
+            arr,
+            axes,
+            axes_shape,
+            nindices: axes_shape.iter().product::<usize>(),
+            indices: [0; SDIM],
+            is_finished: false,
+            _marker: PhantomData,
+        }
+    }
+}
+
+impl<'a, Item, ArrayImpl, const NDIM: usize, const SDIM: usize, const OUTDIM: usize> Iterator
+    for MultisliceIterator<'a, Item, ArrayImpl, NDIM, SDIM, OUTDIM>
+where
+    Const<NDIM>: ToUInt,
+    Const<SDIM>: ToUInt,
+    Const<OUTDIM>: ToUInt,
+    <Const<NDIM> as ToUInt>::Output: Unsigned + NonZero,
+    <Const<SDIM> as ToUInt>::Output: Unsigned + NonZero,
+    <Const<OUTDIM> as ToUInt>::Output: Unsigned + NonZero,
+    NumberType<SDIM>: IsSmallerThan<NDIM>,
+    PInt<U<OUTDIM>>: Add<PInt<U<SDIM>>, Output = PInt<U<NDIM>>>,
+    ArrayImpl: UnsafeRandom1DAccessByValue<Item = Item>
+        + UnsafeRandomAccessByValue<NDIM, Item = Item>
+        + Shape<NDIM>,
+{
+    type Item = (
+        [usize; SDIM],
+        Array<Multislice<ArrayRef<'a, ArrayImpl, NDIM>, NDIM, SDIM, OUTDIM>, OUTDIM>,
+    );
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.is_finished {
+            None
+        } else {
+            let out = (
+                self.indices,
+                self.arr.r().multislice(self.axes, self.indices),
+            );
+
+            let index_1d =
+                convert_nd_raw(self.indices, col_major_stride_from_shape(self.axes_shape));
+
+            if 1 + index_1d < self.nindices {
+                self.indices = convert_1d_nd_from_shape(1 + index_1d, self.axes_shape);
+            } else {
+                self.is_finished = true;
+            }
+
+            Some(out)
+        }
+    }
+}
+
+/// Mutable Multislice iterator.
+pub struct MultisliceIteratorMut<
+    'a,
+    Item,
+    ArrayImpl,
+    const NDIM: usize,
+    const SDIM: usize,
+    const OUTDIM: usize,
+> where
+    Const<NDIM>: ToUInt,
+    Const<SDIM>: ToUInt,
+    Const<OUTDIM>: ToUInt,
+    <Const<NDIM> as ToUInt>::Output: Unsigned + NonZero,
+    <Const<SDIM> as ToUInt>::Output: Unsigned + NonZero,
+    <Const<OUTDIM> as ToUInt>::Output: Unsigned + NonZero,
+    NumberType<SDIM>: IsSmallerThan<NDIM>,
+    PInt<U<OUTDIM>>: Add<PInt<U<SDIM>>, Output = PInt<U<NDIM>>>,
+    ArrayImpl: UnsafeRandom1DAccessMut<Item = Item>
+        + UnsafeRandomAccessMut<NDIM, Item = Item>
+        + Shape<NDIM>,
+{
+    arr: &'a mut Array<ArrayImpl, NDIM>,
+    axes: [usize; SDIM],
+    axes_shape: [usize; SDIM],
+    nindices: usize,
+    indices: [usize; SDIM],
+    is_finished: bool,
+    _marker: PhantomData<Item>,
+}
+
+impl<'a, Item, ArrayImpl, const NDIM: usize, const SDIM: usize, const OUTDIM: usize>
+    MultisliceIteratorMut<'a, Item, ArrayImpl, NDIM, SDIM, OUTDIM>
+where
+    Const<NDIM>: ToUInt,
+    Const<SDIM>: ToUInt,
+    Const<OUTDIM>: ToUInt,
+    <Const<NDIM> as ToUInt>::Output: Unsigned + NonZero,
+    <Const<SDIM> as ToUInt>::Output: Unsigned + NonZero,
+    <Const<OUTDIM> as ToUInt>::Output: Unsigned + NonZero,
+    NumberType<SDIM>: IsSmallerThan<NDIM>,
+    PInt<U<OUTDIM>>: Add<PInt<U<SDIM>>, Output = PInt<U<NDIM>>>,
+    ArrayImpl: UnsafeRandom1DAccessMut<Item = Item>
+        + UnsafeRandomAccessMut<NDIM, Item = Item>
+        + Shape<NDIM>,
+{
+    /// Create a new mutable multislice iterator.
+    ///
+    /// See [Array::multislice_iter_mut] for details.
+    pub fn new(arr: &'a mut Array<ArrayImpl, NDIM>, axes: [usize; SDIM]) -> Self {
+        if !axes
+            .iter()
+            .tuple_windows()
+            .all(|(elem1, elem2)| elem2 > elem1)
+        {
+            panic!("`axes` must be sorted in ascending order.");
+        }
+
+        let shape = arr.shape();
+        let axes_shape = {
+            let mut tmp = [0; SDIM];
+
+            for (index, elem) in tmp.iter_mut().enumerate() {
+                *elem = shape[axes[index]];
+            }
+            tmp
+        };
+
+        Self {
+            arr,
+            axes,
+            axes_shape,
+            nindices: axes_shape.iter().product::<usize>(),
+            indices: [0; SDIM],
+            is_finished: false,
+            _marker: PhantomData,
+        }
+    }
+}
+
+impl<'a, Item, ArrayImpl, const NDIM: usize, const SDIM: usize, const OUTDIM: usize> Iterator
+    for MultisliceIteratorMut<'a, Item, ArrayImpl, NDIM, SDIM, OUTDIM>
+where
+    Const<NDIM>: ToUInt,
+    Const<SDIM>: ToUInt,
+    Const<OUTDIM>: ToUInt,
+    <Const<NDIM> as ToUInt>::Output: Unsigned + NonZero,
+    <Const<SDIM> as ToUInt>::Output: Unsigned + NonZero,
+    <Const<OUTDIM> as ToUInt>::Output: Unsigned + NonZero,
+    NumberType<SDIM>: IsSmallerThan<NDIM>,
+    PInt<U<OUTDIM>>: Add<PInt<U<SDIM>>, Output = PInt<U<NDIM>>>,
+    ArrayImpl: UnsafeRandom1DAccessMut<Item = Item>
+        + UnsafeRandomAccessMut<NDIM, Item = Item>
+        + Shape<NDIM>,
+{
+    type Item = (
+        [usize; SDIM],
+        Array<Multislice<ArrayRefMut<'a, ArrayImpl, NDIM>, NDIM, SDIM, OUTDIM>, OUTDIM>,
+    );
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.is_finished {
+            None
+        } else {
+            let out = (self.indices, unsafe {
+                std::mem::transmute::<
+                    Array<Multislice<ArrayRefMut<'_, ArrayImpl, NDIM>, NDIM, SDIM, OUTDIM>, OUTDIM>,
+                    Array<Multislice<ArrayRefMut<'a, ArrayImpl, NDIM>, NDIM, SDIM, OUTDIM>, OUTDIM>,
+                >(self.arr.r_mut().multislice(self.axes, self.indices))
+            });
+
+            let index_1d =
+                convert_nd_raw(self.indices, col_major_stride_from_shape(self.axes_shape));
+
+            if 1 + index_1d < self.nindices {
+                self.indices = convert_1d_nd_from_shape(1 + index_1d, self.axes_shape);
+            } else {
+                self.is_finished = true;
+            }
+
+            Some(out)
         }
     }
 }

@@ -1,6 +1,6 @@
 //! Basic traits for elements of vector spaces.
 
-use crate::{Array, base_types::MemoryLayout};
+use crate::{Array, base_types::MemoryLayout, dense::array::StaticArray};
 
 use super::UnsafeRandom1DAccessByValue;
 
@@ -8,31 +8,6 @@ use super::UnsafeRandom1DAccessByValue;
 pub trait BaseItem {
     /// Item type.
     type Item: Copy + Default;
-}
-
-///  Define a type that holds a reference to the current object.
-///
-/// This is useful to avoid double definition of operations for
-/// references and owned types.
-pub trait AsOwnedRefType {
-    /// The reference type of the array.
-    type RefType<'a>
-    where
-        Self: 'a;
-
-    /// Return the reference type.
-    fn r(&self) -> Self::RefType<'_>;
-}
-
-/// Define a type that holds a mutable reference to the current object.
-pub trait AsOwnedRefTypeMut {
-    /// The mutable reference type of the array.
-    type RefTypeMut<'a>
-    where
-        Self: 'a;
-
-    /// Return the mutable reference type.
-    fn r_mut(&mut self) -> Self::RefTypeMut<'_>;
 }
 
 /// Allow data to be borrowed using runtime borrowing checks
@@ -170,6 +145,12 @@ pub trait FillFrom<Other> {
 pub trait FillFromIter<Iter: Iterator> {
     /// Fill `self` with values from `iter`.
     fn fill_from_iter(&mut self, iter: Iter);
+}
+
+/// Convert a scalar into a one-element array.
+pub trait ScalarAsArray: Sized + Copy + Default {
+    /// Convert scalar value into a 1-element array of given dimension `NDIM`.
+    fn as_array<const NDIM: usize>(&self) -> StaticArray<Self, NDIM, 1>;
 }
 
 /// Fill from another object and resize if necessary.
@@ -325,4 +306,12 @@ pub trait ToType<T> {
     fn into_type(self) -> Self::Output
     where
         Self::Item: Into<T>;
+}
+
+/// Fill an array with equidistant values.
+pub trait Linspace<Item> {
+    /// Fill an array with equidistant points with start `a` and last value `b`.
+    ///
+    /// The function panics if `b <= a` or the array has less than two elements.
+    fn linspace(&mut self, a: Item, b: Item);
 }

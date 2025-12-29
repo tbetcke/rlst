@@ -4,6 +4,8 @@
 //! `Array<ArrayImpl, NDIM>` represents a tensor with `NDIM` axes implemented through
 //! the implementeation type `ArrayImpl`.
 
+use std::ops::{Add, Sub};
+
 use aligned_vec::{AVec, CACHELINE_ALIGN, ConstAlign};
 use empty_axis::AxisPosition;
 use iterators::{
@@ -19,6 +21,12 @@ use operators::{
     reverse_axis::ReverseAxis, scalar_mult::ArrayScalarMult, subtraction::ArraySubtraction,
     transpose::ArrayTranspose, unary_op::ArrayUnaryOperator,
 };
+use typenum::{Const, NonZero, PInt, ToUInt, U, Unsigned};
+
+use crate::base_types::{c32, c64};
+
+use crate::dense::array::iterators::{MultisliceIterator, MultisliceIteratorMut};
+use crate::{Linspace, MutableArrayImpl, ScalarAsArray};
 
 use paste::paste;
 use rand::{Rng, SeedableRng};
@@ -29,12 +37,10 @@ use slice::ArraySlice;
 use subview::ArraySubView;
 
 use crate::{
-    AsMatrixApply, AsMultiIndex, AsOwnedRefType, AsOwnedRefTypeMut, DispatchEval,
-    DispatchEvalRowMajor, EvaluateObject, EvaluateRowMajorArray, Gemm, IsGreaterByOne,
-    IsGreaterZero, IsSmallerThan, Max, MemoryLayout, NumberDifference, NumberType, RandScalar,
-    RandomAccessByValue, RlstError, RlstResult, RlstScalar, Stack, SubtractEqual, TransMode,
-    Unknown,
-    base_types::{c32, c64},
+    AsMatrixApply, AsMultiIndex, DispatchEval, DispatchEvalRowMajor, EvaluateObject,
+    EvaluateRowMajorArray, Gemm, IsGreaterByOne, IsGreaterZero, IsSmallerThan, Max, MemoryLayout,
+    NumberDifference, NumberType, RandScalar, RandomAccessByValue, RlstError, RlstResult,
+    RlstScalar, Stack, SubtractEqual, TransMode, Unknown,
     dense::{
         array::multislice::Multislice,
         base_array::BaseArray,
@@ -103,12 +109,6 @@ pub type SliceArrayMut<'a, Item, const NDIM: usize> =
 /// A mutable dynamically allocated array from a data slice with a given stride.
 pub type StridedSliceArrayMut<'a, Item, const NDIM: usize> =
     Array<StridedBaseArray<SliceContainerMut<'a, Item>, NDIM>, NDIM>;
-
-/// The reference type associated with an array.
-pub type RefType<'a, Arr> = <Arr as AsOwnedRefType>::RefType<'a>;
-
-/// The mutable reference type associated with an array.
-pub type RefTypeMut<'a, Arr> = <Arr as AsOwnedRefTypeMut>::RefTypeMut<'a>;
 
 /// The basic tuple type defining an array.
 pub struct Array<ArrayImpl, const NDIM: usize>(ArrayImpl);
@@ -947,6 +947,70 @@ where
     }
 }
 
+impl<Item, ArrayImpl, const NDIM: usize> Array<ArrayImpl, NDIM>
+where
+    Const<NDIM>: ToUInt,
+    <Const<NDIM> as ToUInt>::Output: Unsigned + NonZero,
+    ArrayImpl: UnsafeRandom1DAccessByValue<Item = Item>
+        + UnsafeRandomAccessByValue<NDIM, Item = Item>
+        + Shape<NDIM>,
+{
+    /// Create a new multislice iterator.
+    ///
+    /// Given an array `arr` with dimensions `[2, 3, 4, 5]`. Calling
+    /// `self.multislice_iter` with `axes = [0, 2]` returns an iterator
+    /// over values of the type `(indices, slice)`, where indices is a
+    /// [2; usize] array taking all possible axis indices in axes `0` and `2`,
+    /// and `slice` is the output of `arr.multislice([0, 2], [indices])`.
+    pub fn multislice_iter<const SDIM: usize, const OUTDIM: usize>(
+        &self,
+        axes: [usize; SDIM],
+    ) -> MultisliceIterator<'_, Item, ArrayImpl, NDIM, SDIM, OUTDIM>
+    where
+        Const<SDIM>: ToUInt,
+        Const<OUTDIM>: ToUInt,
+        <Const<SDIM> as ToUInt>::Output: Unsigned + NonZero,
+        <Const<OUTDIM> as ToUInt>::Output: Unsigned + NonZero,
+        NumberType<SDIM>: IsSmallerThan<NDIM>,
+        PInt<U<OUTDIM>>: Add<PInt<U<SDIM>>, Output = PInt<U<NDIM>>>,
+        PInt<U<NDIM>>: Sub<PInt<U<SDIM>>>,
+    {
+        MultisliceIterator::new(self, axes)
+    }
+}
+
+impl<Item, ArrayImpl, const NDIM: usize> Array<ArrayImpl, NDIM>
+where
+    Const<NDIM>: ToUInt,
+    <Const<NDIM> as ToUInt>::Output: Unsigned + NonZero,
+    ArrayImpl: UnsafeRandom1DAccessMut<Item = Item>
+        + UnsafeRandomAccessMut<NDIM, Item = Item>
+        + Shape<NDIM>,
+{
+    /// Create a new mutable multislice iterator.
+    ///
+    /// Given an array `arr` with dimensions `[2, 3, 4, 5]`. Calling
+    /// `self.multislice_iter_mut` with `axes = [0, 2]` returns an iterator
+    /// over values of the type `(indices, slice)`, where indices is a
+    /// [2; usize] array taking all possible axis indices in axes `0` and `2`,
+    /// and `slice` is the output of `arr.multislice([0, 2], [indices])`.
+    pub fn multislice_iter_mut<const SDIM: usize, const OUTDIM: usize>(
+        &mut self,
+        axes: [usize; SDIM],
+    ) -> MultisliceIteratorMut<'_, Item, ArrayImpl, NDIM, SDIM, OUTDIM>
+    where
+        Const<SDIM>: ToUInt,
+        Const<OUTDIM>: ToUInt,
+        <Const<SDIM> as ToUInt>::Output: Unsigned + NonZero,
+        <Const<OUTDIM> as ToUInt>::Output: Unsigned + NonZero,
+        NumberType<SDIM>: IsSmallerThan<NDIM>,
+        PInt<U<OUTDIM>>: Add<PInt<U<SDIM>>, Output = PInt<U<NDIM>>>,
+        PInt<U<NDIM>>: Sub<PInt<U<SDIM>>>,
+    {
+        MultisliceIteratorMut::new(self, axes)
+    }
+}
+
 impl<ArrayImpl, const NDIM: usize> Array<ArrayImpl, NDIM>
 where
     ArrayImpl: UnsafeRandom1DAccessMut + Shape<NDIM>,
@@ -1455,14 +1519,14 @@ where
     /// If `arr` is a matrix then the first column of the matrix is obtained from
     /// `arr.slice(1, 0)`, while the third row of the matrix is obtained from
     /// `arr.slice(0, 2)`.
-    pub fn slice<const NDIM: usize>(
+    pub fn slice<const OUTDIM: usize>(
         self,
         axis: usize,
         index: usize,
-    ) -> Array<ArraySlice<ArrayImpl, ADIM, NDIM>, NDIM>
+    ) -> Array<ArraySlice<ArrayImpl, ADIM, OUTDIM>, OUTDIM>
     where
-        NumberType<ADIM>: IsGreaterByOne<NDIM>,
-        NumberType<NDIM>: IsGreaterZero,
+        NumberType<ADIM>: IsGreaterByOne<OUTDIM>,
+        NumberType<OUTDIM>: IsGreaterZero,
     {
         Array::new(ArraySlice::new(self, [axis, index]))
     }
@@ -1471,16 +1535,16 @@ where
     ///
     /// A multislice works like [Array::slice] but allows the slicing along multiple dimensions at the same time.
     /// The `axes` array determines which axes are fixed and the `indices` array determines the value
-    /// in each fixed axis. The dimension `SDIM` is the number of axes along which we slice. The parameter `NDIM`
+    /// in each fixed axis. The dimension `SDIM` is the number of axes along which we slice. The parameter `OUTDIM`
     /// is the number of dimensions after slicing.
-    pub fn multislice<const SDIM: usize, const NDIM: usize>(
+    pub fn multislice<const SDIM: usize, const OUTDIM: usize>(
         self,
         axes: [usize; SDIM],
         indices: [usize; SDIM],
-    ) -> Array<Multislice<ArrayImpl, ADIM, SDIM, NDIM>, NDIM>
+    ) -> Array<Multislice<ArrayImpl, ADIM, SDIM, OUTDIM>, OUTDIM>
     where
         NumberType<SDIM>: IsSmallerThan<ADIM>,
-        NumberDifference<ADIM, SDIM>: SubtractEqual<NDIM>,
+        NumberDifference<ADIM, SDIM>: SubtractEqual<OUTDIM>,
     {
         Array::new(Multislice::new(self, axes, indices))
     }
@@ -1986,10 +2050,60 @@ where
     }
 }
 
+impl<Item> ScalarAsArray for Item
+where
+    Item: Default + Copy,
+{
+    fn as_array<const NDIM: usize>(&self) -> StaticArray<Self, NDIM, 1> {
+        let mut arr = Array::new(BaseArray::new(ArrayContainer::<Item, 1>::new(), [1; NDIM]));
+        *unsafe { arr.get_unchecked_mut([0; NDIM]) } = *self;
+        arr
+    }
+}
+
+impl<Item, const NDIM: usize> StaticArray<Item, NDIM, 1>
+where
+    Item: Copy + Default,
+{
+    /// Create an empty 1-element array of the given dimension.
+    pub fn one_element_array() -> Self {
+        Array::new(BaseArray::new(ArrayContainer::<Item, 1>::new(), [1; NDIM]))
+    }
+}
+
+macro_rules! impl_linspace_float {
+    ($dtype:ty) => {
+        impl<ArrayImpl> Linspace<$dtype> for Array<ArrayImpl, 1>
+        where
+            ArrayImpl: MutableArrayImpl<$dtype, 1>,
+        {
+            fn linspace(&mut self, a: $dtype, b: $dtype) {
+                let n = self.len() - 1;
+
+                assert!(b > a, "`linspace` requires `{b} = b > a = {a} ");
+                assert!(n > 1, "`linspace` requires `{n} = self.len() > 1");
+
+                let delta = (b - a) / (n as $dtype);
+
+                for (ind, elem) in self.iter_mut().enumerate().take(n) {
+                    *elem = a + delta * ind as $dtype;
+                }
+
+                self[[n]] = b;
+            }
+        }
+    };
+}
+
+impl_linspace_float!(f32);
+impl_linspace_float!(f64);
+
 #[cfg(test)]
 mod test {
 
     use approx::assert_relative_eq;
+
+    use crate::assert_array_relative_eq;
 
     use super::*;
 
@@ -2200,5 +2314,36 @@ mod test {
         a.swap([0], [1]).unwrap();
         assert_eq!(a[[0]], 2);
         assert_eq!(a[[1]], 1);
+    }
+
+    #[test]
+    pub fn test_multislice_iterator() {
+        let mut arr = DynArray::<f64, _>::from_shape([2, 3, 4, 5]);
+        arr.fill_from_seed_equally_distributed(0);
+
+        let mut count = 0;
+        for (indices, slice) in arr.r().multislice_iter::<_, 2>([2, 3]) {
+            assert_array_relative_eq!(slice, arr.r().multislice::<_, 2>([2, 3], indices), 1E-12);
+            count += 1;
+        }
+        assert_eq!(count, 20);
+    }
+
+    #[test]
+    pub fn test_multislice_iterator_mut() {
+        let mut arr = DynArray::<f64, _>::from_shape([2, 3, 4, 5]);
+        arr.fill_from_seed_equally_distributed(0);
+        let expected = arr.eval();
+
+        let mut count = 0;
+        for (indices, slice) in arr.r_mut().multislice_iter_mut::<_, 2>([2, 3]) {
+            assert_array_relative_eq!(
+                slice,
+                expected.r().multislice::<_, 2>([2, 3], indices),
+                1E-12
+            );
+            count += 1;
+        }
+        assert_eq!(count, 20);
     }
 }

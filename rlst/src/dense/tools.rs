@@ -100,7 +100,7 @@ macro_rules! assert_array_relative_eq {
         use approx::assert_relative_eq;
         assert_eq!($expected_array.shape(), $actual_array.shape());
         for (actual, expected) in $actual_array.iter_value().zip($expected_array.iter_value()) {
-            assert_relative_eq!(actual, expected, max_relative = $epsilon);
+            assert_relative_eq!(expected, actual, max_relative = $epsilon);
         }
     }};
 }
