@@ -605,8 +605,8 @@ mod test {
         Linspace, assert_array_relative_eq,
         dense::tools::PrettyPrint,
         interpolation::{
-            Kind, barycentric_chebychev_weights, chebychev_points, tensor_barycentric_evaluate_2d,
-            tensor_barycentric_evaluate_3d,
+            Kind, barycentric_chebychev_weights, barycentric_evaluate_2d, barycentric_evaluate_3d,
+            chebychev_points, tensor_barycentric_evaluate_2d, tensor_barycentric_evaluate_3d,
         },
     };
 
@@ -770,7 +770,7 @@ mod test {
     }
 
     #[test]
-    pub fn test_eval_cheb_series_2d_second_kind() {
+    pub fn test_tensor_eval_cheb_series_2d_second_kind() {
         let nx = 5;
         let ny = 10;
         let mx = 60;
@@ -784,8 +784,8 @@ mod test {
         let mut coeffs = DynArray::<f64, 2>::from_shape([nx, ny]);
         coeffs.fill_from_seed_equally_distributed(0);
 
-        // We fill the coefficients with random values. We then compare the direct evaluation with
-        // the evaluation obtained by a DCT to physical space, followed by barycentric evaluation.
+        // we fill the coefficients with random values. we then compare the direct evaluation with
+        // the evaluation obtained by a dct to physical space, followed by barycentric evaluation.
 
         let mut actual = DynArray::<f64, 2>::from_shape([mx, my]);
         coeffs.tensor_evaluate_chebychev_series_second_kind(
@@ -794,7 +794,7 @@ mod test {
             &mut actual,
         );
 
-        // We now compute the same by doing a DFT followed by barycentric evaluation.
+        // we now compute the same by doing a dft followed by barycentric evaluation.
 
         let data = coeffs.chebychev_data_from_coeffs_second_kind();
 
@@ -816,11 +816,54 @@ mod test {
             &mut expected,
         );
 
-        assert_array_relative_eq!(actual, expected, 1E-10);
+        assert_array_relative_eq!(actual, expected, 1e-10);
     }
 
     #[test]
-    pub fn test_eval_cheb_series_3d_second_kind() {
+    pub fn test_eval_cheb_series_2d_second_kind() {
+        let nx = 5;
+        let ny = 10;
+        let m = 60;
+
+        let mut eval_points = DynArray::<f64, 2>::from_shape([2, m]);
+        eval_points.fill_from_seed_equally_distributed(0);
+        for value in eval_points.iter_mut() {
+            // Shift random values to [-1, 1]
+            *value = 2.0 * *value - 1.0
+        }
+
+        let mut coeffs = DynArray::<f64, 2>::from_shape([nx, ny]);
+        coeffs.fill_from_seed_normally_distributed(0);
+
+        // we fill the coefficients with random values. we then compare the direct evaluation with
+        // the evaluation obtained by a dct to physical space, followed by barycentric evaluation.
+
+        let mut actual = DynArray::<f64, 1>::from_shape([m]);
+        coeffs.evaluate_chebychev_series_second_kind(&eval_points, &mut actual);
+        let data = coeffs.chebychev_data_from_coeffs_second_kind();
+
+        let mut expected = DynArray::<f64, 1>::from_shape([m]);
+
+        let cheb_points_x = chebychev_points(Kind::Second, nx);
+        let cheb_points_y = chebychev_points(Kind::Second, ny);
+        let weights_x = barycentric_chebychev_weights::<f64>(Kind::Second, nx);
+        let weights_y = barycentric_chebychev_weights::<f64>(Kind::Second, ny);
+
+        barycentric_evaluate_2d(
+            &eval_points,
+            &cheb_points_x,
+            &cheb_points_y,
+            &weights_x,
+            &weights_y,
+            &data,
+            &mut expected,
+        );
+
+        assert_array_relative_eq!(actual, expected, 1e-10);
+    }
+
+    #[test]
+    pub fn test_tensor_eval_cheb_series_3d_second_kind() {
         let nx = 5;
         let ny = 10;
         let nz = 13;
@@ -838,8 +881,8 @@ mod test {
         let mut coeffs = DynArray::<f64, 3>::from_shape([nx, ny, nz]);
         coeffs.fill_from_seed_equally_distributed(0);
 
-        // We fill the coefficients with random values. We then compare the direct evaluation with
-        // the evaluation obtained by a DCT to physical space, followed by barycentric evaluation.
+        // we fill the coefficients with random values. we then compare the direct evaluation with
+        // the evaluation obtained by a dct to physical space, followed by barycentric evaluation.
 
         let mut actual = DynArray::<f64, 3>::from_shape([mx, my, mz]);
         coeffs.tensor_evaluate_chebychev_series_second_kind(
@@ -877,6 +920,54 @@ mod test {
         );
 
         assert_array_relative_eq!(actual, expected, 1E-10);
+    }
+
+    #[test]
+    pub fn test_eval_cheb_series_3d_second_kind() {
+        let nx = 5;
+        let ny = 10;
+        let nz = 13;
+        let m = 60;
+
+        let mut eval_points = DynArray::<f64, 2>::from_shape([3, m]);
+        eval_points.fill_from_seed_equally_distributed(0);
+        for value in eval_points.iter_mut() {
+            // Shift random values to [-1, 1]
+            *value = 2.0 * *value - 1.0
+        }
+
+        let mut coeffs = DynArray::<f64, 3>::from_shape([nx, ny, nz]);
+        coeffs.fill_from_seed_normally_distributed(0);
+
+        // we fill the coefficients with random values. we then compare the direct evaluation with
+        // the evaluation obtained by a dct to physical space, followed by barycentric evaluation.
+
+        let mut actual = DynArray::<f64, 1>::from_shape([m]);
+        coeffs.evaluate_chebychev_series_second_kind(&eval_points, &mut actual);
+        let data = coeffs.chebychev_data_from_coeffs_second_kind();
+
+        let mut expected = DynArray::<f64, 1>::from_shape([m]);
+
+        let cheb_points_x = chebychev_points(Kind::Second, nx);
+        let cheb_points_y = chebychev_points(Kind::Second, ny);
+        let cheb_points_z = chebychev_points(Kind::Second, nz);
+        let weights_x = barycentric_chebychev_weights::<f64>(Kind::Second, nx);
+        let weights_y = barycentric_chebychev_weights::<f64>(Kind::Second, ny);
+        let weights_z = barycentric_chebychev_weights::<f64>(Kind::Second, nz);
+
+        barycentric_evaluate_3d(
+            &eval_points,
+            &cheb_points_x,
+            &cheb_points_y,
+            &cheb_points_z,
+            &weights_x,
+            &weights_y,
+            &weights_z,
+            &data,
+            &mut expected,
+        );
+
+        assert_array_relative_eq!(actual, expected, 1e-10);
     }
 
     #[test]
