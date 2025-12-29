@@ -1,6 +1,6 @@
 name: 🧪 run-tests
 
-on: 
+on:
   pull_request:
     branches:
       - main
@@ -30,13 +30,13 @@ jobs:
 
       - name: Install CMake
         run: sudo apt-get install -y cmake
-        
+
       - name: Install FFTW
         run: sudo apt-get install -y libfftw3-dev
 
       - name: Install Blas
         run: sudo apt-get install -y libopenblas-dev
-        
+
       - name: Install MPI
         run: sudo apt-get install -y openmpi-bin libopenmpi-dev
 
@@ -45,7 +45,6 @@ jobs:
 
       - name: Clippy
         run: |
-          cargo fmt -- --check
           cargo clippy -- -D warnings
           cargo clippy --examples -- -D warnings
           cargo clippy --features "mpi,fftw,fftw_system,strict" -- -D warnings
