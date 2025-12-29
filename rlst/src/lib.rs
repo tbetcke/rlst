@@ -23,6 +23,7 @@
 #![warn(missing_docs)]
 
 pub mod base_types;
+#[cfg(feature = "fftw")]
 pub mod chebychev;
 pub mod dense;
 #[cfg(feature = "mpi")]
