@@ -1,19 +1,38 @@
-//! Functions for the evaluation of Chebychev series.
+//! Functions for the evaluation and conversion of Chebychev series
+//!
+//! This module contains functions to
+//! - Evaluate a Chebychev series
+//! - Convert between data at Chebychev points and series coefficients
+//! - Take the derivative of Chebychev expansions
+//!
+//! All routines are available for 1, 2, or 3-dimensional Chebychev expansions.
+//! In 2 and 3 dimensions the Chebychev expansions are assumed to be defined as tensors
+//! of direct products of 1-dimensional expansions.
 
 use std::ops::{DivAssign, MulAssign};
 
 use itertools::izip;
 use num::PrimInt;
 
+use crate::dense::base_array::BaseArray;
+use crate::dense::data_container::ArrayContainer;
 use crate::fftw::{FftPlanInplace, R2RPlanKind};
 use crate::{Array, fftw::R2RPlan};
 use crate::{DynArray, EvaluateObject, MutableArrayImpl, RlstScalar, ValueArrayImpl};
 
-/// Interface to tools for working with Chebychev expansions
+/// Conversion of data at chebychev points to series coefficients and back
 pub trait ChebychevCoefficientsToData<Item, const NDIM: usize> {
     /// Compute Chebychev coefficients from values at Chebychev points
+    ///
+    /// Given a 1, 2, or 3-dimensional array `arr`. This function interprets
+    /// the contents of the array as data at Chebychev points of the second kind
+    /// and computes the associated series expansion coefficients.
     fn chebychev_coeffs_from_data_second_kind(&self) -> DynArray<Item, NDIM>;
     /// Compute data at Chebychev points from series coefficients
+    ///
+    /// Given a 1, 2, or 3-dimensional array `arr`. This function interprets
+    /// the contents of the array as Chebychev expansion coefficients and
+    /// computes the associated values at Chebychev points of the second kind.
     fn chebychev_data_from_coeffs_second_kind(&self) -> DynArray<Item, NDIM>;
 }
 
@@ -39,8 +58,21 @@ pub trait EvaluateChebychevCoefficients2d<Item>
 where
     Item: RlstScalar,
 {
-    /// Evaluate a 2d array assuming that its entries are Chebychev coefficients
+    /// Evaluate a 2d Chebychev expansion at an array of points
     ///
+    /// The points are stored in the `(3, npts)` dimensional array `eval_points`.
+    /// The output array is a one-dimensional array of length `npts`.
+    fn evaluate_chebychev_series_second_kind<ArrayImplPoints, ArrayImplResult>(
+        &self,
+        eval_points: &Array<ArrayImplPoints, 2>,
+        result: &mut Array<ArrayImplResult, 1>,
+    ) where
+        ArrayImplPoints: ValueArrayImpl<Item::Real, 2>,
+        ArrayImplResult: MutableArrayImpl<Item, 1>;
+    /// Evaluate a 2d Chebychev expansion at the two-dimensional tensor product of 1d coordinates
+    ///
+    /// The evaluation points are assumed to be direct products of the points `eval_points_x` and
+    /// `eval_points_y` in the x and y directions.
     /// The implementation uses the [Clenshaw algorithm](https://en.wikipedia.org/wiki/Clenshaw_algorithm).
     fn tensor_evaluate_chebychev_series_second_kind<
         ArrayImplPointsX,
@@ -62,7 +94,19 @@ pub trait EvaluateChebychevCoefficients3d<Item>
 where
     Item: RlstScalar,
 {
-    /// Evaluate a 3d array assuming that its entries are Chebychev coefficients
+    /// Evaluate a 3d Chebychev expansion at an array of points
+    ///
+    /// The points are stored in the `(3, npts)` dimensional array `eval_points`.
+    /// The output array is a one-dimensional array of length `npts`.
+    fn evaluate_chebychev_series_second_kind<ArrayImplPoints, ArrayImplResult>(
+        &self,
+        eval_points: &Array<ArrayImplPoints, 2>,
+        result: &mut Array<ArrayImplResult, 1>,
+    ) where
+        ArrayImplPoints: ValueArrayImpl<Item::Real, 2>,
+        ArrayImplResult: MutableArrayImpl<Item, 1>;
+
+    /// Evaluate a 3d Chebychev expansion at the three-dimensional tensor product of 1d coordinates
     ///
     /// The implementation uses the [Clenshaw algorithm](https://en.wikipedia.org/wiki/Clenshaw_algorithm).
     fn tensor_evaluate_chebychev_series_second_kind<
@@ -249,6 +293,42 @@ where
     Item: RlstScalar,
     ArrayImpl: ValueArrayImpl<Item, 2>,
 {
+    fn evaluate_chebychev_series_second_kind<ArrayImplPoints, ArrayImplResult>(
+        &self,
+        eval_points: &Array<ArrayImplPoints, 2>,
+        result: &mut Array<ArrayImplResult, 1>,
+    ) where
+        ArrayImplPoints: ValueArrayImpl<Item::Real, 2>,
+        ArrayImplResult: MutableArrayImpl<Item, 1>,
+    {
+        // We check that the dimensions of `eval_points` and `result` are compatible.
+
+        let points_shape = eval_points.shape();
+        let npoints = points_shape[1];
+        let points_dim = points_shape[0];
+
+        assert_eq!(npoints, result.len());
+        assert_eq!(points_dim, 2);
+
+        // Now evaluate the points successively along each dimension
+
+        let mut p0 =
+            Array::<_, 1>::new(BaseArray::new(ArrayContainer::<Item::Real, 1>::new(), [1]));
+        let mut p1 =
+            Array::<_, 1>::new(BaseArray::new(ArrayContainer::<Item::Real, 1>::new(), [1]));
+        let mut res = Array::<_, 2>::new(BaseArray::new(ArrayContainer::<Item, 1>::new(), [1, 1]));
+
+        // For each point we evaluate along all dimensions
+
+        for (point, r) in izip!(eval_points.col_iter(), result.iter_mut()) {
+            p0[[0]] = point.get_value([0]).unwrap();
+            p1[[0]] = point.get_value([1]).unwrap();
+            self.tensor_evaluate_chebychev_series_second_kind(&p0, &p1, &mut res);
+
+            *r = res[[0, 0]];
+        }
+    }
+
     fn tensor_evaluate_chebychev_series_second_kind<
         ArrayImplPointsX,
         ArrayImplPointsY,
@@ -353,6 +433,46 @@ where
                 eval_points_z,
                 &mut result.r_mut().multislice([0, 1], indices),
             );
+        }
+    }
+
+    fn evaluate_chebychev_series_second_kind<ArrayImplPoints, ArrayImplResult>(
+        &self,
+        eval_points: &Array<ArrayImplPoints, 2>,
+        result: &mut Array<ArrayImplResult, 1>,
+    ) where
+        ArrayImplPoints: ValueArrayImpl<<Item as RlstScalar>::Real, 2>,
+        ArrayImplResult: MutableArrayImpl<Item, 1>,
+    {
+        // We check that the dimensions of `eval_points` and `result` are compatible.
+
+        let points_shape = eval_points.shape();
+        let npoints = points_shape[1];
+        let points_dim = points_shape[0];
+
+        assert_eq!(npoints, result.len());
+        assert_eq!(points_dim, 3);
+
+        // Now evaluate the points successively along each dimension
+
+        let mut p0 =
+            Array::<_, 1>::new(BaseArray::new(ArrayContainer::<Item::Real, 1>::new(), [1]));
+        let mut p1 =
+            Array::<_, 1>::new(BaseArray::new(ArrayContainer::<Item::Real, 1>::new(), [1]));
+        let mut p2 =
+            Array::<_, 1>::new(BaseArray::new(ArrayContainer::<Item::Real, 1>::new(), [1]));
+        let mut res =
+            Array::<_, 3>::new(BaseArray::new(ArrayContainer::<Item, 1>::new(), [1, 1, 1]));
+
+        // For each point we evaluate along all dimensions
+
+        for (point, r) in izip!(eval_points.col_iter(), result.iter_mut()) {
+            p0[[0]] = point.get_value([0]).unwrap();
+            p1[[0]] = point.get_value([1]).unwrap();
+            p2[[0]] = point.get_value([2]).unwrap();
+            self.tensor_evaluate_chebychev_series_second_kind(&p0, &p1, &p2, &mut res);
+
+            *r = res[[0, 0, 0]];
         }
     }
 }
