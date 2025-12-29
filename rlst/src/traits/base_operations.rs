@@ -1,6 +1,6 @@
 //! Basic traits for elements of vector spaces.
 
-use crate::{Array, base_types::MemoryLayout};
+use crate::{Array, base_types::MemoryLayout, dense::array::StaticArray};
 
 use super::UnsafeRandom1DAccessByValue;
 
@@ -145,6 +145,12 @@ pub trait FillFrom<Other> {
 pub trait FillFromIter<Iter: Iterator> {
     /// Fill `self` with values from `iter`.
     fn fill_from_iter(&mut self, iter: Iter);
+}
+
+/// Convert a scalar into a one-element array.
+pub trait ScalarAsArray: Sized + Copy + Default {
+    /// Convert scalar value into a 1-element array of given dimension `NDIM`.
+    fn as_array<const NDIM: usize>(&self) -> StaticArray<Self, NDIM, 1>;
 }
 
 /// Fill from another object and resize if necessary.

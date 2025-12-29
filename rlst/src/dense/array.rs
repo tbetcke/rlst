@@ -26,7 +26,7 @@ use typenum::{Const, NonZero, PInt, ToUInt, U, Unsigned};
 use crate::base_types::{c32, c64};
 
 use crate::dense::array::iterators::{MultisliceIterator, MultisliceIteratorMut};
-use crate::{Linspace, MutableArrayImpl};
+use crate::{Linspace, MutableArrayImpl, ScalarAsArray};
 
 use paste::paste;
 use rand::{Rng, SeedableRng};
@@ -2047,6 +2047,27 @@ where
             }
             Ok(())
         }
+    }
+}
+
+impl<Item> ScalarAsArray for Item
+where
+    Item: Default + Copy,
+{
+    fn as_array<const NDIM: usize>(&self) -> StaticArray<Self, NDIM, 1> {
+        let mut arr = Array::new(BaseArray::new(ArrayContainer::<Item, 1>::new(), [1; NDIM]));
+        *unsafe { arr.get_unchecked_mut([0; NDIM]) } = *self;
+        arr
+    }
+}
+
+impl<Item, const NDIM: usize> StaticArray<Item, NDIM, 1>
+where
+    Item: Copy + Default,
+{
+    /// Create an empty 1-element array of the given dimension.
+    pub fn one_element_array() -> Self {
+        Array::new(BaseArray::new(ArrayContainer::<Item, 1>::new(), [1; NDIM]))
     }
 }
 

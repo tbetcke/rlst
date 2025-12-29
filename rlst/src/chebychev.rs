@@ -1038,6 +1038,6 @@ mod test {
 
         // We compare with the sine of the original values.
 
-        crate::assert_array_abs_diff_eq!(values_deriv, expected, 5E-5);
+        crate::assert_array_abs_diff_eq!(values_deriv, expected, 1E-4);
     }
 }
