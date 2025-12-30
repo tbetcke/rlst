@@ -7,7 +7,7 @@ use crate::{
     dense::array::{Array, DynArray},
     diag, dot,
     traits::{
-        base_operations::EvaluateObject,
+        base_operations::EvaluateArray,
         linalg::{base::Gemm, lapack::Lapack},
         rlst_num::RlstScalar,
     },

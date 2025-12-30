@@ -4,7 +4,7 @@ extern crate blas_src;
 extern crate lapack_src;
 
 use rlst::dense::linalg::lapack::eigenvalue_decomposition::EigMode;
-use rlst::{DynArray, EigenvalueDecomposition, EvaluateObject, dot};
+use rlst::{DynArray, EigenvalueDecomposition, EvaluateArray, dot};
 use rlst::{Inverse, c64};
 
 fn main() {

@@ -159,7 +159,7 @@
 //! # use rlst::base_types::TransMode;
 //! # use rlst::dot;
 //! # let mut rng = ChaCha8Rng::seed_from_u64(0);
-//! use rlst::EvaluateObject;
+//! use rlst::EvaluateArray;
 //! use rlst::Cholesky;
 //! use rlst::base_types::UpLo;
 //! let mut a = rlst::rlst_dynamic_array!(f64, [5, 5]);
@@ -180,7 +180,7 @@
 //! # use rlst::base_types::TransMode;
 //! # use rlst::dot;
 //! # let mut rng = ChaCha8Rng::seed_from_u64(0);
-//! # use rlst::EvaluateObject;
+//! # use rlst::EvaluateArray;
 //! # use rlst::CholeskySolve;
 //! # use rlst::base_types::UpLo;
 //! # let mut a = rlst::rlst_dynamic_array!(f64, [5, 5]);
@@ -211,7 +211,7 @@
 //! # use rlst::base_types::TransMode;
 //! # use rlst::dot;
 //! # let mut rng = ChaCha8Rng::seed_from_u64(0);
-//! # use rlst::EvaluateObject;
+//! # use rlst::EvaluateArray;
 //! use rlst::Qr;
 //! use rlst::dense::linalg::lapack::qr::EnablePivoting;
 //! use rlst::dense::linalg::lapack::qr::QMode;
@@ -354,7 +354,7 @@
 //! # use rlst::base_types::TransMode;
 //! # use rlst::dot;
 //! # let mut rng = ChaCha8Rng::seed_from_u64(0);
-//! # use rlst::EvaluateObject;
+//! # use rlst::EvaluateArray;
 //! use rlst::dense::linalg::lapack::symmeig::SymmEigMode;
 //! use rlst::SymmEig;
 //! use rlst::base_types::UpLo;
@@ -376,7 +376,7 @@
 //! # use rlst::SymmEig;
 //! # use rlst::base_types::UpLo;
 //! # let mut a = rlst::rlst_dynamic_array!(f64, [5, 5]);
-//! # use rlst::EvaluateObject;
+//! # use rlst::EvaluateArray;
 //! a.fill_from_standard_normal(&mut rng);
 //! let a = (a.r() + a.r().transpose()).eval();
 //! let (eig, Q) = a.eigh(UpLo::Upper, SymmEigMode::EigenvaluesAndEigenvectors).unwrap();
@@ -399,7 +399,7 @@
 //! # use rand_chacha::ChaCha8Rng;
 //! # use rlst::{dot, diag};
 //! # let mut rng = ChaCha8Rng::seed_from_u64(0);
-//! # use rlst::EvaluateObject;
+//! # use rlst::EvaluateArray;
 //! use rlst::base_types::c64;
 //! use rlst::dense::linalg::lapack::eigenvalue_decomposition::EigMode;
 //! use rlst::EigenvalueDecomposition;
@@ -425,7 +425,7 @@
 //! # use rand_chacha::ChaCha8Rng;
 //! # use rlst::{dot, diag};
 //! # let mut rng = ChaCha8Rng::seed_from_u64(0);
-//! # use rlst::EvaluateObject;
+//! # use rlst::EvaluateArray;
 //! # use rlst::base_types::c64;
 //! # use rlst::dense::linalg::lapack::eigenvalue_decomposition::EigMode;
 //! # use rlst::EigenvalueDecomposition;
@@ -454,7 +454,7 @@
 //! # use rlst::base_types::TransMode;
 //! # use rlst::{diag, dot};
 //! # let mut rng = ChaCha8Rng::seed_from_u64(0);
-//! # use rlst::EvaluateObject;
+//! # use rlst::EvaluateArray;
 //! # let mut a = rlst::rlst_dynamic_array!(f64, [5, 5]);
 //! use rlst::EigenvalueDecomposition;
 //! a.fill_from_standard_normal(&mut rng);

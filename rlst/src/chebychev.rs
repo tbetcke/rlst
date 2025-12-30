@@ -18,7 +18,7 @@ use crate::dense::base_array::BaseArray;
 use crate::dense::data_container::ArrayContainer;
 use crate::fftw::{FftPlanInplace, R2RPlanKind};
 use crate::{Array, fftw::R2RPlan};
-use crate::{DynArray, EvaluateObject, MutableArrayImpl, RlstScalar, ValueArrayImpl};
+use crate::{DynArray, MutableArrayImpl, RlstScalar, ValueArrayImpl};
 
 /// Conversion of data at chebychev points to series coefficients and back
 pub trait ChebychevCoefficientsToData<Item, const NDIM: usize> {
@@ -482,14 +482,15 @@ macro_rules! impl_cheb_coeffs {
         impl<ArrayImpl, const NDIM: usize> ChebychevCoefficientsToData<$dtype, NDIM>
             for Array<ArrayImpl, NDIM>
         where
-            Array<ArrayImpl, NDIM>: EvaluateObject<Output = DynArray<$dtype, NDIM>>,
+            ArrayImpl: ValueArrayImpl<$dtype, NDIM>,
         {
             fn chebychev_coeffs_from_data_second_kind(&self) -> DynArray<$dtype, NDIM> {
                 if NDIM > 3 {
                     unimplemented!();
                 }
 
-                let mut result = self.eval();
+                let mut result = DynArray::<$dtype, NDIM>::from_shape(self.shape());
+                result.fill_from(self);
 
                 let shape = result.shape();
 
@@ -550,7 +551,8 @@ macro_rules! impl_cheb_coeffs {
                     unimplemented!();
                 }
 
-                let mut result = self.eval();
+                let mut result = DynArray::<$dtype, NDIM>::from_shape(self.shape());
+                result.fill_from(self);
 
                 let shape = result.shape();
 
@@ -611,7 +613,7 @@ impl_cheb_coeffs!(f32);
 #[cfg(test)]
 mod test {
     use crate::{
-        Linspace, assert_array_relative_eq,
+        EvaluateArray, Linspace, assert_array_relative_eq,
         dense::tools::PrettyPrint,
         interpolation::{
             Kind, barycentric_chebychev_weights, barycentric_evaluate_2d, barycentric_evaluate_3d,

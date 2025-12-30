@@ -8,7 +8,7 @@ use crate::{
     },
     traits::{
         accessors::UnsafeRandom1DAccessByValue,
-        base_operations::{EvaluateObject, Shape},
+        base_operations::{EvaluateArray, Shape},
         linalg::{
             decompositions::{Lu, Solve},
             lapack::Lapack,

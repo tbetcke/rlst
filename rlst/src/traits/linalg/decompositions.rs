@@ -17,7 +17,7 @@ use crate::{
             symmeig::SymmEigMode,
         },
     },
-    traits::{base_operations::EvaluateObject, rlst_num::RlstScalar},
+    traits::{base_operations::EvaluateArray, rlst_num::RlstScalar},
 };
 
 use super::{base::Gemm, lapack::Lapack};

@@ -75,10 +75,10 @@
 //! # let mut arr2 = rlst::rlst_dynamic_array!(f64, [3, 5, 2]);
 //! # arr2.fill_from_equally_distributed(&mut rng);
 //! # let res = 3.0_f64 * arr1 + 5.0_f64 * arr2;
-//! use rlst::EvaluateObject;
+//! use rlst::EvaluateArray;
 //! let output = res.eval();
 //! ```
-//! The required trait is [EvaluateObject](crate::EvaluateObject). Their is a quirk
+//! The required trait is [EvaluateArray](crate::EvaluateArray). Their is a quirk
 //! in the type inference from Rust. Without explicitly annotating the constants `3.0`
 //! and `5.0` as being [f64] Rust will not compile the statement as it cannot infer the
 //! correct item type for the new array.
@@ -135,7 +135,7 @@
 //! shows an example.
 //!
 //! ```
-//! # use rlst::EvaluateObject;
+//! # use rlst::EvaluateArray;
 //! # let mut rng = rand::thread_rng();
 //! let mut arr1 = rlst::rlst_static_array!(f64, [1, 3, 2]);
 //! let mut arr2 = rlst::rlst_static_array!(f64, [1, 3, 2]);

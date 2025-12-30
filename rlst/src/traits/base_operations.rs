@@ -1,6 +1,8 @@
 //! Basic traits for elements of vector spaces.
 
-use crate::{Array, base_types::MemoryLayout, dense::array::StaticArray};
+use crate::{
+    Array, MutableArrayImpl, RawAccessMut, base_types::MemoryLayout, dense::array::StaticArray,
+};
 
 use super::UnsafeRandom1DAccessByValue;
 
@@ -251,22 +253,28 @@ pub trait ConjObject {
     fn conj(self) -> Self::Output;
 }
 
-/// Evaluate into a new object.
-pub trait EvaluateObject {
-    /// The output type of the evaluated object.
-    type Output;
+/// Evaluate into a new Array.
+pub trait EvaluateArray<Item, const NDIM: usize>
+where
+    Item: Copy + Default,
+{
+    /// The output implementation type of the evaluated object.
+    type OutputImpl: MutableArrayImpl<Item, NDIM> + RawAccessMut<Item = Item> + Stride<NDIM>;
 
     /// Evaluate the object.
-    fn eval(&self) -> Self::Output;
+    fn eval(&self) -> Array<Self::OutputImpl, NDIM>;
 }
 
 /// Evaluate array into a new row-major array.
-pub trait EvaluateRowMajorArray {
-    /// The output type of the evaluated array.
-    type Output;
+pub trait EvaluateRowMajorArray<Item, const NDIM: usize>
+where
+    Item: Copy + Default,
+{
+    /// The output implementation type of the evaluated array.
+    type OutputImpl: MutableArrayImpl<Item, NDIM> + RawAccessMut<Item = Item> + Stride<NDIM>;
 
     /// Evaluate the array into a new row-major array.
-    fn eval_row_major(&self) -> Self::Output;
+    fn eval_row_major(&self) -> Array<Self::OutputImpl, NDIM>;
 }
 
 /// Dispatch the evaluation of an array to an actual implementation.

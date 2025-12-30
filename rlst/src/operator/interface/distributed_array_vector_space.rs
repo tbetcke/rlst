@@ -9,7 +9,7 @@ use std::{
 use mpi::traits::{Communicator, Equivalence};
 
 use crate::{
-    EvaluateObject, Inner, InnerProductSpace, LinearSpace,
+    Inner, InnerProductSpace, LinearSpace,
     dense::{base_array::BaseArray, data_container::VectorContainer},
     dist_vec,
     distributed_tools::IndexLayout,

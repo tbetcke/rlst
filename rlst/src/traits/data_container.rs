@@ -10,6 +10,8 @@
 //! The [ContainerType] trait attaches an associated type that can be used to distinguish between containers
 //! on a type level.
 
+use crate::{Array, MutableArrayImpl, RawAccessMut, Stride};
+
 /// Base trait for a data container. It defines the type of the underlying data
 /// and provides a method to return the number of elements.
 pub trait DataContainer {
@@ -81,7 +83,7 @@ pub trait MutableRawAccessDataContainer: RawAccessDataContainer {
 /// Stores the type of a container.
 pub trait ContainerType {
     /// The type for the container.
-    type Type: ContainerTypeRepr;
+    type Type: ContainerTypeRepr + RowMajorArrayFromContainerType + ArrayFromContainerType;
 
     /// Returns the type hint for the container as string ref.
     fn type_as_str(&self) -> &'static str {
@@ -95,8 +97,42 @@ pub trait ContainerTypeRepr {
     const STR: &str;
 }
 
+/// Create a new array from a given container type.
+pub trait ArrayFromContainerType {
+    /// Array Output implementation type
+    type OutputImpl<Item, const NDIM: usize>: MutableArrayImpl<Item, NDIM>
+        + RawAccessMut<Item = Item>
+        + Stride<NDIM>
+    where
+        Item: Copy + Default;
+
+    /// Given the shape, create a new column-major array
+    fn new_arr<Item, const NDIM: usize>(
+        shape: [usize; NDIM],
+    ) -> Array<Self::OutputImpl<Item, NDIM>, NDIM>
+    where
+        Item: Copy + Default;
+}
+
+/// Create a new row-major array from a given container type.
+pub trait RowMajorArrayFromContainerType {
+    /// Array Output type
+    type OutputImpl<Item, const NDIM: usize>: MutableArrayImpl<Item, NDIM>
+        + RawAccessMut<Item = Item>
+        + Stride<NDIM>
+    where
+        Item: Copy + Default;
+
+    /// Given the shape, create a new column-major array
+    fn new_row_major_arr<Item, const NDIM: usize>(
+        shape: [usize; NDIM],
+    ) -> Array<Self::OutputImpl<Item, NDIM>, NDIM>
+    where
+        Item: Copy + Default;
+}
+
 /// Selects a container type based on two other container types.
 pub trait ContainerTypeSelector<U: ContainerTypeRepr, V: ContainerTypeRepr> {
     /// Select the container type.
-    type Type: ContainerTypeRepr;
+    type Type: ContainerTypeRepr + ArrayFromContainerType + RowMajorArrayFromContainerType;
 }

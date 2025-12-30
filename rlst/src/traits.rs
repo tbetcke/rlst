@@ -34,6 +34,7 @@ pub trait ValueArrayImpl<Item, const NDIM: usize>:
     UnsafeRandom1DAccessByValue<Item = Item>
     + UnsafeRandomAccessByValue<NDIM, Item = Item>
     + Shape<NDIM>
+    + ContainerType
 {
 }
 
@@ -41,6 +42,7 @@ impl<A, Item, const NDIM: usize> ValueArrayImpl<Item, NDIM> for A where
     A: UnsafeRandom1DAccessByValue<Item = Item>
         + UnsafeRandomAccessByValue<NDIM, Item = Item>
         + Shape<NDIM>
+        + ContainerType
 {
 }
 

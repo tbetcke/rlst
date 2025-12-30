@@ -126,7 +126,7 @@ mod test {
     use num::FromPrimitive;
 
     use crate::fftw::c2c_inplace::C2CDirection;
-    use crate::{EvaluateObject, c64};
+    use crate::{EvaluateArray, c64};
 
     use crate::DynArray;
     use crate::fftw::{FftPlanInplace, FftwPlanFlags};
