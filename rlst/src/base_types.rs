@@ -18,10 +18,20 @@ use typenum::ToUInt;
 use typenum::U;
 use typenum::Unsigned;
 
+use crate::Array;
+use crate::ArrayFromContainerType;
 use crate::ContainerTypeRepr;
 use crate::ContainerTypeSelector;
+use crate::DynArray;
 use crate::IsSmallerThan;
+use crate::RowMajorArrayFromContainerType;
+use crate::StridedDynArray;
 use crate::SubtractEqual;
+use crate::dense::array::StaticArray;
+use crate::dense::base_array::BaseArray;
+use crate::dense::data_container::ArrayContainer;
+use crate::dense::layout::row_major_stride_from_shape;
+use crate::dense::strided_base_array::StridedBaseArray;
 use crate::traits::number_relations::{IsGreaterByOne, IsGreaterZero, IsSmallerByOne};
 
 use typenum;
@@ -210,6 +220,72 @@ impl ContainerTypeRepr for Unknown {
 }
 impl<const N: usize> ContainerTypeRepr for Stack<N> {
     const STR: &str = "Stack";
+}
+
+impl ArrayFromContainerType for Unknown {
+    type Output<Item, const NDIM: usize>
+        = DynArray<Item, NDIM>
+    where
+        Item: Copy + Default;
+
+    fn new_arr<Item, const NDIM: usize>(&self, shape: [usize; NDIM]) -> Self::Output<Item, NDIM>
+    where
+        Item: Copy + Default,
+    {
+        DynArray::from_shape(shape)
+    }
+}
+
+impl RowMajorArrayFromContainerType for Unknown {
+    type Output<Item, const NDIM: usize>
+        = StridedDynArray<Item, NDIM>
+    where
+        Item: Copy + Default;
+
+    fn new_row_major_arr<Item, const NDIM: usize>(
+        &self,
+        shape: [usize; NDIM],
+    ) -> Self::Output<Item, NDIM>
+    where
+        Item: Copy + Default,
+    {
+        StridedDynArray::row_major(shape)
+    }
+}
+
+impl<const N: usize> ArrayFromContainerType for Stack<N> {
+    type Output<Item, const NDIM: usize>
+        = StaticArray<Item, NDIM, N>
+    where
+        Item: Copy + Default;
+
+    fn new_arr<Item, const NDIM: usize>(&self, shape: [usize; NDIM]) -> Self::Output<Item, NDIM>
+    where
+        Item: Copy + Default,
+    {
+        Array::new(BaseArray::new(ArrayContainer::<Item, N>::new(), shape))
+    }
+}
+
+impl<const N: usize> RowMajorArrayFromContainerType for Stack<N> {
+    type Output<Item, const NDIM: usize>
+        = Array<StridedBaseArray<ArrayContainer<Item, N>, NDIM>, NDIM>
+    where
+        Item: Copy + Default;
+
+    fn new_row_major_arr<Item, const NDIM: usize>(
+        &self,
+        shape: [usize; NDIM],
+    ) -> Self::Output<Item, NDIM>
+    where
+        Item: Copy + Default,
+    {
+        Array::new(StridedBaseArray::new(
+            ArrayContainer::<Item, N>::new(),
+            shape,
+            row_major_stride_from_shape(shape),
+        ))
+    }
 }
 
 /// Trait to select a container type based on the input types.

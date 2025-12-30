@@ -81,7 +81,7 @@ pub trait MutableRawAccessDataContainer: RawAccessDataContainer {
 /// Stores the type of a container.
 pub trait ContainerType {
     /// The type for the container.
-    type Type: ContainerTypeRepr;
+    type Type: ContainerTypeRepr + RowMajorArrayFromContainerType + ArrayFromContainerType;
 
     /// Returns the type hint for the container as string ref.
     fn type_as_str(&self) -> &'static str {
@@ -95,8 +95,37 @@ pub trait ContainerTypeRepr {
     const STR: &str;
 }
 
+/// Create a new array from a given container type.
+pub trait ArrayFromContainerType {
+    /// Array Output type
+    type Output<Item, const NDIM: usize>
+    where
+        Item: Copy + Default;
+
+    /// Given the shape, create a new column-major array
+    fn new_arr<Item, const NDIM: usize>(&self, shape: [usize; NDIM]) -> Self::Output<Item, NDIM>
+    where
+        Item: Copy + Default;
+}
+
+/// Create a new row-major array from a given container type.
+pub trait RowMajorArrayFromContainerType {
+    /// Array Output type
+    type Output<Item, const NDIM: usize>
+    where
+        Item: Copy + Default;
+
+    /// Given the shape, create a new column-major array
+    fn new_row_major_arr<Item, const NDIM: usize>(
+        &self,
+        shape: [usize; NDIM],
+    ) -> Self::Output<Item, NDIM>
+    where
+        Item: Copy + Default;
+}
+
 /// Selects a container type based on two other container types.
 pub trait ContainerTypeSelector<U: ContainerTypeRepr, V: ContainerTypeRepr> {
     /// Select the container type.
-    type Type: ContainerTypeRepr;
+    type Type: ContainerTypeRepr + ArrayFromContainerType + RowMajorArrayFromContainerType;
 }
