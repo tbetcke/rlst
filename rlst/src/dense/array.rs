@@ -26,7 +26,10 @@ use typenum::{Const, NonZero, PInt, ToUInt, U, Unsigned};
 use crate::base_types::{c32, c64};
 
 use crate::dense::array::iterators::{MultisliceIterator, MultisliceIteratorMut};
-use crate::{Linspace, MutableArrayImpl, ScalarAsArray};
+use crate::{
+    ArrayFromContainerType, Linspace, MutableArrayImpl, RowMajorArrayFromContainerType,
+    ScalarAsArray,
+};
 
 use paste::paste;
 use rand::{Rng, SeedableRng};
@@ -37,10 +40,9 @@ use slice::ArraySlice;
 use subview::ArraySubView;
 
 use crate::{
-    AsMatrixApply, AsMultiIndex, DispatchEval, DispatchEvalRowMajor, EvaluateObject,
-    EvaluateRowMajorArray, Gemm, IsGreaterByOne, IsGreaterZero, IsSmallerThan, Max, MemoryLayout,
-    NumberDifference, NumberType, RandScalar, RandomAccessByValue, RlstError, RlstResult,
-    RlstScalar, Stack, SubtractEqual, TransMode, Unknown,
+    AsMatrixApply, AsMultiIndex, EvaluateObject, EvaluateRowMajorArray, Gemm, IsGreaterByOne,
+    IsGreaterZero, IsSmallerThan, Max, MemoryLayout, NumberDifference, NumberType, RandScalar,
+    RandomAccessByValue, RlstError, RlstResult, RlstScalar, SubtractEqual, TransMode,
     dense::{
         array::multislice::Multislice,
         base_array::BaseArray,
@@ -564,6 +566,55 @@ where
     }
 }
 
+impl<Item, ArrayImpl, ArrayOut, const NDIM: usize> EvaluateObject for Array<ArrayImpl, NDIM>
+where
+    Item: Copy + Default,
+    ArrayImpl: UnsafeRandom1DAccessByValue<Item = Item> + Shape<NDIM> + ContainerType,
+    <ArrayImpl as ContainerType>::Type:
+        ArrayFromContainerType<Output<Item, NDIM> = Array<ArrayOut, NDIM>>,
+    ArrayOut: UnsafeRandom1DAccessMut<Item = Item> + Shape<NDIM>,
+{
+    type Output = Array<ArrayOut, NDIM>;
+
+    fn eval(
+        &self,
+    ) -> <<ArrayImpl as ContainerType>::Type as ArrayFromContainerType>::Output<Item, NDIM> {
+        let mut out = <<ArrayImpl as ContainerType>::Type as ArrayFromContainerType>::new_arr::<
+            Item,
+            NDIM,
+        >(self.shape());
+
+        out.fill_from(&self);
+
+        out
+    }
+}
+
+impl<Item, ArrayImpl, ArrayOut, const NDIM: usize> EvaluateRowMajorArray for Array<ArrayImpl, NDIM>
+where
+    Item: Copy + Default,
+    ArrayImpl: UnsafeRandom1DAccessByValue<Item = Item> + Shape<NDIM> + ContainerType,
+    <ArrayImpl as ContainerType>::Type:
+        RowMajorArrayFromContainerType<Output<Item, NDIM> = Array<ArrayOut, NDIM>>,
+    ArrayOut: UnsafeRandom1DAccessMut<Item = Item> + Shape<NDIM>,
+{
+    type Output = Array<ArrayOut, NDIM>;
+    fn eval_row_major(
+        &self,
+    ) -> <<ArrayImpl as ContainerType>::Type as RowMajorArrayFromContainerType>::Output<Item, NDIM>
+    {
+        let mut out =
+            <<ArrayImpl as ContainerType>::Type as RowMajorArrayFromContainerType>::new_row_major_arr::<
+                Item,
+                NDIM,
+            >(self.shape());
+
+        out.fill_from(&self);
+
+        out
+    }
+}
+
 /// Create an empty array of given type and dimension.
 ///
 /// Empty arrays serve as convenient containers for input into functions that
@@ -693,139 +744,6 @@ where
         ArrayImpl: UnsafeRandom1DAccessByValue<Item = Item> + Shape<NDIM>,
     {
         StridedDynArray::new_from(row_major_stride_from_shape(arr.shape()), arr)
-    }
-}
-
-/// A dispatcher for evaluating arrays.
-///
-/// This dispatcher enables evaluating arrays either into a new heap
-/// allocated array or a new stack allocated array depending on the type hint
-/// of the array.
-pub struct EvalDispatcher<TypeHint, ArrayImpl> {
-    _type_hint: std::marker::PhantomData<(TypeHint, ArrayImpl)>,
-}
-
-impl<TypeHint, ArrayImpl> Default for EvalDispatcher<TypeHint, ArrayImpl> {
-    fn default() -> Self {
-        Self {
-            _type_hint: std::marker::PhantomData,
-        }
-    }
-}
-
-impl<ArrayImpl, const NDIM: usize> DispatchEval<NDIM> for EvalDispatcher<Unknown, ArrayImpl>
-where
-    ArrayImpl::Item: Copy + Default,
-    ArrayImpl: UnsafeRandom1DAccessByValue + Shape<NDIM>,
-{
-    type Output = DynArray<ArrayImpl::Item, NDIM>;
-
-    type ArrayImpl = ArrayImpl;
-
-    fn dispatch(&self, arr: &Array<Self::ArrayImpl, NDIM>) -> Self::Output {
-        let mut output = DynArray::new_from(arr);
-        output.fill_from(arr);
-        output
-    }
-}
-
-impl<ArrayImpl, const NDIM: usize, const N: usize> DispatchEval<NDIM>
-    for EvalDispatcher<Stack<N>, ArrayImpl>
-where
-    ArrayImpl::Item: Copy + Default,
-    ArrayImpl: UnsafeRandom1DAccessByValue + Shape<NDIM>,
-{
-    type Output = Array<BaseArray<ArrayContainer<ArrayImpl::Item, N>, NDIM>, NDIM>;
-
-    type ArrayImpl = ArrayImpl;
-
-    fn dispatch(&self, arr: &Array<Self::ArrayImpl, NDIM>) -> Self::Output {
-        let mut output = Array::new(BaseArray::new(
-            ArrayContainer::<ArrayImpl::Item, N>::new(),
-            arr.shape(),
-        ));
-        output.fill_from(arr);
-        output
-    }
-}
-
-/// A dispatcher for evaluating arrays into row-major order.
-pub struct EvalRowMajorDispatcher<TypeHint, ArrayImpl> {
-    _type_hint: std::marker::PhantomData<(TypeHint, ArrayImpl)>,
-}
-
-impl<TypeHint, ArrayImpl> Default for EvalRowMajorDispatcher<TypeHint, ArrayImpl> {
-    fn default() -> Self {
-        Self {
-            _type_hint: std::marker::PhantomData,
-        }
-    }
-}
-
-impl<ArrayImpl, const NDIM: usize> DispatchEvalRowMajor<NDIM>
-    for EvalRowMajorDispatcher<Unknown, ArrayImpl>
-where
-    ArrayImpl::Item: Copy + Default,
-    ArrayImpl: UnsafeRandom1DAccessByValue + Shape<NDIM>,
-{
-    type Output = StridedDynArray<ArrayImpl::Item, NDIM>;
-
-    type ArrayImpl = ArrayImpl;
-
-    fn dispatch(&self, arr: &Array<Self::ArrayImpl, NDIM>) -> Self::Output {
-        let mut output = StridedDynArray::row_major(arr.shape());
-        output.fill_from(arr);
-        output
-    }
-}
-
-impl<ArrayImpl, const NDIM: usize, const N: usize> DispatchEvalRowMajor<NDIM>
-    for EvalRowMajorDispatcher<Stack<N>, ArrayImpl>
-where
-    ArrayImpl::Item: Copy + Default,
-    ArrayImpl: UnsafeRandom1DAccessByValue + Shape<NDIM>,
-{
-    type Output = Array<StridedBaseArray<ArrayContainer<ArrayImpl::Item, N>, NDIM>, NDIM>;
-
-    type ArrayImpl = ArrayImpl;
-
-    fn dispatch(&self, arr: &Array<Self::ArrayImpl, NDIM>) -> Self::Output {
-        let mut output = Array::new(StridedBaseArray::new(
-            ArrayContainer::<ArrayImpl::Item, N>::new(),
-            arr.shape(),
-            row_major_stride_from_shape(arr.shape()),
-        ));
-        output.fill_from(arr);
-        output
-    }
-}
-
-impl<Item, ArrayImpl, const NDIM: usize> EvaluateObject for Array<ArrayImpl, NDIM>
-where
-    ArrayImpl: ContainerType + UnsafeRandom1DAccessByValue<Item = Item>,
-    EvalDispatcher<ArrayImpl::Type, ArrayImpl>: DispatchEval<NDIM, ArrayImpl = ArrayImpl>,
-{
-    type Output = <EvalDispatcher<ArrayImpl::Type, ArrayImpl> as DispatchEval<NDIM>>::Output;
-
-    #[inline(always)]
-    fn eval(&self) -> Self::Output {
-        let dispatcher = EvalDispatcher::<ArrayImpl::Type, ArrayImpl>::default();
-        dispatcher.dispatch(self)
-    }
-}
-
-impl<Item, ArrayImpl, const NDIM: usize> EvaluateRowMajorArray for Array<ArrayImpl, NDIM>
-where
-    ArrayImpl: ContainerType + UnsafeRandom1DAccessByValue<Item = Item>,
-    EvalRowMajorDispatcher<ArrayImpl::Type, ArrayImpl>:
-        DispatchEvalRowMajor<NDIM, ArrayImpl = ArrayImpl>,
-{
-    type Output =
-        <EvalRowMajorDispatcher<ArrayImpl::Type, ArrayImpl> as DispatchEvalRowMajor<NDIM>>::Output;
-
-    fn eval_row_major(&self) -> Self::Output {
-        let dispatcher = EvalRowMajorDispatcher::<ArrayImpl::Type, ArrayImpl>::default();
-        dispatcher.dispatch(self)
     }
 }
 

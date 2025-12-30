@@ -228,7 +228,7 @@ impl ArrayFromContainerType for Unknown {
     where
         Item: Copy + Default;
 
-    fn new_arr<Item, const NDIM: usize>(&self, shape: [usize; NDIM]) -> Self::Output<Item, NDIM>
+    fn new_arr<Item, const NDIM: usize>(shape: [usize; NDIM]) -> Self::Output<Item, NDIM>
     where
         Item: Copy + Default,
     {
@@ -242,10 +242,7 @@ impl RowMajorArrayFromContainerType for Unknown {
     where
         Item: Copy + Default;
 
-    fn new_row_major_arr<Item, const NDIM: usize>(
-        &self,
-        shape: [usize; NDIM],
-    ) -> Self::Output<Item, NDIM>
+    fn new_row_major_arr<Item, const NDIM: usize>(shape: [usize; NDIM]) -> Self::Output<Item, NDIM>
     where
         Item: Copy + Default,
     {
@@ -259,7 +256,7 @@ impl<const N: usize> ArrayFromContainerType for Stack<N> {
     where
         Item: Copy + Default;
 
-    fn new_arr<Item, const NDIM: usize>(&self, shape: [usize; NDIM]) -> Self::Output<Item, NDIM>
+    fn new_arr<Item, const NDIM: usize>(shape: [usize; NDIM]) -> Self::Output<Item, NDIM>
     where
         Item: Copy + Default,
     {
@@ -273,10 +270,7 @@ impl<const N: usize> RowMajorArrayFromContainerType for Stack<N> {
     where
         Item: Copy + Default;
 
-    fn new_row_major_arr<Item, const NDIM: usize>(
-        &self,
-        shape: [usize; NDIM],
-    ) -> Self::Output<Item, NDIM>
+    fn new_row_major_arr<Item, const NDIM: usize>(shape: [usize; NDIM]) -> Self::Output<Item, NDIM>
     where
         Item: Copy + Default,
     {

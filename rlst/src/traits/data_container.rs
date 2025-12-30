@@ -103,7 +103,7 @@ pub trait ArrayFromContainerType {
         Item: Copy + Default;
 
     /// Given the shape, create a new column-major array
-    fn new_arr<Item, const NDIM: usize>(&self, shape: [usize; NDIM]) -> Self::Output<Item, NDIM>
+    fn new_arr<Item, const NDIM: usize>(shape: [usize; NDIM]) -> Self::Output<Item, NDIM>
     where
         Item: Copy + Default;
 }
@@ -116,10 +116,7 @@ pub trait RowMajorArrayFromContainerType {
         Item: Copy + Default;
 
     /// Given the shape, create a new column-major array
-    fn new_row_major_arr<Item, const NDIM: usize>(
-        &self,
-        shape: [usize; NDIM],
-    ) -> Self::Output<Item, NDIM>
+    fn new_row_major_arr<Item, const NDIM: usize>(shape: [usize; NDIM]) -> Self::Output<Item, NDIM>
     where
         Item: Copy + Default;
 }
