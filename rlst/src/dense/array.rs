@@ -40,7 +40,7 @@ use slice::ArraySlice;
 use subview::ArraySubView;
 
 use crate::{
-    AsMatrixApply, AsMultiIndex, EvaluateObject, EvaluateRowMajorArray, Gemm, IsGreaterByOne,
+    AsMatrixApply, AsMultiIndex, EvaluateArray, EvaluateRowMajorArray, Gemm, IsGreaterByOne,
     IsGreaterZero, IsSmallerThan, Max, MemoryLayout, NumberDifference, NumberType, RandScalar,
     RandomAccessByValue, RlstError, RlstResult, RlstScalar, SubtractEqual, TransMode,
     dense::{
@@ -566,19 +566,15 @@ where
     }
 }
 
-impl<Item, ArrayImpl, ArrayOut, const NDIM: usize> EvaluateObject for Array<ArrayImpl, NDIM>
+impl<Item, ArrayImpl, const NDIM: usize> EvaluateArray<Item, NDIM> for Array<ArrayImpl, NDIM>
 where
     Item: Copy + Default,
     ArrayImpl: UnsafeRandom1DAccessByValue<Item = Item> + Shape<NDIM> + ContainerType,
-    <ArrayImpl as ContainerType>::Type:
-        ArrayFromContainerType<Output<Item, NDIM> = Array<ArrayOut, NDIM>>,
-    ArrayOut: UnsafeRandom1DAccessMut<Item = Item> + Shape<NDIM>,
 {
-    type Output = Array<ArrayOut, NDIM>;
+    type OutputImpl =
+        <<ArrayImpl as ContainerType>::Type as ArrayFromContainerType>::OutputImpl<Item, NDIM>;
 
-    fn eval(
-        &self,
-    ) -> <<ArrayImpl as ContainerType>::Type as ArrayFromContainerType>::Output<Item, NDIM> {
+    fn eval(&self) -> Array<Self::OutputImpl, NDIM> {
         let mut out = <<ArrayImpl as ContainerType>::Type as ArrayFromContainerType>::new_arr::<
             Item,
             NDIM,
@@ -590,19 +586,19 @@ where
     }
 }
 
-impl<Item, ArrayImpl, ArrayOut, const NDIM: usize> EvaluateRowMajorArray for Array<ArrayImpl, NDIM>
+impl<Item, ArrayImpl, const NDIM: usize> EvaluateRowMajorArray<Item, NDIM>
+    for Array<ArrayImpl, NDIM>
 where
     Item: Copy + Default,
     ArrayImpl: UnsafeRandom1DAccessByValue<Item = Item> + Shape<NDIM> + ContainerType,
-    <ArrayImpl as ContainerType>::Type:
-        RowMajorArrayFromContainerType<Output<Item, NDIM> = Array<ArrayOut, NDIM>>,
-    ArrayOut: UnsafeRandom1DAccessMut<Item = Item> + Shape<NDIM>,
 {
-    type Output = Array<ArrayOut, NDIM>;
-    fn eval_row_major(
-        &self,
-    ) -> <<ArrayImpl as ContainerType>::Type as RowMajorArrayFromContainerType>::Output<Item, NDIM>
-    {
+    type OutputImpl =
+        <<ArrayImpl as ContainerType>::Type as RowMajorArrayFromContainerType>::OutputImpl<
+            Item,
+            NDIM,
+        >;
+
+    fn eval_row_major(&self) -> Array<Self::OutputImpl, NDIM> {
         let mut out =
             <<ArrayImpl as ContainerType>::Type as RowMajorArrayFromContainerType>::new_row_major_arr::<
                 Item,

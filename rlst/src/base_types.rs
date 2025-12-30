@@ -27,9 +27,9 @@ use crate::IsSmallerThan;
 use crate::RowMajorArrayFromContainerType;
 use crate::StridedDynArray;
 use crate::SubtractEqual;
-use crate::dense::array::StaticArray;
 use crate::dense::base_array::BaseArray;
 use crate::dense::data_container::ArrayContainer;
+use crate::dense::data_container::VectorContainer;
 use crate::dense::layout::row_major_stride_from_shape;
 use crate::dense::strided_base_array::StridedBaseArray;
 use crate::traits::number_relations::{IsGreaterByOne, IsGreaterZero, IsSmallerByOne};
@@ -223,12 +223,14 @@ impl<const N: usize> ContainerTypeRepr for Stack<N> {
 }
 
 impl ArrayFromContainerType for Unknown {
-    type Output<Item, const NDIM: usize>
-        = DynArray<Item, NDIM>
+    type OutputImpl<Item, const NDIM: usize>
+        = BaseArray<VectorContainer<Item>, NDIM>
     where
         Item: Copy + Default;
 
-    fn new_arr<Item, const NDIM: usize>(shape: [usize; NDIM]) -> Self::Output<Item, NDIM>
+    fn new_arr<Item, const NDIM: usize>(
+        shape: [usize; NDIM],
+    ) -> Array<Self::OutputImpl<Item, NDIM>, NDIM>
     where
         Item: Copy + Default,
     {
@@ -237,12 +239,14 @@ impl ArrayFromContainerType for Unknown {
 }
 
 impl RowMajorArrayFromContainerType for Unknown {
-    type Output<Item, const NDIM: usize>
-        = StridedDynArray<Item, NDIM>
+    type OutputImpl<Item, const NDIM: usize>
+        = StridedBaseArray<VectorContainer<Item>, NDIM>
     where
         Item: Copy + Default;
 
-    fn new_row_major_arr<Item, const NDIM: usize>(shape: [usize; NDIM]) -> Self::Output<Item, NDIM>
+    fn new_row_major_arr<Item, const NDIM: usize>(
+        shape: [usize; NDIM],
+    ) -> Array<Self::OutputImpl<Item, NDIM>, NDIM>
     where
         Item: Copy + Default,
     {
@@ -251,12 +255,14 @@ impl RowMajorArrayFromContainerType for Unknown {
 }
 
 impl<const N: usize> ArrayFromContainerType for Stack<N> {
-    type Output<Item, const NDIM: usize>
-        = StaticArray<Item, NDIM, N>
+    type OutputImpl<Item, const NDIM: usize>
+        = BaseArray<ArrayContainer<Item, N>, NDIM>
     where
         Item: Copy + Default;
 
-    fn new_arr<Item, const NDIM: usize>(shape: [usize; NDIM]) -> Self::Output<Item, NDIM>
+    fn new_arr<Item, const NDIM: usize>(
+        shape: [usize; NDIM],
+    ) -> Array<Self::OutputImpl<Item, NDIM>, NDIM>
     where
         Item: Copy + Default,
     {
@@ -265,12 +271,14 @@ impl<const N: usize> ArrayFromContainerType for Stack<N> {
 }
 
 impl<const N: usize> RowMajorArrayFromContainerType for Stack<N> {
-    type Output<Item, const NDIM: usize>
-        = Array<StridedBaseArray<ArrayContainer<Item, N>, NDIM>, NDIM>
+    type OutputImpl<Item, const NDIM: usize>
+        = StridedBaseArray<ArrayContainer<Item, N>, NDIM>
     where
         Item: Copy + Default;
 
-    fn new_row_major_arr<Item, const NDIM: usize>(shape: [usize; NDIM]) -> Self::Output<Item, NDIM>
+    fn new_row_major_arr<Item, const NDIM: usize>(
+        shape: [usize; NDIM],
+    ) -> Array<Self::OutputImpl<Item, NDIM>, NDIM>
     where
         Item: Copy + Default,
     {

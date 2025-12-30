@@ -10,6 +10,8 @@
 //! The [ContainerType] trait attaches an associated type that can be used to distinguish between containers
 //! on a type level.
 
+use crate::{Array, MutableArrayImpl, RawAccessMut, Stride};
+
 /// Base trait for a data container. It defines the type of the underlying data
 /// and provides a method to return the number of elements.
 pub trait DataContainer {
@@ -97,13 +99,17 @@ pub trait ContainerTypeRepr {
 
 /// Create a new array from a given container type.
 pub trait ArrayFromContainerType {
-    /// Array Output type
-    type Output<Item, const NDIM: usize>
+    /// Array Output implementation type
+    type OutputImpl<Item, const NDIM: usize>: MutableArrayImpl<Item, NDIM>
+        + RawAccessMut<Item = Item>
+        + Stride<NDIM>
     where
         Item: Copy + Default;
 
     /// Given the shape, create a new column-major array
-    fn new_arr<Item, const NDIM: usize>(shape: [usize; NDIM]) -> Self::Output<Item, NDIM>
+    fn new_arr<Item, const NDIM: usize>(
+        shape: [usize; NDIM],
+    ) -> Array<Self::OutputImpl<Item, NDIM>, NDIM>
     where
         Item: Copy + Default;
 }
@@ -111,12 +117,16 @@ pub trait ArrayFromContainerType {
 /// Create a new row-major array from a given container type.
 pub trait RowMajorArrayFromContainerType {
     /// Array Output type
-    type Output<Item, const NDIM: usize>
+    type OutputImpl<Item, const NDIM: usize>: MutableArrayImpl<Item, NDIM>
+        + RawAccessMut<Item = Item>
+        + Stride<NDIM>
     where
         Item: Copy + Default;
 
     /// Given the shape, create a new column-major array
-    fn new_row_major_arr<Item, const NDIM: usize>(shape: [usize; NDIM]) -> Self::Output<Item, NDIM>
+    fn new_row_major_arr<Item, const NDIM: usize>(
+        shape: [usize; NDIM],
+    ) -> Array<Self::OutputImpl<Item, NDIM>, NDIM>
     where
         Item: Copy + Default;
 }

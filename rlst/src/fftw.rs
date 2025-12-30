@@ -14,7 +14,7 @@
 //! of a given array `arr`.
 //! ```
 //! use rlst::{rlst_dynamic_array, fftw::{FftwPlanFlags, C2CDirection, C2CPlan, FftPlanInplace},
-//!     EvaluateObject, c64,
+//!     EvaluateArray, c64,
 //!     assert_array_relative_eq};
 //! use num::FromPrimitive;
 //!
@@ -61,7 +61,7 @@
 //!
 //! ```
 //! use rlst::{rlst_dynamic_array, fftw::{FftwPlanFlags, R2RPlanKind, R2RPlan, FftPlanInplace},
-//!     EvaluateObject, c64,
+//!     EvaluateArray, c64,
 //!     assert_array_relative_eq};
 //! use num::FromPrimitive;
 //!

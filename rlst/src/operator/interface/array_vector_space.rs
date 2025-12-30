@@ -8,7 +8,7 @@
 use std::{marker::PhantomData, ops::Neg};
 
 use crate::{
-    EvaluateObject, InnerProductSpace, LinearSpace, RlstScalar, dense::array::DynArray,
+    EvaluateArray, InnerProductSpace, LinearSpace, RlstScalar, dense::array::DynArray,
     operator::element::Element,
 };
 

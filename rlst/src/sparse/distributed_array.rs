@@ -26,7 +26,7 @@ use num::traits::MulAdd;
 
 use crate::dense::array::{DynArray, StridedDynArray, StridedSliceArray};
 use crate::{
-    Array, BaseItem, Conj, EvaluateObject, Max, RlstResult, Shape, UnsafeRandom1DAccessByValue,
+    Array, BaseItem, Conj, EvaluateArray, Max, RlstResult, Shape, UnsafeRandom1DAccessByValue,
     UnsafeRandom1DAccessMut, UnsafeRandomAccessMut,
 };
 use crate::{EvaluateRowMajorArray, UnsafeRandomAccessByValue};
@@ -399,31 +399,42 @@ where
     }
 }
 
-impl<'a, C, ArrayImpl, ArrayImplEval, const NDIM: usize> EvaluateObject
-    for DistributedArray<'a, C, ArrayImpl, NDIM>
+impl<'a, C, ArrayImpl, Item, const NDIM: usize> DistributedArray<'a, C, ArrayImpl, NDIM>
 where
+    Item: Copy + Default,
     C: Communicator,
-    ArrayImplEval: Shape<NDIM>,
-    Array<ArrayImpl, NDIM>: EvaluateObject<Output = Array<ArrayImplEval, NDIM>>,
+    ArrayImpl: BaseItem<Item = Item>,
+    Array<ArrayImpl, NDIM>: EvaluateArray<Item, NDIM>,
 {
-    type Output = DistributedArray<'a, C, ArrayImplEval, NDIM>;
-
-    fn eval(&self) -> Self::Output {
+    /// Evaluate into a new array
+    pub fn eval(
+        &self,
+    ) -> DistributedArray<
+        'a,
+        C,
+        <Array<ArrayImpl, NDIM> as EvaluateArray<Item, NDIM>>::OutputImpl,
+        NDIM,
+    > {
         DistributedArray::new(self.index_layout.clone(), self.local.eval())
     }
 }
 
-impl<'a, C, ArrayImpl, ArrayImplEval, const NDIM: usize> EvaluateRowMajorArray
-    for DistributedArray<'a, C, ArrayImpl, NDIM>
+impl<'a, C, ArrayImpl, Item, const NDIM: usize> DistributedArray<'a, C, ArrayImpl, NDIM>
 where
+    Item: Copy + Default,
     C: Communicator,
-    ArrayImplEval: Shape<NDIM>,
-    Array<ArrayImpl, NDIM>: EvaluateRowMajorArray<Output = Array<ArrayImplEval, NDIM>>,
+    ArrayImpl: BaseItem<Item = Item>,
+    Array<ArrayImpl, NDIM>: EvaluateRowMajorArray<Item, NDIM>,
 {
-    type Output = DistributedArray<'a, C, ArrayImplEval, NDIM>;
-
-    /// Evaluate the global array into a row major global array.
-    fn eval_row_major(&self) -> Self::Output {
+    /// Evaluate into a new row-major array
+    pub fn eval_row_major(
+        &self,
+    ) -> DistributedArray<
+        'a,
+        C,
+        <Array<ArrayImpl, NDIM> as EvaluateRowMajorArray<Item, NDIM>>::OutputImpl,
+        NDIM,
+    > {
         DistributedArray::new(self.index_layout.clone(), self.local.eval_row_major())
     }
 }

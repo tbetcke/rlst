@@ -122,7 +122,7 @@ impl_r2r_inplace!(f32, fftw_single);
 mod test {
 
     use crate::{
-        DynArray, EvaluateObject,
+        DynArray, EvaluateArray,
         fftw::{
             FftPlanInplace, FftwPlanFlags,
             r2r_inplace::{R2RPlan, R2RPlanKind},

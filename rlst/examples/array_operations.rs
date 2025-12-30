@@ -1,6 +1,6 @@
 use rand::SeedableRng;
 use rand_chacha::ChaCha8Rng;
-use rlst::EvaluateObject;
+use rlst::EvaluateArray;
 
 fn main() {
     // Declare an array either as
