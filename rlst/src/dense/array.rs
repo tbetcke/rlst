@@ -584,7 +584,7 @@ where
             NDIM,
         >(self.shape());
 
-        out.fill_from(&self);
+        out.fill_from(self);
 
         out
     }
@@ -609,7 +609,7 @@ where
                 NDIM,
             >(self.shape());
 
-        out.fill_from(&self);
+        out.fill_from(self);
 
         out
     }
