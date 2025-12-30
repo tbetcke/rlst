@@ -19,6 +19,7 @@ use crate::dense::data_container::ArrayContainer;
 use crate::fftw::{FftPlanInplace, R2RPlanKind};
 use crate::{Array, fftw::R2RPlan};
 use crate::{DynArray, MutableArrayImpl, RlstScalar, ValueArrayImpl};
+use crate::{c32, c64};
 
 /// Conversion of data at chebychev points to series coefficients and back
 pub trait ChebychevCoefficientsToData<Item, const NDIM: usize> {
@@ -477,6 +478,59 @@ where
     }
 }
 
+macro_rules! impl_cheb_coeffs_complex {
+    ($dtype:ty) => {
+        impl<ArrayImpl, const NDIM: usize> ChebychevCoefficientsToData<$dtype, NDIM>
+            for Array<ArrayImpl, NDIM>
+        where
+            ArrayImpl: ValueArrayImpl<$dtype, NDIM>,
+        {
+            fn chebychev_coeffs_from_data_second_kind(&self) -> DynArray<$dtype, NDIM> {
+                let shape = self.shape();
+                let mut re = DynArray::<<$dtype as RlstScalar>::Real, NDIM>::from_shape(shape);
+                let mut im = DynArray::<<$dtype as RlstScalar>::Real, NDIM>::from_shape(shape);
+
+                re.fill_from(&self.r().unary_op(|elem: $dtype| elem.re()));
+                im.fill_from(&self.r().unary_op(|elem: $dtype| elem.im()));
+
+                let re_coeffs = re.chebychev_coeffs_from_data_second_kind();
+                let im_coeffs = im.chebychev_coeffs_from_data_second_kind();
+
+                let mut out = DynArray::<$dtype, NDIM>::from_shape(shape);
+                for (o, r, i) in izip!(
+                    out.iter_mut(),
+                    re_coeffs.iter_value(),
+                    im_coeffs.iter_value()
+                ) {
+                    *o = <$dtype>::new(r, i);
+                }
+                out
+            }
+
+            fn chebychev_data_from_coeffs_second_kind(&self) -> DynArray<$dtype, NDIM> {
+                let shape = self.shape();
+                let mut re = DynArray::<<$dtype as RlstScalar>::Real, NDIM>::from_shape(shape);
+                let mut im = DynArray::<<$dtype as RlstScalar>::Real, NDIM>::from_shape(shape);
+
+                re.fill_from(&self.r().unary_op(|elem: $dtype| elem.re()));
+                im.fill_from(&self.r().unary_op(|elem: $dtype| elem.im()));
+
+                let re_data = re.chebychev_data_from_coeffs_second_kind();
+                let im_data = im.chebychev_data_from_coeffs_second_kind();
+
+                let mut out = DynArray::<$dtype, NDIM>::from_shape(shape);
+                for (o, r, i) in izip!(out.iter_mut(), re_data.iter_value(), im_data.iter_value()) {
+                    *o = <$dtype>::new(r, i);
+                }
+                out
+            }
+        }
+    };
+}
+
+impl_cheb_coeffs_complex!(c64);
+impl_cheb_coeffs_complex!(c32);
+
 macro_rules! impl_cheb_coeffs {
     ($dtype:ty) => {
         impl<ArrayImpl, const NDIM: usize> ChebychevCoefficientsToData<$dtype, NDIM>
@@ -612,6 +666,8 @@ impl_cheb_coeffs!(f32);
 
 #[cfg(test)]
 mod test {
+    use num::Complex;
+
     use crate::{
         EvaluateArray, Linspace, assert_array_relative_eq,
         dense::tools::PrettyPrint,
@@ -732,6 +788,20 @@ mod test {
         let n = 11;
 
         let mut expected = DynArray::<f64, _>::from_shape([n]);
+        expected.fill_from_seed_normally_distributed(0);
+
+        let coeffs = expected.chebychev_coeffs_from_data_second_kind();
+
+        let actual = coeffs.chebychev_data_from_coeffs_second_kind();
+
+        crate::assert_array_relative_eq!(actual, expected, 1E-10);
+    }
+
+    #[test]
+    pub fn test_complex_random_data_to_coefficients_and_back_1d() {
+        let n = 11;
+
+        let mut expected = DynArray::<c64, _>::from_shape([n]);
         expected.fill_from_seed_normally_distributed(0);
 
         let coeffs = expected.chebychev_coeffs_from_data_second_kind();
@@ -1041,6 +1111,42 @@ mod test {
         expected.iter_mut().for_each(|elem| *elem = -elem.sin());
 
         crate::assert_array_relative_eq!(values_deriv_2, expected, 1E-10);
+    }
+
+    #[test]
+    fn test_derivative_complex_1d() {
+        // We sample the sine function from -1 to 1, compute the coefficients, take the derivative
+        // and transform back. The result is compared with the cosine function.
+
+        let n = 30; // Order of the Chebychev expansion
+
+        let points = chebychev_points::<f64>(Kind::Second, n);
+
+        // We fill the data array
+        let mut values = points.r().cast::<c64>().eval();
+        values
+            .iter_mut()
+            .for_each(|elem| *elem = Complex::new(elem.re().sin(), (5.0_f64 * elem.re()).cos()));
+
+        // and the array of expected values.
+        let mut expected = points.r().cast::<c64>().eval();
+        expected.iter_mut().for_each(|elem| {
+            *elem = Complex::new(elem.re().cos(), -5.0_f64 * (5.0_f64 * elem.re()).sin())
+        });
+
+        // We compute the coefficients of the expansion
+        let coeffs = values.chebychev_coeffs_from_data_second_kind();
+
+        // Now compute the derivative of the coefficients
+        let mut deriv = coeffs.eval();
+        deriv.chebychev_derivative_second_kind(1);
+
+        // We transform back
+        let values_deriv = deriv.chebychev_data_from_coeffs_second_kind();
+
+        // We compare with the sine of the original values.
+
+        crate::assert_array_relative_eq!(values_deriv, expected, 1E-10);
     }
 
     #[test]
