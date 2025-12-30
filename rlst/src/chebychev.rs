@@ -477,127 +477,136 @@ where
     }
 }
 
-impl<ArrayImpl, const NDIM: usize> ChebychevCoefficientsToData<f64, NDIM> for Array<ArrayImpl, NDIM>
-where
-    Array<ArrayImpl, NDIM>: EvaluateObject<Output = DynArray<f64, NDIM>>,
-{
-    fn chebychev_coeffs_from_data_second_kind(&self) -> DynArray<f64, NDIM> {
-        if NDIM > 3 {
-            unimplemented!();
-        }
-
-        let mut result = self.eval();
-
-        let shape = result.shape();
-
-        // Compute the discrete cosine transform of the data
-
-        let kind = vec![R2RPlanKind::FFTW_REDFT00; NDIM];
-
-        result
-            .r_mut()
-            .into_fft()
-            .r2r_fft(crate::fftw::FftwPlanFlags::Estimate, &kind)
-            .unwrap()
-            .execute();
-
-        // We scale all values.
-        let n_recip = (shape.iter().map(|elem| elem - 1).product::<usize>() as f64).recip();
-        result *= n_recip;
-
-        // We now have to deal with the boundary data
-
-        // For NDIM = 1 we just need to adjust the single boundary points
-        // For NDIM = 2 and NDIM = 3 we need to adjust the boundary values of the hypercube
-        // formed by the values.
-
-        if NDIM == 1 {
-            *result.data_mut().unwrap().first_mut().unwrap() /= 2.0;
-            *result.data_mut().unwrap().last_mut().unwrap() /= 2.0;
-        } else if NDIM == 2 {
-            for (axis, dim) in shape.iter().enumerate() {
-                for index in [0, dim - 1] {
-                    result
-                        .r_mut()
-                        .coerce_dim::<2>()
-                        .unwrap()
-                        .slice::<1>(axis, index)
-                        .div_assign(2.0);
+macro_rules! impl_cheb_coeffs {
+    ($dtype:ty) => {
+        impl<ArrayImpl, const NDIM: usize> ChebychevCoefficientsToData<$dtype, NDIM>
+            for Array<ArrayImpl, NDIM>
+        where
+            Array<ArrayImpl, NDIM>: EvaluateObject<Output = DynArray<$dtype, NDIM>>,
+        {
+            fn chebychev_coeffs_from_data_second_kind(&self) -> DynArray<$dtype, NDIM> {
+                if NDIM > 3 {
+                    unimplemented!();
                 }
-            }
-        } else if NDIM == 3 {
-            for (axis, dim) in shape.iter().enumerate() {
-                for index in [0, dim - 1] {
-                    result
-                        .r_mut()
-                        .coerce_dim::<3>()
-                        .unwrap()
-                        .slice::<2>(axis, index)
-                        .div_assign(2.0);
+
+                let mut result = self.eval();
+
+                let shape = result.shape();
+
+                // Compute the discrete cosine transform of the data
+
+                let kind = vec![R2RPlanKind::FFTW_REDFT00; NDIM];
+
+                result
+                    .r_mut()
+                    .into_fft()
+                    .r2r_fft(crate::fftw::FftwPlanFlags::Estimate, &kind)
+                    .unwrap()
+                    .execute();
+
+                // We scale all values.
+                let n_recip =
+                    (shape.iter().map(|elem| elem - 1).product::<usize>() as $dtype).recip();
+                result *= n_recip;
+
+                // We now have to deal with the boundary data
+
+                // For NDIM = 1 we just need to adjust the single boundary points
+                // For NDIM = 2 and NDIM = 3 we need to adjust the boundary values of the hypercube
+                // formed by the values.
+
+                if NDIM == 1 {
+                    *result.data_mut().unwrap().first_mut().unwrap() /= 2.0;
+                    *result.data_mut().unwrap().last_mut().unwrap() /= 2.0;
+                } else if NDIM == 2 {
+                    for (axis, dim) in shape.iter().enumerate() {
+                        for index in [0, dim - 1] {
+                            result
+                                .r_mut()
+                                .coerce_dim::<2>()
+                                .unwrap()
+                                .slice::<1>(axis, index)
+                                .div_assign(2.0);
+                        }
+                    }
+                } else if NDIM == 3 {
+                    for (axis, dim) in shape.iter().enumerate() {
+                        for index in [0, dim - 1] {
+                            result
+                                .r_mut()
+                                .coerce_dim::<3>()
+                                .unwrap()
+                                .slice::<2>(axis, index)
+                                .div_assign(2.0);
+                        }
+                    }
                 }
+
+                result
+            }
+
+            fn chebychev_data_from_coeffs_second_kind(&self) -> DynArray<$dtype, NDIM> {
+                if NDIM > 3 {
+                    unimplemented!();
+                }
+
+                let mut result = self.eval();
+
+                let shape = result.shape();
+
+                // Rescale the values.
+
+                result *= (2.pow(NDIM as u32) as $dtype).recip();
+
+                if NDIM == 1 {
+                    *result.data_mut().unwrap().first_mut().unwrap() *= 2.0;
+                    *result.data_mut().unwrap().last_mut().unwrap() *= 2.0;
+                } else if NDIM == 2 {
+                    for (axis, dim) in shape.iter().enumerate() {
+                        for index in [0, dim - 1] {
+                            result
+                                .r_mut()
+                                .coerce_dim::<2>()
+                                .unwrap()
+                                .slice::<1>(axis, index)
+                                .mul_assign(2.0);
+                        }
+                    }
+                } else if NDIM == 3 {
+                    for (axis, dim) in shape.iter().enumerate() {
+                        for index in [0, dim - 1] {
+                            result
+                                .r_mut()
+                                .coerce_dim::<3>()
+                                .unwrap()
+                                .slice::<2>(axis, index)
+                                .mul_assign(2.0);
+                        }
+                    }
+                }
+
+                // Compute the discrete cosine transform of the data
+
+                let kind = vec![R2RPlanKind::FFTW_REDFT00; NDIM];
+
+                result
+                    .r_mut()
+                    .into_fft()
+                    .r2r_fft(crate::fftw::FftwPlanFlags::Estimate, &kind)
+                    .unwrap()
+                    .execute();
+
+                // This neutralises the boundary scaling and leaves only the interior values divided by two.
+                // This is easier than trying to scale only interior values.
+
+                result
             }
         }
-
-        result
-    }
-
-    fn chebychev_data_from_coeffs_second_kind(&self) -> DynArray<f64, NDIM> {
-        if NDIM > 3 {
-            unimplemented!();
-        }
-
-        let mut result = self.eval();
-
-        let shape = result.shape();
-
-        // Rescale the values.
-
-        result *= (2.pow(NDIM as u32) as f64).recip();
-
-        if NDIM == 1 {
-            *result.data_mut().unwrap().first_mut().unwrap() *= 2.0;
-            *result.data_mut().unwrap().last_mut().unwrap() *= 2.0;
-        } else if NDIM == 2 {
-            for (axis, dim) in shape.iter().enumerate() {
-                for index in [0, dim - 1] {
-                    result
-                        .r_mut()
-                        .coerce_dim::<2>()
-                        .unwrap()
-                        .slice::<1>(axis, index)
-                        .mul_assign(2.0);
-                }
-            }
-        } else if NDIM == 3 {
-            for (axis, dim) in shape.iter().enumerate() {
-                for index in [0, dim - 1] {
-                    result
-                        .r_mut()
-                        .coerce_dim::<3>()
-                        .unwrap()
-                        .slice::<2>(axis, index)
-                        .mul_assign(2.0);
-                }
-            }
-        }
-
-        // Compute the discrete cosine transform of the data
-
-        let kind = vec![R2RPlanKind::FFTW_REDFT00; NDIM];
-
-        result
-            .r_mut()
-            .into_fft()
-            .r2r_fft(crate::fftw::FftwPlanFlags::Estimate, &kind)
-            .unwrap()
-            .execute();
-
-        // This neutralises the boundary scaling and leaves only the interior values divided by two.
-        // This is easier than trying to scale only interior values.
-
-        result
-    }
+    };
 }
+
+impl_cheb_coeffs!(f64);
+impl_cheb_coeffs!(f32);
 
 #[cfg(test)]
 mod test {
@@ -628,6 +637,24 @@ mod test {
 
         crate::assert_array_relative_eq!(coeffs, one, 1E-10);
         crate::assert_array_relative_eq!(data, data_out, 1E-10);
+    }
+
+    #[test]
+    pub fn test_data_to_coeffs_1d_f32() {
+        let n = 3;
+
+        let points = chebychev_points::<f32>(Kind::Second, n);
+        let mut one = DynArray::<f32, _>::from_shape([n]);
+        one.fill_with_value(1.0);
+
+        let data = 2.0_f32 * points.r() * points.r() + points.r();
+
+        let coeffs = data.chebychev_coeffs_from_data_second_kind();
+
+        let data_out = coeffs.chebychev_data_from_coeffs_second_kind();
+
+        crate::assert_array_relative_eq!(coeffs, one, 1E-5);
+        crate::assert_array_relative_eq!(data, data_out, 1E-5);
     }
 
     #[test]
