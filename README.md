@@ -13,6 +13,8 @@ You can choose between one of them if you use this work.
 Some optional dependencies of the library have different licenses that
 may change the license of compiled library components. 
 
+Note that when linking against FFTW (either by the flag `fftw_system` or
+the flag `fftw_source`) the GPL license of FFTW needs to be adhered to.
 
 ## Notes
 
