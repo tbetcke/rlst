@@ -1,3 +1,8 @@
+
+## v0.6.0
+
+- Added an interface to convert Burn tensors into rlst arrays and back
+
 ## v0.5.0
 
 - Added the `multislice` and `multislice_iter` method to slice over multiple axes
