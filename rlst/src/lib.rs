@@ -31,6 +31,7 @@ pub mod distributed_tools;
 pub mod doc;
 #[cfg(feature = "fftw")]
 pub mod fftw;
+pub mod interface;
 pub mod interpolation;
 pub mod io;
 pub mod simd;
