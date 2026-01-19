@@ -39,7 +39,7 @@ mpi = { version = "0.8.1", optional = true , features = ["derive","complex"]}
 mpi-sys = { version = "0.2.3", optional = true }
 
 fftw-sys = { version = "0.8", default-features = false, optional = true }
-burn = { version = "0.19", default-features = false, optional = true }
+burn = { version = "0.20", default-features = false, optional = true }
 
 [dev-dependencies]
 approx = { version = "0.5", features = ["num-complex"] }
