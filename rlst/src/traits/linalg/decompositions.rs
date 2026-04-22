@@ -78,6 +78,36 @@ pub trait SymmEig {
     )>;
 }
 
+/// Generalized symmetric eigenvalue decomposition type.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GeneralizedSymmEigType {
+    /// Ax = lambda Bx
+    AxEqualLambdaBx = 1,
+    /// ABx = lambda x
+    ABxEqualLambdaX = 2,
+    /// BAx = lambda x
+    BAxEqualLambdaX = 3,
+}
+
+/// Compute the generalized symmetric eigenvalue decomposition of a matrix.
+pub trait GeneralizedSymmEig<B> {
+    /// Item type of the generalized symmetric eigenvalue decomposition.
+    type Item: Lapack;
+
+    /// Compute the generalized symmetric eigenvalue decomposition of a matrix.
+    #[allow(clippy::too_many_arguments)]
+    fn eigh_generalized(
+        &self,
+        b: &B,
+        uplo: UpLo,
+        mode: SymmEigMode,
+        itype: GeneralizedSymmEigType,
+    ) -> RlstResult<(
+        DynArray<<Self::Item as RlstScalar>::Real, 1>,
+        Option<DynArray<Self::Item, 2>>,
+    )>;
+}
+
 /// Compute the eigenvalue decomposition of a matrix.
 pub trait EigenvalueDecomposition {
     /// The item type of the matrix.
@@ -104,6 +134,37 @@ pub trait EigenvalueDecomposition {
     #[allow(clippy::type_complexity)]
     fn eig(
         &self,
+        mode: EigMode,
+    ) -> RlstResult<(
+        DynArray<<Self::Item as RlstScalar>::Complex, 1>,
+        Option<DynArray<<Self::Item as RlstScalar>::Complex, 2>>,
+        Option<DynArray<<Self::Item as RlstScalar>::Complex, 2>>,
+    )>;
+}
+
+/// Compute the generalized eigenvalue decomposition of a matrix.
+pub trait GeneralizedEigenvalueDecomposition<B> {
+    /// The item type of the matrix.
+    type Item: Lapack;
+
+    /// Return the eigenvalues of the matrix.
+    fn eigenvalues_generalized(
+        &self,
+        b: &B,
+    ) -> RlstResult<DynArray<<Self::Item as RlstScalar>::Complex, 1>> {
+        let (lam, _, _) = self.eig_generalized(b, EigMode::EigenvaluesOnly)?;
+        Ok(lam)
+    }
+
+    /// Compute the eigenvalues and eigenvectors of the matrix.
+    /// Returns a tuple `(lam, vl, vr)` containing:
+    /// - `lam`: The eigenvalues.
+    /// - `vl`: The left eigenvectors (optional).
+    /// - `vr`: The right eigenvectors (optional).
+    #[allow(clippy::type_complexity)]
+    fn eig_generalized(
+        &self,
+        b: &B,
         mode: EigMode,
     ) -> RlstResult<(
         DynArray<<Self::Item as RlstScalar>::Complex, 1>,

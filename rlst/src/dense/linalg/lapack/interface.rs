@@ -14,10 +14,12 @@ pub mod gesvd;
 pub mod getrf;
 pub mod getri;
 pub mod getrs;
+pub mod ggev;
 pub mod mqr;
 pub mod orgqr;
 pub mod posv;
 pub mod potrf;
+pub mod sygv;
 pub mod trsm;
 
 /// Helper function to convert LAPACK info codes to a `LapackResult`.
