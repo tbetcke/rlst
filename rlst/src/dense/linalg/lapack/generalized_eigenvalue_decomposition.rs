@@ -44,66 +44,42 @@ where
         };
 
         let mut vl_mat = match mode {
-            EigMode::EigenvaluesOnly => DynArray::<Item, 2>::from_shape([0, 0]),
-            _ => DynArray::<Item, 2>::from_shape([n, n]),
+            EigMode::EigenvaluesOnly => {
+                DynArray::<<Item as RlstScalar>::Complex, 2>::from_shape([0, 0])
+            }
+            _ => DynArray::<<Item as RlstScalar>::Complex, 2>::from_shape([n, n]),
         };
 
         let mut vr_mat = match mode {
-            EigMode::EigenvaluesOnly => DynArray::<Item, 2>::from_shape([0, 0]),
-            _ => DynArray::<Item, 2>::from_shape([n, n]),
+            EigMode::EigenvaluesOnly => {
+                DynArray::<<Item as RlstScalar>::Complex, 2>::from_shape([0, 0])
+            }
+            _ => DynArray::<<Item as RlstScalar>::Complex, 2>::from_shape([n, n]),
         };
 
         let mut eigenvalues = DynArray::<<Self::Item as RlstScalar>::Complex, 1>::from_shape([n]);
 
-        if !Item::IS_COMPLEX {
-            let mut alphar = vec![<Item as RlstScalar>::Real::zero(); n];
-            let mut alphai = vec![<Item as RlstScalar>::Real::zero(); n];
-            let mut beta = vec![<Item as RlstScalar>::Real::zero(); n];
+        let mut alpha = vec![<Item as RlstScalar>::Complex::zero(); n];
+        let mut beta = vec![<Item as RlstScalar>::Complex::zero(); n];
 
-            Item::ggev(
-                jobv,
-                jobv,
-                n,
-                a_mat.data_mut().unwrap(),
-                n,
-                b_mat.data_mut().unwrap(),
-                n,
-                &mut alphar,
-                &mut alphai,
-                &mut beta,
-                vl_mat.data_mut().unwrap(),
-                n,
-                vr_mat.data_mut().unwrap(),
-                n,
-            )?;
+        Item::ggev(
+            jobv,
+            jobv,
+            n,
+            a_mat.data_mut().unwrap(),
+            n,
+            b_mat.data_mut().unwrap(),
+            n,
+            &mut alpha,
+            &mut beta,
+            vl_mat.data_mut().unwrap(),
+            n,
+            vr_mat.data_mut().unwrap(),
+            n,
+        )?;
 
-            for i in 0..n {
-                eigenvalues[[i]] = Item::complex(alphar[i] / beta[i], alphai[i] / beta[i]);
-            }
-        } else {
-            let mut alpha = vec![Item::zero(); n];
-            let mut beta = vec![Item::zero(); n];
-
-            Item::ggev_complex(
-                jobv,
-                jobv,
-                n,
-                a_mat.data_mut().unwrap(),
-                n,
-                b_mat.data_mut().unwrap(),
-                n,
-                &mut alpha,
-                &mut beta,
-                vl_mat.data_mut().unwrap(),
-                n,
-                vr_mat.data_mut().unwrap(),
-                n,
-            )?;
-
-            for i in 0..n {
-                eigenvalues[[i]] = alpha[i].add_complex(Item::Complex::zero())
-                    / beta[i].add_complex(Item::Complex::zero());
-            }
+        for i in 0..n {
+            eigenvalues[[i]] = alpha[i] / beta[i];
         }
 
         match mode {

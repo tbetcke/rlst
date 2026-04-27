@@ -31,30 +31,11 @@ pub trait Ggev: RlstScalar {
         lda: usize,
         b: &mut [Self],
         ldb: usize,
-        alphar: &mut [Self::Real],
-        alphai: &mut [Self::Real],
-        beta: &mut [Self::Real],
-        vl: &mut [Self],
+        alpha: &mut [Self::Complex],
+        beta: &mut [Self::Complex],
+        vl: &mut [Self::Complex],
         ldvl: usize,
-        vr: &mut [Self],
-        ldvr: usize,
-    ) -> LapackResult<()>;
-
-    /// Compute generalized eigenvalues and optionally left and/or right eigenvectors for complex matrices.
-    #[allow(clippy::too_many_arguments)]
-    fn ggev_complex(
-        jobvl: Job,
-        jobvr: Job,
-        n: usize,
-        a: &mut [Self],
-        lda: usize,
-        b: &mut [Self],
-        ldb: usize,
-        alpha: &mut [Self],
-        beta: &mut [Self],
-        vl: &mut [Self],
-        ldvl: usize,
-        vr: &mut [Self],
+        vr: &mut [Self::Complex],
         ldvr: usize,
     ) -> LapackResult<()>;
 }
@@ -70,14 +51,26 @@ macro_rules! implement_ggev_real {
                 lda: usize,
                 b: &mut [Self],
                 ldb: usize,
-                alphar: &mut [Self::Real],
-                alphai: &mut [Self::Real],
-                beta: &mut [Self::Real],
-                vl: &mut [Self],
+                alpha: &mut [Self::Complex],
+                beta: &mut [Self::Complex],
+                vl: &mut [Self::Complex],
                 ldvl: usize,
-                vr: &mut [Self],
+                vr: &mut [Self::Complex],
                 ldvr: usize,
             ) -> LapackResult<()> {
+                let mut alphar = vec![<$scalar>::zero(); n];
+                let mut alphai = vec![<$scalar>::zero(); n];
+                let mut beta_real = vec![<$scalar>::zero(); n];
+
+                let mut vlr = match jobvl {
+                    Job::Compute => vec![<$scalar>::zero(); ldvl * n],
+                    Job::None => vec![<$scalar>::zero(); 1],
+                };
+                let mut vrr = match jobvr {
+                    Job::Compute => vec![<$scalar>::zero(); ldvr * n],
+                    Job::None => vec![<$scalar>::zero(); 1],
+                };
+
                 let mut info = 0;
                 let mut work = vec![<$scalar>::zero(); 1];
 
@@ -90,12 +83,12 @@ macro_rules! implement_ggev_real {
                         lda as i32,
                         b,
                         ldb as i32,
-                        alphar,
-                        alphai,
-                        beta,
-                        vl,
+                        &mut alphar,
+                        &mut alphai,
+                        &mut beta_real,
+                        &mut vlr,
                         ldvl as i32,
-                        vr,
+                        &mut vrr,
                         ldvr as i32,
                         &mut work,
                         -1,
@@ -119,12 +112,12 @@ macro_rules! implement_ggev_real {
                         lda as i32,
                         b,
                         ldb as i32,
-                        alphar,
-                        alphai,
-                        beta,
-                        vl,
+                        &mut alphar,
+                        &mut alphai,
+                        &mut beta_real,
+                        &mut vlr,
                         ldvl as i32,
-                        vr,
+                        &mut vrr,
                         ldvr as i32,
                         &mut work,
                         lwork as i32,
@@ -132,25 +125,68 @@ macro_rules! implement_ggev_real {
                     );
                 }
 
-                lapack_return(info, ())
-            }
+                for i in 0..n {
+                    alpha[i] = <<$scalar as RlstScalar>::Complex>::new(alphar[i], alphai[i]);
+                    beta[i] = <<$scalar as RlstScalar>::Complex>::from_real(beta_real[i]);
+                }
 
-            fn ggev_complex(
-                _jobvl: Job,
-                _jobvr: Job,
-                _n: usize,
-                _a: &mut [Self],
-                _lda: usize,
-                _b: &mut [Self],
-                _ldb: usize,
-                _alpha: &mut [Self],
-                _beta: &mut [Self],
-                _vl: &mut [Self],
-                _ldvl: usize,
-                _vr: &mut [Self],
-                _ldvr: usize,
-            ) -> LapackResult<()> {
-                panic!("ggev_complex not implemented for real types")
+                if jobvl == Job::Compute {
+                    let mut count = 0;
+                    while count < n {
+                        if count < n - 1 && alphai[count] != <$scalar>::zero() {
+                            for row in 0..n {
+                                vl[row + count * ldvl] = <<$scalar as RlstScalar>::Complex>::new(
+                                    vlr[row + count * ldvl],
+                                    vlr[row + (1 + count) * ldvl],
+                                );
+                                vl[row + (1 + count) * ldvl] =
+                                    <<$scalar as RlstScalar>::Complex>::new(
+                                        vlr[row + count * ldvl],
+                                        -vlr[row + (1 + count) * ldvl],
+                                    );
+                            }
+                            count += 2;
+                        } else {
+                            for row in 0..n {
+                                vl[row + count * ldvl] =
+                                    <<$scalar as RlstScalar>::Complex>::from_real(
+                                        vlr[row + count * ldvl],
+                                    );
+                            }
+                            count += 1;
+                        }
+                    }
+                }
+
+                if jobvr == Job::Compute {
+                    let mut count = 0;
+                    while count < n {
+                        if count < n - 1 && alphai[count] != <$scalar>::zero() {
+                            for row in 0..n {
+                                vr[row + count * ldvr] = <<$scalar as RlstScalar>::Complex>::new(
+                                    vrr[row + count * ldvr],
+                                    vrr[row + (1 + count) * ldvr],
+                                );
+                                vr[row + (1 + count) * ldvr] =
+                                    <<$scalar as RlstScalar>::Complex>::new(
+                                        vrr[row + count * ldvr],
+                                        -vrr[row + (1 + count) * ldvr],
+                                    );
+                            }
+                            count += 2;
+                        } else {
+                            for row in 0..n {
+                                vr[row + count * ldvr] =
+                                    <<$scalar as RlstScalar>::Complex>::from_real(
+                                        vrr[row + count * ldvr],
+                                    );
+                            }
+                            count += 1;
+                        }
+                    }
+                }
+
+                lapack_return(info, ())
             }
         }
     };
@@ -160,25 +196,6 @@ macro_rules! implement_ggev_complex {
     ($scalar:ty, $ggev:expr) => {
         impl Ggev for $scalar {
             fn ggev(
-                _jobvl: Job,
-                _jobvr: Job,
-                _n: usize,
-                _a: &mut [Self],
-                _lda: usize,
-                _b: &mut [Self],
-                _ldb: usize,
-                _alphar: &mut [Self::Real],
-                _alphai: &mut [Self::Real],
-                _beta: &mut [Self::Real],
-                _vl: &mut [Self],
-                _ldvl: usize,
-                _vr: &mut [Self],
-                _ldvr: usize,
-            ) -> LapackResult<()> {
-                panic!("ggev not implemented for complex types")
-            }
-
-            fn ggev_complex(
                 jobvl: Job,
                 jobvr: Job,
                 n: usize,
@@ -186,11 +203,11 @@ macro_rules! implement_ggev_complex {
                 lda: usize,
                 b: &mut [Self],
                 ldb: usize,
-                alpha: &mut [Self],
-                beta: &mut [Self],
-                vl: &mut [Self],
+                alpha: &mut [Self::Complex],
+                beta: &mut [Self::Complex],
+                vl: &mut [Self::Complex],
                 ldvl: usize,
-                vr: &mut [Self],
+                vr: &mut [Self::Complex],
                 ldvr: usize,
             ) -> LapackResult<()> {
                 let mut info = 0;
