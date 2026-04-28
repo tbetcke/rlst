@@ -2,7 +2,7 @@
 
 use lapack::{cggev, dggev, sggev, zggev};
 
-use crate::base_types::{c32, c64, LapackError, LapackResult};
+use crate::base_types::{LapackError, LapackResult, c32, c64};
 use crate::dense::linalg::lapack::interface::lapack_return;
 use crate::traits::rlst_num::RlstScalar;
 use num::Zero;

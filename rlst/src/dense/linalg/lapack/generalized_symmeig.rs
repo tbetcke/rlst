@@ -1,5 +1,6 @@
 //! Implementation of Generalized Symmetric/Hermitian Eigenvalue Decomposition.
 
+use crate::UnsafeRandom1DAccessByValue;
 use crate::base_types::{RlstResult, UpLo};
 use crate::dense::array::{Array, DynArray};
 use crate::dense::linalg::lapack::interface::sygv::{JobZ, SygvUplo};
@@ -8,7 +9,6 @@ use crate::traits::base_operations::Shape;
 use crate::traits::linalg::decompositions::{GeneralizedSymmEig, GeneralizedSymmEigType};
 use crate::traits::linalg::lapack::Lapack;
 use crate::traits::rlst_num::RlstScalar;
-use crate::UnsafeRandom1DAccessByValue;
 
 impl<Item, ArrayImpl, BArrayImpl> GeneralizedSymmEig<Array<BArrayImpl, 2>> for Array<ArrayImpl, 2>
 where

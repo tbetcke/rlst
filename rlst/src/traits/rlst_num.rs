@@ -228,13 +228,13 @@ pub trait RlstSimd: Pod + Send + Sync + num::Zero + 'static {
 
     /// Compare two SIMD registers for equality.
     fn simd_cmp_eq<S: Simd>(simd: S, lhs: Self::Scalars<S>, rhs: Self::Scalars<S>)
-        -> Self::Mask<S>;
+    -> Self::Mask<S>;
     /// Compare two SIMD registers for less-than.
     fn simd_cmp_lt<S: Simd>(simd: S, lhs: Self::Scalars<S>, rhs: Self::Scalars<S>)
-        -> Self::Mask<S>;
+    -> Self::Mask<S>;
     /// Compare two SIMD registers for less-than-or-equal.
     fn simd_cmp_le<S: Simd>(simd: S, lhs: Self::Scalars<S>, rhs: Self::Scalars<S>)
-        -> Self::Mask<S>;
+    -> Self::Mask<S>;
     /// Select from two simd registers depending on whether the mask is set.
     fn simd_select<S: Simd>(
         simd: S,
@@ -251,15 +251,15 @@ pub trait RlstSimd: Pod + Send + Sync + num::Zero + 'static {
 
     /// Add two SIMD registers.
     fn simd_add<S: Simd>(simd: S, lhs: Self::Scalars<S>, rhs: Self::Scalars<S>)
-        -> Self::Scalars<S>;
+    -> Self::Scalars<S>;
 
     /// Subtract two SIMD registers.
     fn simd_sub<S: Simd>(simd: S, lhs: Self::Scalars<S>, rhs: Self::Scalars<S>)
-        -> Self::Scalars<S>;
+    -> Self::Scalars<S>;
 
     /// Multiply two SIMD registers.
     fn simd_mul<S: Simd>(simd: S, lhs: Self::Scalars<S>, rhs: Self::Scalars<S>)
-        -> Self::Scalars<S>;
+    -> Self::Scalars<S>;
 
     /// Multiply two SIMD registers.
     fn simd_mul_add<S: Simd>(
@@ -271,7 +271,7 @@ pub trait RlstSimd: Pod + Send + Sync + num::Zero + 'static {
 
     /// Divide two SIMD registers.
     fn simd_div<S: Simd>(simd: S, lhs: Self::Scalars<S>, rhs: Self::Scalars<S>)
-        -> Self::Scalars<S>;
+    -> Self::Scalars<S>;
 
     /// Compute the sine and cosine of each element in the register.
     fn simd_sin_cos<S: Simd>(
@@ -304,17 +304,17 @@ pub trait RlstSimd: Pod + Send + Sync + num::Zero + 'static {
     /// Deinterleaves a register of values `[x0, y0, x1, y1, ...]` to
     /// `[x0, x1, ... y0, y1, ...]`.
     fn simd_deinterleave_2<S: Simd>(simd: S, value: [Self::Scalars<S>; 2])
-        -> [Self::Scalars<S>; 2];
+    -> [Self::Scalars<S>; 2];
 
     /// Deinterleaves a register of values `[x0, y0, z0, x1, y1, z1, ...]` to
     /// `[x0, x1, ... y0, y1, ..., z0, z1, ...]`.
     fn simd_deinterleave_3<S: Simd>(simd: S, value: [Self::Scalars<S>; 3])
-        -> [Self::Scalars<S>; 3];
+    -> [Self::Scalars<S>; 3];
 
     /// Deinterleaves a register of values `[x0, y0, z0, w0, x1, y1, z1, w1, ...]` to
     /// `[x0, x1, ... y0, y1, ..., z0, z1, ..., w0, w1, ...]`.
     fn simd_deinterleave_4<S: Simd>(simd: S, value: [Self::Scalars<S>; 4])
-        -> [Self::Scalars<S>; 4];
+    -> [Self::Scalars<S>; 4];
 
     /// Inverse of [deinterleave_2](RlstSimd::simd_deinterleave_2).
     fn simd_interleave_2<S: Simd>(simd: S, value: [Self::Scalars<S>; 2]) -> [Self::Scalars<S>; 2] {

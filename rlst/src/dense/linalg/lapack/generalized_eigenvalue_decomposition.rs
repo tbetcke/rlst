@@ -1,5 +1,6 @@
 //! Implementation of Generalized Eigenvalue Decomposition for general matrices.
 
+use crate::UnsafeRandom1DAccessByValue;
 use crate::base_types::RlstResult;
 use crate::dense::array::{Array, DynArray};
 use crate::dense::linalg::lapack::eigenvalue_decomposition::EigMode;
@@ -8,7 +9,6 @@ use crate::traits::base_operations::Shape;
 use crate::traits::linalg::decompositions::GeneralizedEigenvalueDecomposition;
 use crate::traits::linalg::lapack::Lapack;
 use crate::traits::rlst_num::RlstScalar;
-use crate::UnsafeRandom1DAccessByValue;
 use num::Zero;
 
 impl<Item, ArrayImpl, BArrayImpl> GeneralizedEigenvalueDecomposition<Array<BArrayImpl, 2>>
