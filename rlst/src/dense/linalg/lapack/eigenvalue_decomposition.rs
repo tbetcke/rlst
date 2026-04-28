@@ -11,16 +11,16 @@ use crate::traits::rlst_num::RlstScalar;
 
 use super::interface::gees::JobVs;
 
-/// Symmetric eigenvalue decomposition mode.
+/// Eigenvalue decomposition mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EigMode {
     /// Compute eigenvalues only.
     EigenvaluesOnly,
-    /// Compute right eigenvectors
+    /// Compute right eigenvectors.
     RightEigenvectors,
-    /// Compute left eigenvectors
+    /// Compute left eigenvectors.
     LeftEigenvectors,
-    /// Compute both right and left eigenvectors
+    /// Compute both right and left eigenvectors.
     BothEigenvectors,
 }
 
@@ -31,6 +31,12 @@ where
 {
     type Item = Item;
 
+    /// Return the eigenvalues of the matrix.
+    ///
+    /// The eigenvalues are computed using the LAPACK `?gees` routine.
+    ///
+    /// # Errors
+    /// Returns an error if the matrix is not square or if the LAPACK routine fails.
     fn eigenvalues(&self) -> RlstResult<DynArray<<Self::Item as RlstScalar>::Complex, 1>> {
         let mut a = DynArray::new_from(self);
 
@@ -55,6 +61,17 @@ where
         Ok(w)
     }
 
+    /// Compute the Schur decomposition of the matrix.
+    ///
+    /// The Schur decomposition of a square matrix `A` is given by `A = Z * T * Z^H`, where:
+    /// - `T` is a block-upper triangular matrix. Its diagonal blocks are 1x1 or 2x2 and
+    ///   encode the eigenvalues of the matrix.
+    /// - `Z` is a unitary matrix.
+    ///
+    /// Returns a tuple `(T, Z)`.
+    ///
+    /// # Errors
+    /// Returns an error if the matrix is not square or if the LAPACK routine fails.
     fn schur(&self) -> RlstResult<(DynArray<Self::Item, 2>, DynArray<Self::Item, 2>)> {
         let mut a = DynArray::new_from(self);
 
@@ -81,6 +98,21 @@ where
         Ok((a, vs))
     }
 
+    /// Compute the eigenvalues and eigenvectors of the matrix.
+    ///
+    /// The eigenvalues and eigenvectors are computed using the LAPACK `?geev` routine.
+    ///
+    /// # Arguments
+    /// - `mode`: Specifies which eigenvectors to compute.
+    ///
+    /// # Returns
+    /// A tuple `(lam, vr, vl)` containing:
+    /// - `lam`: A vector of eigenvalues.
+    /// - `vr`: An optional matrix of right eigenvectors.
+    /// - `vl`: An optional matrix of left eigenvectors.
+    ///
+    /// # Errors
+    /// Returns an error if the matrix is not square or if the LAPACK routine fails.
     fn eig(
         &self,
         mode: EigMode,

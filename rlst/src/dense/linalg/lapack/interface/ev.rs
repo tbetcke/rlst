@@ -41,7 +41,7 @@ pub trait Ev: RlstScalar {
     /// - `n`: The order of the matrix A.
     /// - `a`: The matrix A to be factored.
     /// - `lda`: The leading dimension of the matrix A.
-    /// - `w`: The vector to store the eigenvalues.
+    /// - `w`: The matrix to store the eigenvalues.
     fn ev(
         jobz: JobZEv,
         uplo: EvUplo,
