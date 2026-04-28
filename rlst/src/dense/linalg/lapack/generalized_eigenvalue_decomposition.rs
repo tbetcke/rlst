@@ -108,8 +108,11 @@ where
 mod test {
     use super::*;
     use crate::base_types::{c32, c64};
+    use crate::dense::array::DynArray;
+    use crate::dot;
+    use crate::traits::base_operations::*;
     use crate::traits::rlst_num::RlstScalar;
-    use num::FromPrimitive;
+    use itertools::izip;
     use paste::paste;
 
     macro_rules! implement_gen_eig_test {
@@ -127,34 +130,38 @@ mod test {
 
                 let lam = a.eigenvalues_generalized(&b).unwrap();
 
-                // Check (A - lambda B)v = 0 is harder without eigenvectors.
-                // For now, we just check that we get n eigenvalues.
-                assert_eq!(lam.len(), n);
+                let (lam2, vl, vr) = a.eig_generalized(&b, EigMode::BothEigenvectors).unwrap();
 
-                // We can check one eigenvalue by computing det(A - lambda B)
-                // but that is also complex.
-                // A simpler check is for a diagonal case.
-                let mut a_diag = DynArray::<$scalar, 2>::from_shape([n, n]);
-                let mut b_diag = DynArray::<$scalar, 2>::from_shape([n, n]);
-                for i in 0..n {
-                    a_diag[[i, i]] = <$scalar as RlstScalar>::from_real(<$scalar as RlstScalar>::Real::from_f64(i as f64 + 1.0).unwrap());
-                    b_diag[[i, i]] = <$scalar as RlstScalar>::from_real(<$scalar as RlstScalar>::Real::from_f64(2.0).unwrap());
-                }
+                crate::assert_array_relative_eq!(lam, lam2, $tol);
 
-                let lam_diag = a_diag.eigenvalues_generalized(&b_diag).unwrap();
-                for i in 0..n {
-                    let expected: <$scalar as RlstScalar>::Real = num::cast((i as f64 + 1.0) / 2.0).unwrap();
-                    // Eigenvalues are not necessarily in order
-                    let found = lam_diag.iter_value().any(|l| (l.re() - expected).abs() < $tol);
-                    assert!(found, "Eigenvalue {:?} not found", expected);
-                }
+                let a_complex = a.r().into_type::<<$scalar as RlstScalar>::Complex>().eval();
+                let b_complex = b.r().into_type::<<$scalar as RlstScalar>::Complex>().eval();
+
+                let mut diag = DynArray::from_shape([n, n]);
+                izip!(diag.diag_iter_mut(), lam2.iter_value()).for_each(|(v_elem, w_elem)| {
+                    *v_elem = w_elem;
+                });
+
+                // Check right eigenvectors: A * vr = B * vr * diag
+                let vr = vr.unwrap();
+                let lhs = dot!(a_complex.r(), vr.r());
+                let rhs = dot!(b_complex.r(), dot!(vr.r(), diag.r()));
+                crate::assert_array_abs_diff_eq!(lhs, rhs, $tol);
+
+                // Check left eigenvectors: vl^H * A = diag * vl^H * B
+                let vlh = vl.unwrap().conj().transpose().eval();
+                let lhs = dot!(vlh.r(), a_complex.r());
+                let rhs = dot!(diag.r(), dot!(vlh.r(), b_complex.r()));
+                crate::assert_array_abs_diff_eq!(lhs, rhs, $tol);
+
+
             }
             }
         };
     }
 
-    implement_gen_eig_test!(f32, 1E-4);
+    implement_gen_eig_test!(f32, 1E-3);
     implement_gen_eig_test!(f64, 1E-10);
-    implement_gen_eig_test!(c32, 1E-4);
+    implement_gen_eig_test!(c32, 1E-3);
     implement_gen_eig_test!(c64, 1E-10);
 }
