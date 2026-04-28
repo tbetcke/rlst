@@ -38,23 +38,34 @@ where
         let mut a_mat = DynArray::new_from(self);
         let mut b_mat = DynArray::new_from(b);
 
-        let jobv = match mode {
-            EigMode::EigenvaluesOnly => Job::None,
-            _ => Job::Compute,
-        };
-
-        let mut vl_mat = match mode {
-            EigMode::EigenvaluesOnly => {
-                DynArray::<<Item as RlstScalar>::Complex, 2>::from_shape([0, 0])
-            }
-            _ => DynArray::<<Item as RlstScalar>::Complex, 2>::from_shape([n, n]),
-        };
-
-        let mut vr_mat = match mode {
-            EigMode::EigenvaluesOnly => {
-                DynArray::<<Item as RlstScalar>::Complex, 2>::from_shape([0, 0])
-            }
-            _ => DynArray::<<Item as RlstScalar>::Complex, 2>::from_shape([n, n]),
+        let (jobvl, jobvr, mut vl, mut vr) = match mode {
+            EigMode::EigenvaluesOnly => (Job::None, Job::None, None, None),
+            EigMode::RightEigenvectors => (
+                Job::None,
+                Job::Compute,
+                None,
+                Some(DynArray::<<Item as RlstScalar>::Complex, 2>::from_shape([
+                    n, n,
+                ])),
+            ),
+            EigMode::LeftEigenvectors => (
+                Job::Compute,
+                Job::None,
+                Some(DynArray::<<Item as RlstScalar>::Complex, 2>::from_shape([
+                    n, n,
+                ])),
+                None,
+            ),
+            EigMode::BothEigenvectors => (
+                Job::Compute,
+                Job::Compute,
+                Some(DynArray::<<Item as RlstScalar>::Complex, 2>::from_shape([
+                    n, n,
+                ])),
+                Some(DynArray::<<Item as RlstScalar>::Complex, 2>::from_shape([
+                    n, n,
+                ])),
+            ),
         };
 
         let mut eigenvalues = DynArray::<<Self::Item as RlstScalar>::Complex, 1>::from_shape([n]);
@@ -62,9 +73,12 @@ where
         let mut alpha = vec![<Item as RlstScalar>::Complex::zero(); n];
         let mut beta = vec![<Item as RlstScalar>::Complex::zero(); n];
 
+        let mut vl_temp = DynArray::<<Item as RlstScalar>::Complex, 2>::from_shape([0, 0]);
+        let mut vr_temp = DynArray::<<Item as RlstScalar>::Complex, 2>::from_shape([0, 0]);
+
         Item::ggev(
-            jobv,
-            jobv,
+            jobvl,
+            jobvr,
             n,
             a_mat.data_mut().unwrap(),
             n,
@@ -72,9 +86,13 @@ where
             n,
             &mut alpha,
             &mut beta,
-            vl_mat.data_mut().unwrap(),
+            vl.as_mut()
+                .map(|v| v.data_mut().unwrap())
+                .unwrap_or(vl_temp.data_mut().unwrap()),
             n,
-            vr_mat.data_mut().unwrap(),
+            vr.as_mut()
+                .map(|v| v.data_mut().unwrap())
+                .unwrap_or(vr_temp.data_mut().unwrap()),
             n,
         )?;
 
@@ -82,13 +100,7 @@ where
             eigenvalues[[i]] = alpha[i] / beta[i];
         }
 
-        match mode {
-            EigMode::EigenvaluesOnly => Ok((eigenvalues, None, None)),
-            _ => {
-                // For now, we only support eigenvalues.
-                Ok((eigenvalues, None, None))
-            }
-        }
+        Ok((eigenvalues, vl, vr))
     }
 }
 

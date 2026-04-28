@@ -5,10 +5,10 @@ use lapack::{cheev, dsyev, ssyev, zheev};
 
 use crate::dense::linalg::lapack::interface::lapack_return;
 
-use crate::base_types::{LapackError, LapackResult, c32, c64};
+use crate::base_types::{c32, c64, LapackError, LapackResult};
 use crate::traits::rlst_num::RlstScalar;
 
-use num::{Zero, complex::ComplexFloat};
+use num::{complex::ComplexFloat, Zero};
 
 /// The job options for the eigenvectors.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -41,7 +41,7 @@ pub trait Ev: RlstScalar {
     /// - `n`: The order of the matrix A.
     /// - `a`: The matrix A to be factored.
     /// - `lda`: The leading dimension of the matrix A.
-    /// - `w`: The vector to store the eigenvalues.
+    /// - `w`: The matrix to store the eigenvalues.
     fn ev(
         jobz: JobZEv,
         uplo: EvUplo,
