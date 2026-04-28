@@ -73,7 +73,6 @@ mod test {
     use crate::dot;
     use crate::traits::base_operations::EvaluateArray;
     use crate::traits::rlst_num::RlstScalar;
-    use num::FromPrimitive;
     use paste::paste;
 
     macro_rules! implement_gen_symm_eig_test {
@@ -86,19 +85,15 @@ mod test {
                 let mut a = DynArray::<$scalar, 2>::from_shape([n, n]);
                 let mut b = DynArray::<$scalar, 2>::from_shape([n, n]);
 
+                for i in 0..n {
+                    b[[i, i]] = <$scalar as RlstScalar>::from_real(1.0 + i as <$scalar as RlstScalar>::Real);
+                }
+
                 a.fill_from_seed_normally_distributed(0);
-                b.fill_from_seed_normally_distributed(1);
 
                 // Make A symmetric/Hermitian
                 let a = DynArray::new_from(&(a.r() + a.r().conj().transpose()));
 
-                // Make B symmetric/Hermitian positive definite
-                let b = DynArray::new_from(&(b.r() + b.r().conj().transpose()));
-                // Add identity to B to ensure positive definiteness
-                let mut ident = DynArray::<$scalar, 2>::from_shape([n, n]);
-                ident.set_identity();
-                let scalar_val = <$scalar as RlstScalar>::from_real(<$scalar as RlstScalar>::Real::from_f64(10.0 * n as f64).unwrap());
-                let b = DynArray::new_from(&(b.r() + scalar_val * ident.r()));
 
                 let (w, v) = a.eigh_generalized(&b, UpLo::Upper, SymmEigMode::EigenvaluesAndEigenvectors, GeneralizedSymmEigType::AxEqualLambdaBx).unwrap();
                 let v = v.unwrap();
@@ -111,7 +106,7 @@ mod test {
                     let lhs = dot!(a.r(), vi.r());
                     let rhs = dot!(b.r(), (vi.r() * <$scalar as RlstScalar>::from_real(lambda)).eval());
 
-                    crate::assert_array_relative_eq!(lhs, rhs, $tol);
+                    crate::assert_array_abs_diff_eq!(lhs, rhs, $tol);
                 }
             }
             }

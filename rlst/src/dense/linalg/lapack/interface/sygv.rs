@@ -64,6 +64,38 @@ macro_rules! implement_sygv_real {
                 ldb: usize,
                 w: &mut [Self::Real],
             ) -> LapackResult<()> {
+                assert_eq!(
+                    a.len(),
+                    lda * n,
+                    "Require `a.len()` {} == `lda * n` {}.",
+                    a.len(),
+                    lda * n
+                );
+
+                assert!(
+                    lda >= std::cmp::max(1, n),
+                    "Require `lda` {} >= `max(1, n)` {}.",
+                    lda,
+                    std::cmp::max(1, n)
+                );
+
+                assert_eq!(
+                    b.len(),
+                    ldb * n,
+                    "Require `b.len()` {} == `ldb * n` {}.",
+                    b.len(),
+                    ldb * n
+                );
+
+                assert!(
+                    ldb >= std::cmp::max(1, n),
+                    "Require `ldb` {} >= `max(1, n)` {}.",
+                    ldb,
+                    std::cmp::max(1, n)
+                );
+
+                assert_eq!(w.len(), n, "Require `w.len()` {} == `n` {}.", w.len(), n);
+
                 let mut info = 0;
                 let mut work = vec![<$scalar>::zero(); 1];
                 let itype = [itype];
@@ -119,6 +151,38 @@ macro_rules! implement_hegv_complex {
                 ldb: usize,
                 w: &mut [Self::Real],
             ) -> LapackResult<()> {
+                assert_eq!(
+                    a.len(),
+                    lda * n,
+                    "Require `a.len()` {} == `lda * n` {}.",
+                    a.len(),
+                    lda * n
+                );
+
+                assert!(
+                    lda >= std::cmp::max(1, n),
+                    "Require `lda` {} >= `max(1, n)` {}.",
+                    lda,
+                    std::cmp::max(1, n)
+                );
+
+                assert_eq!(
+                    b.len(),
+                    ldb * n,
+                    "Require `b.len()` {} == `ldb * n` {}.",
+                    b.len(),
+                    ldb * n
+                );
+
+                assert!(
+                    ldb >= std::cmp::max(1, n),
+                    "Require `ldb` {} >= `max(1, n)` {}.",
+                    ldb,
+                    std::cmp::max(1, n)
+                );
+
+                assert_eq!(w.len(), n, "Require `w.len()` {} == `n` {}.", w.len(), n);
+
                 let mut info = 0;
                 let mut work = vec![<$scalar>::zero(); 1];
                 let itype = [itype];
