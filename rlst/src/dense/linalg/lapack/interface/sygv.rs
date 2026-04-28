@@ -2,7 +2,7 @@
 
 use lapack::{chegv, dsygv, ssygv, zhegv};
 
-use crate::base_types::{LapackError, LapackResult, c32, c64};
+use crate::base_types::{c32, c64, LapackError, LapackResult};
 use crate::dense::linalg::lapack::interface::lapack_return;
 use crate::traits::rlst_num::RlstScalar;
 use num::Zero;
@@ -37,6 +37,7 @@ pub trait Sygv: RlstScalar {
     /// 1: Ax = λBx
     /// 2: ABx = λx
     /// 3: BAx = λx
+    #[allow(clippy::too_many_arguments)]
     fn sygv(
         itype: i32,
         jobz: JobZ,

@@ -49,4 +49,3 @@ RLST is a comprehensive Rust library for dense and sparse linear algebra, design
 - **NEVER** suppress warnings or use `unsafe` unless it's strictly necessary for performance and follows existing patterns in the codebase.
 - **ALWAYS** check for and update related tests and documentation after making changes.
 - **PRIORITIZE** consistency with the existing trait-based architecture.
-- **ALWAYS** run `cargo fmt` after any code changes.

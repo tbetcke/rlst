@@ -92,9 +92,11 @@ pub enum GeneralizedSymmEigType {
 /// Compute the generalized symmetric eigenvalue decomposition of a matrix.
 ///
 /// Depending on the `itype`, the decomposition solves one of the following problems:
+///
 /// 1. `A x = lambda B x`
 /// 2. `A B x = lambda x`
 /// 3. `B A x = lambda x`
+///
 /// where `lambda` are the generalized eigenvalues and `x` are the corresponding eigenvectors. The
 /// matrix `A` is assumed to be symmetric (or Hermitian) and the matrix `B` is assumed to be positive definite.
 pub trait GeneralizedSymmEig<B> {
@@ -115,6 +117,7 @@ pub trait GeneralizedSymmEig<B> {
 
     /// Compute the generalized symmetric eigenvalue decomposition of a matrix.
     #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::type_complexity)]
     fn eigh_generalized(
         &self,
         b: &B,
