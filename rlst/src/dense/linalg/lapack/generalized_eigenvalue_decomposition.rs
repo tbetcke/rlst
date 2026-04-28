@@ -100,7 +100,7 @@ where
             eigenvalues[[i]] = alpha[i] / beta[i];
         }
 
-        Ok((eigenvalues, vl, vr))
+        Ok((eigenvalues, vr, vl))
     }
 }
 
@@ -130,7 +130,7 @@ mod test {
 
                 let lam = a.eigenvalues_generalized(&b).unwrap();
 
-                let (lam2, vl, vr) = a.eig_generalized(&b, EigMode::BothEigenvectors).unwrap();
+                let (lam2, vr, vl) = a.eig_generalized(&b, EigMode::BothEigenvectors).unwrap();
 
                 crate::assert_array_relative_eq!(lam, lam2, $tol);
 

@@ -159,8 +159,8 @@ pub trait GeneralizedEigenvalueDecomposition<B> {
     /// Compute the eigenvalues and eigenvectors of the matrix.
     /// Returns a tuple `(lam, vl, vr)` containing:
     /// - `lam`: The eigenvalues.
-    /// - `vl`: The left eigenvectors (optional).
-    /// - `vr`: The right eigenvectors (optional).
+    /// - `v`: The right eigenvectors (optional).
+    /// - `w`: The left eigenvectors (optional).
     #[allow(clippy::type_complexity)]
     fn eig_generalized(
         &self,

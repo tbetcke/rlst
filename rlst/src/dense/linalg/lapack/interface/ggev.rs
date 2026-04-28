@@ -58,6 +58,88 @@ macro_rules! implement_ggev_real {
                 vr: &mut [Self::Complex],
                 ldvr: usize,
             ) -> LapackResult<()> {
+                assert_eq!(
+                    a.len(),
+                    lda * n,
+                    "Require `a.len()` {} == `lda * n` {}.",
+                    a.len(),
+                    lda * n
+                );
+
+                assert!(
+                    lda >= std::cmp::max(1, n),
+                    "Require `lda` {} >= `max(1, n)` {}.",
+                    lda,
+                    std::cmp::max(1, n)
+                );
+
+                assert_eq!(
+                    b.len(),
+                    ldb * n,
+                    "Require `b.len()` {} == `ldb * n` {}.",
+                    b.len(),
+                    ldb * n
+                );
+
+                assert!(
+                    ldb >= std::cmp::max(1, n),
+                    "Require `ldb` {} >= `max(1, n)` {}.",
+                    ldb,
+                    std::cmp::max(1, n)
+                );
+
+                assert_eq!(
+                    alpha.len(),
+                    n,
+                    "Require `alpha.len()` {} == `n` {}.",
+                    alpha.len(),
+                    n
+                );
+
+                assert_eq!(
+                    beta.len(),
+                    n,
+                    "Require `beta.len()` {} == `n` {}.",
+                    beta.len(),
+                    n
+                );
+
+                if jobvl == Job::Compute {
+                    assert_eq!(
+                        vl.len(),
+                        ldvl * n,
+                        "Require `vl.len()` {} == `ldvl * n` {}.",
+                        vl.len(),
+                        ldvl * n
+                    );
+                    assert!(
+                        ldvl >= std::cmp::max(1, n),
+                        "Require `ldvl` {} >= `max(1, n)` {}.",
+                        ldvl,
+                        std::cmp::max(1, n)
+                    );
+                } else {
+                    assert!(ldvl >= 1, "Require `ldvl` {} >= 1.", ldvl);
+                }
+
+                if jobvr == Job::Compute {
+                    assert_eq!(
+                        vr.len(),
+                        ldvr * n,
+                        "Require `vr.len()` {} == `ldvr * n` {}.",
+                        vr.len(),
+                        ldvr * n
+                    );
+                    assert!(
+                        ldvr >= std::cmp::max(1, n),
+                        "Require `ldvr` {} >= `max(1, n)` {}.",
+                        ldvr,
+                        std::cmp::max(1, n)
+                    );
+                } else {
+                    assert!(ldvr >= 1, "Require `ldvr` {} >= 1.", ldvr);
+                }
+
                 let mut alphar = vec![<$scalar>::zero(); n];
                 let mut alphai = vec![<$scalar>::zero(); n];
                 let mut beta_real = vec![<$scalar>::zero(); n];
@@ -100,7 +182,7 @@ macro_rules! implement_ggev_real {
                     return Err(LapackError::LapackInfoCode(info));
                 }
 
-                let lwork = work[0] as usize;
+                let lwork = work[0].re() as usize;
                 let mut work = vec![<$scalar>::zero(); lwork];
 
                 unsafe {
@@ -210,6 +292,88 @@ macro_rules! implement_ggev_complex {
                 vr: &mut [Self::Complex],
                 ldvr: usize,
             ) -> LapackResult<()> {
+                assert_eq!(
+                    a.len(),
+                    lda * n,
+                    "Require `a.len()` {} == `lda * n` {}.",
+                    a.len(),
+                    lda * n
+                );
+
+                assert!(
+                    lda >= std::cmp::max(1, n),
+                    "Require `lda` {} >= `max(1, n)` {}.",
+                    lda,
+                    std::cmp::max(1, n)
+                );
+
+                assert_eq!(
+                    b.len(),
+                    ldb * n,
+                    "Require `b.len()` {} == `ldb * n` {}.",
+                    b.len(),
+                    ldb * n
+                );
+
+                assert!(
+                    ldb >= std::cmp::max(1, n),
+                    "Require `ldb` {} >= `max(1, n)` {}.",
+                    ldb,
+                    std::cmp::max(1, n)
+                );
+
+                assert_eq!(
+                    alpha.len(),
+                    n,
+                    "Require `alpha.len()` {} == `n` {}.",
+                    alpha.len(),
+                    n
+                );
+
+                assert_eq!(
+                    beta.len(),
+                    n,
+                    "Require `beta.len()` {} == `n` {}.",
+                    beta.len(),
+                    n
+                );
+
+                if jobvl == Job::Compute {
+                    assert_eq!(
+                        vl.len(),
+                        ldvl * n,
+                        "Require `vl.len()` {} == `ldvl * n` {}.",
+                        vl.len(),
+                        ldvl * n
+                    );
+                    assert!(
+                        ldvl >= std::cmp::max(1, n),
+                        "Require `ldvl` {} >= `max(1, n)` {}.",
+                        ldvl,
+                        std::cmp::max(1, n)
+                    );
+                } else {
+                    assert!(ldvl >= 1, "Require `ldvl` {} >= 1.", ldvl);
+                }
+
+                if jobvr == Job::Compute {
+                    assert_eq!(
+                        vr.len(),
+                        ldvr * n,
+                        "Require `vr.len()` {} == `ldvr * n` {}.",
+                        vr.len(),
+                        ldvr * n
+                    );
+                    assert!(
+                        ldvr >= std::cmp::max(1, n),
+                        "Require `ldvr` {} >= `max(1, n)` {}.",
+                        ldvr,
+                        std::cmp::max(1, n)
+                    );
+                } else {
+                    assert!(ldvr >= 1, "Require `ldvr` {} >= 1.", ldvr);
+                }
+
                 let mut info = 0;
                 let mut work = vec![<$scalar>::zero(); 1];
                 let mut rwork = vec![<<$scalar as RlstScalar>::Real>::zero(); 8 * n];
