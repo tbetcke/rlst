@@ -10,12 +10,12 @@ use crate::{
         array::DynArray,
         linalg::lapack::{
             eigenvalue_decomposition::EigMode,
+            ldlt::LdlDecomposition,
             lu::LuDecomposition,
             pseudo_inverse::PInv,
             qr::{EnablePivoting, QrDecomposition},
             singular_value_decomposition::SvdMode,
             symmeig::SymmEigMode,
-            ldlt::LdlDecomposition,
         },
     },
     traits::{base_operations::EvaluateArray, rlst_num::RlstScalar},

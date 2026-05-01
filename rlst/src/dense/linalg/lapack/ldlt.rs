@@ -155,12 +155,151 @@ mod test {
         let ldl = arr.ldl(UpLo::Lower).unwrap();
         let mut x_expected = DynArray::<crate::base_types::c64, 1>::from_shape([n]);
         for i in 0..n {
-            x_expected[[i]] = crate::base_types::c64::new((i + 1) as f64, -(i as f64));
+            x_expected[[i]] = crate::base_types::c64::new((i + 1) as f64, (i + 1) as f64);
         }
 
         let rhs = empty_array().simple_mult_into_resize(arr.r(), x_expected.r());
         let x_actual = ldl.solve(&rhs).unwrap();
 
         crate::assert_array_relative_eq!(x_actual, x_expected, 1e-12);
+    }
+
+    #[test]
+    fn test_sytrf_c64_upper() {
+        let n = 5;
+        let mut arr = DynArray::<crate::base_types::c64, 2>::from_shape([n, n]);
+        for i in 0..n {
+            for j in 0..n {
+                let val = (i + j) as f64 + 1.0;
+                arr[[i, j]] = crate::base_types::c64::new(val, i as f64 - j as f64);
+            }
+            arr[[i, i]] = crate::base_types::c64::new(arr[[i, i]].re(), 0.0); // Must be Hermitian
+            arr[[i, i]] += 10.0;
+        }
+        // Ensure Hermitian
+        for i in 0..n {
+            for j in i + 1..n {
+                arr[[i, j]] = arr[[j, i]].conj();
+            }
+        }
+
+        let ldl = arr.ldl(UpLo::Upper).unwrap();
+        let mut x_expected = DynArray::<crate::base_types::c64, 1>::from_shape([n]);
+        for i in 0..n {
+            x_expected[[i]] = crate::base_types::c64::new((i + 1) as f64, (i + 1) as f64);
+        }
+
+        let rhs = empty_array().simple_mult_into_resize(arr.r(), x_expected.r());
+        let x_actual = ldl.solve(&rhs).unwrap();
+
+        crate::assert_array_relative_eq!(x_actual, x_expected, 1e-12);
+    }
+
+    #[test]
+    fn test_sytrf_f32_lower() {
+        let n = 5;
+        let mut arr = DynArray::<f32, 2>::from_shape([n, n]);
+        for i in 0..n {
+            for j in 0..n {
+                arr[[i, j]] = (i + j) as f32 + 1.0;
+            }
+            arr[[i, i]] += 10.0;
+        }
+
+        let ldl = arr.ldl(UpLo::Lower).unwrap();
+        let mut x_expected = DynArray::<f32, 1>::from_shape([n]);
+        for i in 0..n {
+            x_expected[[i]] = (i + 1) as f32;
+        }
+
+        let rhs = empty_array().simple_mult_into_resize(arr.r(), x_expected.r());
+        let x_actual = ldl.solve(&rhs).unwrap();
+
+        crate::assert_array_relative_eq!(x_actual, x_expected, 1e-5);
+    }
+
+    #[test]
+    fn test_sytrf_f32_upper() {
+        let n = 5;
+        let mut arr = DynArray::<f32, 2>::from_shape([n, n]);
+        for i in 0..n {
+            for j in 0..n {
+                arr[[i, j]] = (i + j) as f32 + 1.0;
+            }
+            arr[[i, i]] += 10.0;
+        }
+
+        let ldl = arr.ldl(UpLo::Upper).unwrap();
+        let mut x_expected = DynArray::<f32, 1>::from_shape([n]);
+        for i in 0..n {
+            x_expected[[i]] = (i + 1) as f32;
+        }
+
+        let rhs = empty_array().simple_mult_into_resize(arr.r(), x_expected.r());
+        let x_actual = ldl.solve(&rhs).unwrap();
+
+        crate::assert_array_relative_eq!(x_actual, x_expected, 1e-5);
+    }
+
+    #[test]
+    fn test_sytrf_c32_lower() {
+        let n = 5;
+        let mut arr = DynArray::<crate::base_types::c32, 2>::from_shape([n, n]);
+        for i in 0..n {
+            for j in 0..n {
+                let val = (i + j) as f32 + 1.0;
+                arr[[i, j]] = crate::base_types::c32::new(val, i as f32 - j as f32);
+            }
+            arr[[i, i]] = crate::base_types::c32::new(arr[[i, i]].re(), 0.0); // Must be Hermitian
+            arr[[i, i]] += 10.0;
+        }
+        // Ensure Hermitian
+        for i in 0..n {
+            for j in i + 1..n {
+                arr[[i, j]] = arr[[j, i]].conj();
+            }
+        }
+
+        let ldl = arr.ldl(UpLo::Lower).unwrap();
+        let mut x_expected = DynArray::<crate::base_types::c32, 1>::from_shape([n]);
+        for i in 0..n {
+            x_expected[[i]] = crate::base_types::c32::new((i + 1) as f32, (i + 1) as f32);
+        }
+
+        let rhs = empty_array().simple_mult_into_resize(arr.r(), x_expected.r());
+        let x_actual = ldl.solve(&rhs).unwrap();
+
+        crate::assert_array_relative_eq!(x_actual, x_expected, 1e-5);
+    }
+
+    #[test]
+    fn test_sytrf_c32_upper() {
+        let n = 5;
+        let mut arr = DynArray::<crate::base_types::c32, 2>::from_shape([n, n]);
+        for i in 0..n {
+            for j in 0..n {
+                let val = (i + j) as f32 + 1.0;
+                arr[[i, j]] = crate::base_types::c32::new(val, i as f32 - j as f32);
+            }
+            arr[[i, i]] = crate::base_types::c32::new(arr[[i, i]].re(), 0.0); // Must be Hermitian
+            arr[[i, i]] += 10.0;
+        }
+        // Ensure Hermitian
+        for i in 0..n {
+            for j in i + 1..n {
+                arr[[i, j]] = arr[[j, i]].conj();
+            }
+        }
+
+        let ldl = arr.ldl(UpLo::Upper).unwrap();
+        let mut x_expected = DynArray::<crate::base_types::c32, 1>::from_shape([n]);
+        for i in 0..n {
+            x_expected[[i]] = crate::base_types::c32::new((i + 1) as f32, (i + 1) as f32);
+        }
+
+        let rhs = empty_array().simple_mult_into_resize(arr.r(), x_expected.r());
+        let x_actual = ldl.solve(&rhs).unwrap();
+
+        crate::assert_array_relative_eq!(x_actual, x_expected, 1e-5);
     }
 }
