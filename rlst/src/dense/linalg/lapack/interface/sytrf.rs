@@ -29,7 +29,7 @@ pub trait Sytrf: RlstScalar {
     ) -> LapackResult<()>;
 }
 
-macro_rules! implement_sytrf_real {
+macro_rules! implement_sytrf {
     ($scalar:ty, $sytrf:expr) => {
         impl Sytrf for $scalar {
             fn sytrf(
@@ -76,7 +76,7 @@ macro_rules! implement_sytrf_real {
                     return Err(crate::base_types::LapackError::LapackInfoCode(info));
                 }
 
-                let lwork = work[0] as usize;
+                let lwork = work[0].re() as usize;
                 let mut work = vec![<$scalar>::zero(); lwork];
 
                 unsafe {
@@ -98,76 +98,7 @@ macro_rules! implement_sytrf_real {
     };
 }
 
-macro_rules! implement_sytrf_complex {
-    ($scalar:ty, $hetrf:expr) => {
-        impl Sytrf for $scalar {
-            fn sytrf(
-                uplo: SytrfUplo,
-                n: usize,
-                a: &mut [Self],
-                lda: usize,
-                ipiv: &mut [i32],
-            ) -> LapackResult<()> {
-                let mut info = 0;
-
-                assert_eq!(
-                    a.len(),
-                    lda * n,
-                    "Require `a.len()` {} == `lda * n` {}.",
-                    a.len(),
-                    lda * n
-                );
-
-                assert!(
-                    lda >= std::cmp::max(1, n),
-                    "Require `lda` {} >= `max(1, n)` {}.",
-                    lda,
-                    std::cmp::max(1, n)
-                );
-
-                assert_eq!(
-                    ipiv.len(),
-                    n,
-                    "Require `ipiv.len()` {} == `n` {}.",
-                    ipiv.len(),
-                    n
-                );
-
-                let mut work = vec![<$scalar>::zero(); 1];
-
-                unsafe {
-                    $hetrf(
-                        uplo as u8, n as i32, a, lda as i32, ipiv, &mut work, -1, &mut info,
-                    );
-                }
-
-                if info != 0 {
-                    return Err(crate::base_types::LapackError::LapackInfoCode(info));
-                }
-
-                let lwork = work[0].re() as usize;
-                let mut work = vec![<$scalar>::zero(); lwork];
-
-                unsafe {
-                    $hetrf(
-                        uplo as u8,
-                        n as i32,
-                        a,
-                        lda as i32,
-                        ipiv,
-                        &mut work,
-                        lwork as i32,
-                        &mut info,
-                    );
-                }
-
-                lapack_return(info, ())
-            }
-        }
-    };
-}
-
-implement_sytrf_real!(f32, ssytrf);
-implement_sytrf_real!(f64, dsytrf);
-implement_sytrf_complex!(c32, chetrf);
-implement_sytrf_complex!(c64, zhetrf);
+implement_sytrf!(f32, ssytrf);
+implement_sytrf!(f64, dsytrf);
+implement_sytrf!(c32, chetrf);
+implement_sytrf!(c64, zhetrf);

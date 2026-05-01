@@ -23,7 +23,7 @@ pub trait Sytrs: RlstScalar {
     ) -> LapackResult<()>;
 }
 
-macro_rules! implement_sytrs_real {
+macro_rules! implement_sytrs {
     ($scalar:ty, $sytrs:expr) => {
         impl Sytrs for $scalar {
             fn sytrs(
@@ -94,78 +94,7 @@ macro_rules! implement_sytrs_real {
     };
 }
 
-macro_rules! implement_sytrs_complex {
-    ($scalar:ty, $hetrs:expr) => {
-        impl Sytrs for $scalar {
-            fn sytrs(
-                uplo: SytrfUplo,
-                n: usize,
-                nrhs: usize,
-                a: &[Self],
-                lda: usize,
-                ipiv: &[i32],
-                b: &mut [Self],
-                ldb: usize,
-            ) -> LapackResult<()> {
-                let mut info = 0;
-
-                assert!(
-                    lda >= std::cmp::max(1, n),
-                    "Require `lda` {} >= `max(1, N)` {} .",
-                    lda,
-                    std::cmp::max(1, n)
-                );
-                assert_eq!(
-                    a.len(),
-                    lda * n,
-                    "Require `a.len()` {} == `lda * n` {}.",
-                    a.len(),
-                    lda * n,
-                );
-
-                assert_eq!(
-                    ipiv.len(),
-                    n,
-                    "Require `ipiv.len()` {} == `n` {}.",
-                    ipiv.len(),
-                    n,
-                );
-
-                assert!(
-                    ldb >= std::cmp::max(1, n),
-                    "Require `ldb` {} >= `max(1, N)` {} .",
-                    ldb,
-                    std::cmp::max(1, n)
-                );
-                assert_eq!(
-                    b.len(),
-                    ldb * nrhs,
-                    "Require `b.len()` {} == `ldb * nrhs` {}.",
-                    b.len(),
-                    ldb * nrhs,
-                );
-
-                unsafe {
-                    $hetrs(
-                        uplo as u8,
-                        n as i32,
-                        nrhs as i32,
-                        a,
-                        lda as i32,
-                        ipiv,
-                        b,
-                        ldb as i32,
-                        &mut info,
-                    );
-                }
-
-                lapack_return(info, ())
-            }
-        }
-    };
-}
-
-implement_sytrs_real!(f32, ssytrs);
-implement_sytrs_real!(f64, dsytrs);
-implement_sytrs_complex!(c32, chetrs);
-implement_sytrs_complex!(c64, zhetrs);
+implement_sytrs!(f32, ssytrs);
+implement_sytrs!(f64, dsytrs);
+implement_sytrs!(c32, chetrs);
+implement_sytrs!(c64, zhetrs);
