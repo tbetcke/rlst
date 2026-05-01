@@ -15,7 +15,7 @@ use crate::{
             qr::{EnablePivoting, QrDecomposition},
             singular_value_decomposition::SvdMode,
             symmeig::SymmEigMode,
-            sytrf::LdlDecomposition,
+            ldlt::LdlDecomposition,
         },
     },
     traits::{base_operations::EvaluateArray, rlst_num::RlstScalar},
