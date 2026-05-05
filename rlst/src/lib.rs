@@ -49,8 +49,8 @@ pub use rlst_proc_macro::rlst_dynamic_array;
 pub use rlst_proc_macro::rlst_static_array;
 pub use rlst_proc_macro::rlst_static_type;
 
-pub use crate::dense::array::Array;
 pub use crate::dense::array::empty_array;
+pub use crate::dense::array::Array;
 
 // Re-export the traits
 pub use traits::*;
@@ -90,10 +90,6 @@ mod tests {
     extern crate blas_src;
     extern crate lapack_src;
 
-    // On Linux for unit testing enable the openblas dependency
-    // even though it is only used by `blas_src`,
-    // so that the dependency is not marked as unused by clippy
-    // and leads to an error message.
     #[cfg(target_os = "linux")]
     extern crate openblas_src;
 }
