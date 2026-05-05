@@ -10,6 +10,7 @@ use crate::{
         array::DynArray,
         linalg::lapack::{
             eigenvalue_decomposition::EigMode,
+            ldlt::LdlDecomposition,
             lu::LuDecomposition,
             pseudo_inverse::PInv,
             qr::{EnablePivoting, QrDecomposition},
@@ -45,6 +46,14 @@ pub trait Lu {
     type Item: Lapack;
     /// Compute the LU decomposition of a matrix.
     fn lu(&self) -> RlstResult<LuDecomposition<Self::Item>>;
+}
+
+/// Compute the LDL decomposition of a symmetric or Hermitian matrix.
+pub trait Ldl {
+    /// Item type of the LDL decomposition.
+    type Item: Lapack;
+    /// Compute the LDL decomposition of a matrix.
+    fn ldl(&self, uplo: UpLo) -> RlstResult<LdlDecomposition<Self::Item>>;
 }
 
 /// Compute the QR decomposition of a matrix.
