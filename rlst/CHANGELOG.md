@@ -2,7 +2,7 @@
 
 ## v0.6.1
 
-- Update burn dependency to 0.20
+- Update burn dependency to 0.21
 
 ## v0.6.0
 
