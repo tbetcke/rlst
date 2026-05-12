@@ -29,7 +29,7 @@ fn main() {
 
     let res = arr1.r() + 5.0 * arr2.r().exp();
 
-    // To evaluate into a new array we use the `EvaluateObject` trait.
+    // To evaluate into a new array we use the `EvaluateArray` trait.
 
     let _arr3 = res.eval();
 }

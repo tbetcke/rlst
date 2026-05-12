@@ -43,6 +43,8 @@ pub trait RlstScalar:
     + for<'de> Deserialize<'de>
     + 'static
 {
+    /// Flag to indicate if the type is complex.
+    const IS_COMPLEX: bool;
     /// Real type
     type Real: RlstScalar<Real = Self::Real, Complex = Self::Complex>
         + NumOps<Self::Real, Self::Real>

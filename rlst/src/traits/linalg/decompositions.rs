@@ -10,6 +10,7 @@ use crate::{
         array::DynArray,
         linalg::lapack::{
             eigenvalue_decomposition::EigMode,
+            ldlt::LdlDecomposition,
             lu::LuDecomposition,
             pseudo_inverse::PInv,
             qr::{EnablePivoting, QrDecomposition},
@@ -47,6 +48,14 @@ pub trait Lu {
     fn lu(&self) -> RlstResult<LuDecomposition<Self::Item>>;
 }
 
+/// Compute the LDL decomposition of a symmetric or Hermitian matrix.
+pub trait Ldl {
+    /// Item type of the LDL decomposition.
+    type Item: Lapack;
+    /// Compute the LDL decomposition of a matrix.
+    fn ldl(&self, uplo: UpLo) -> RlstResult<LdlDecomposition<Self::Item>>;
+}
+
 /// Compute the QR decomposition of a matrix.
 pub trait Qr {
     /// Item type of the QR decomposition.
@@ -72,6 +81,58 @@ pub trait SymmEig {
         &self,
         uplo: UpLo,
         mode: SymmEigMode,
+    ) -> RlstResult<(
+        DynArray<<Self::Item as RlstScalar>::Real, 1>,
+        Option<DynArray<Self::Item, 2>>,
+    )>;
+}
+
+/// Generalized symmetric eigenvalue decomposition type.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GeneralizedSymmEigType {
+    /// Ax = lambda Bx
+    AxEqualLambdaBx = 1,
+    /// ABx = lambda x
+    ABxEqualLambdaX = 2,
+    /// BAx = lambda x
+    BAxEqualLambdaX = 3,
+}
+
+/// Compute the generalized symmetric eigenvalue decomposition of a matrix.
+///
+/// Depending on the `itype`, the decomposition solves one of the following problems:
+///
+/// 1. `A x = lambda B x`
+/// 2. `A B x = lambda x`
+/// 3. `B A x = lambda x`
+///
+/// where `lambda` are the generalized eigenvalues and `x` are the corresponding eigenvectors. The
+/// matrix `A` is assumed to be symmetric (or Hermitian) and the matrix `B` is assumed to be positive definite.
+pub trait GeneralizedSymmEig<B> {
+    /// Item type of the generalized symmetric eigenvalue decomposition.
+    type Item: Lapack;
+
+    /// Compute the eigenvalues of a generalized symmetric eigenvalue problem.
+    fn eigenvaluesh_generalized(
+        &self,
+        b: &B,
+        uplo: UpLo,
+        itype: GeneralizedSymmEigType,
+    ) -> RlstResult<DynArray<<Self::Item as RlstScalar>::Real, 1>> {
+        Ok(self
+            .eigh_generalized(b, uplo, SymmEigMode::EigenvaluesOnly, itype)?
+            .0)
+    }
+
+    /// Compute the generalized symmetric eigenvalue decomposition of a matrix.
+    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::type_complexity)]
+    fn eigh_generalized(
+        &self,
+        b: &B,
+        uplo: UpLo,
+        mode: SymmEigMode,
+        itype: GeneralizedSymmEigType,
     ) -> RlstResult<(
         DynArray<<Self::Item as RlstScalar>::Real, 1>,
         Option<DynArray<Self::Item, 2>>,
@@ -104,6 +165,37 @@ pub trait EigenvalueDecomposition {
     #[allow(clippy::type_complexity)]
     fn eig(
         &self,
+        mode: EigMode,
+    ) -> RlstResult<(
+        DynArray<<Self::Item as RlstScalar>::Complex, 1>,
+        Option<DynArray<<Self::Item as RlstScalar>::Complex, 2>>,
+        Option<DynArray<<Self::Item as RlstScalar>::Complex, 2>>,
+    )>;
+}
+
+/// Compute the generalized eigenvalue decomposition of a matrix.
+pub trait GeneralizedEigenvalueDecomposition<B> {
+    /// The item type of the matrix.
+    type Item: Lapack;
+
+    /// Return the eigenvalues of the matrix.
+    fn eigenvalues_generalized(
+        &self,
+        b: &B,
+    ) -> RlstResult<DynArray<<Self::Item as RlstScalar>::Complex, 1>> {
+        let (lam, _, _) = self.eig_generalized(b, EigMode::EigenvaluesOnly)?;
+        Ok(lam)
+    }
+
+    /// Compute the eigenvalues and eigenvectors of the matrix.
+    /// Returns a tuple `(lam, vl, vr)` containing:
+    /// - `lam`: The eigenvalues.
+    /// - `v`: The right eigenvectors (optional).
+    /// - `w`: The left eigenvectors (optional).
+    #[allow(clippy::type_complexity)]
+    fn eig_generalized(
+        &self,
+        b: &B,
         mode: EigMode,
     ) -> RlstResult<(
         DynArray<<Self::Item as RlstScalar>::Complex, 1>,

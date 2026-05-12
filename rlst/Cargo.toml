@@ -1,6 +1,6 @@
 [package]
 name = "rlst"
-version = "0.6.1"
+version = "0.7.0-dev"
 authors = ["The rlst contributors"]
 edition = "2024"
 description = "A Rust native linear algebra library."
@@ -15,7 +15,7 @@ categories = ["mathematics", "science"]
 name = "rlst"
 
 [dependencies]
-rlst-proc-macro = { path = "../proc-macro", version = "0.6.1" }
+rlst-proc-macro = { path = "../proc-macro", version = "0.7.0-dev" }
 num = { version = "0.4", features = ["serde", "rand"] }
 rand = "0.9"
 rand_chacha = "0.9"
@@ -39,7 +39,7 @@ mpi = { version = "0.8.1", optional = true , features = ["derive","complex"]}
 mpi-sys = { version = "0.2.3", optional = true }
 
 fftw-sys = { version = "0.8", default-features = false, optional = true }
-burn = { version = "0.20", default-features = false, optional = true }
+burn = { version = "0.21", default-features = false, optional = true }
 
 [dev-dependencies]
 approx = { version = "0.5", features = ["num-complex"] }

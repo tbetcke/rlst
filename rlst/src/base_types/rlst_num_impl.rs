@@ -46,6 +46,7 @@ macro_rules! impl_with_complex {
 macro_rules! impl_scalar {
     ($real:ty, $complex:ty) => {
         impl RlstScalar for $real {
+            const IS_COMPLEX: bool = false;
             type Real = $real;
             type Complex = $complex;
 
@@ -133,6 +134,7 @@ macro_rules! impl_scalar {
         }
 
         impl RlstScalar for $complex {
+            const IS_COMPLEX: bool = true;
             type Real = $real;
             type Complex = $complex;
 
