@@ -40,6 +40,9 @@ jobs:
       - name: Install MPI
         run: sudo apt-get install -y openmpi-bin libopenmpi-dev
 
+      - name: Install SuiteSparse
+        run: sudo apt-get install -y libsuitesparse-dev
+
       - name: Format
         run: cargo fmt -- --check
 
