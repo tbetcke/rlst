@@ -1,6 +1,6 @@
 # rlst-suitesparse
 
-`rlst-suitesparse` provides SuiteSparse bindings for RLST sparse matrices. The initial implementation supports UMFPACK symbolic and numeric factorization of `rlst::sparse::csr_mat::CsrMatrix<f64>` and solves real double-precision square systems.
+`rlst-suitesparse` provides SuiteSparse bindings for RLST sparse matrices. It supports UMFPACK symbolic and numeric factorization of `rlst::sparse::csr_mat::CsrMatrix<f64>` and `rlst::sparse::csr_mat::CsrMatrix<rlst::c64>`, solving real and complex double-precision square systems. Both matrix types implement the `UmfpackSymbolic` trait, so symbolic analysis starts with the same `matrix.analyze()` call.
 
 ## Native dependency
 

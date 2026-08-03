@@ -1,7 +1,7 @@
 //! SuiteSparse bindings for RLST sparse matrices.
 //!
-//! This crate currently provides a safe UMFPACK interface for solving real,
-//! double-precision systems stored as [`rlst::sparse::csr_mat::CsrMatrix`].
+//! This crate currently provides a safe UMFPACK interface for solving real and
+//! complex double-precision systems stored as [`rlst::sparse::csr_mat::CsrMatrix`].
 //! SuiteSparse must be installed natively. Set `SUITESPARSE_PATH` to its
 //! installation prefix when it is not discoverable in a standard location.
 //!
@@ -16,7 +16,7 @@
 //!     &[0, 1, 0, 1],
 //!     &[4.0, 1.0, 2.0, 3.0],
 //! );
-//! let symbolic = UmfpackSymbolic::analyze(&matrix)?;
+//! let symbolic = matrix.analyze()?;
 //! let numeric = symbolic.factorize()?;
 //! let solution = numeric.solve(&[1.0, 1.0])?;
 //! assert!((solution[0] - 0.2).abs() < 1e-12);
@@ -29,11 +29,12 @@
 use std::error::Error;
 use std::ffi::c_void;
 use std::fmt::{Display, Formatter};
+use std::ops::AddAssign;
 use std::ptr;
 use std::sync::Arc;
 
-use rlst::Shape;
 use rlst::sparse::csr_mat::CsrMatrix;
+use rlst::{Shape, c64};
 
 const UMFPACK_A: i32 = 0;
 const UMFPACK_WARNING_SINGULAR_MATRIX: i32 = 1;
@@ -122,20 +123,34 @@ pub enum UmfpackFactorizationStatus {
     Warning(i32),
 }
 
-/// Symbolic UMFPACK factorization of an RLST CSR matrix.
+/// Perform an UMFPACK symbolic analysis of an RLST CSR matrix.
 ///
-/// Construct this handle with [`UmfpackSymbolic::analyze`], then call
-/// [`UmfpackSymbolic::factorize`] to obtain a numeric factorization.
-pub struct UmfpackSymbolic {
-    raw: *mut c_void,
-    matrix: Arc<CscMatrix>,
+/// Import this trait and call [`analyze`](UmfpackSymbolic::analyze) on a
+/// [`CsrMatrix<f64>`] or [`CsrMatrix<c64>`].
+pub trait UmfpackSymbolic {
+    /// Concrete symbolic factorization returned for the matrix scalar type.
+    type Symbolic;
+
+    /// Convert this matrix from CSR to UMFPACK's CSC representation and perform
+    /// symbolic analysis.
+    fn analyze(&self) -> UmfpackResult<Self::Symbolic>;
 }
 
-impl UmfpackSymbolic {
-    /// Convert `matrix` from CSR to UMFPACK's CSC representation and perform
-    /// symbolic analysis.
-    pub fn analyze(matrix: &CsrMatrix<f64>) -> UmfpackResult<Self> {
-        let matrix = Arc::new(CscMatrix::from_csr(matrix)?);
+/// Symbolic UMFPACK factorization of a real RLST CSR matrix.
+///
+/// Construct this handle by calling [`UmfpackSymbolic::analyze`] on a
+/// [`CsrMatrix<f64>`], then call [`UmfpackRealSymbolic::factorize`] to obtain a
+/// numeric factorization.
+pub struct UmfpackRealSymbolic {
+    raw: *mut c_void,
+    matrix: Arc<CscMatrix<f64>>,
+}
+
+impl UmfpackSymbolic for CsrMatrix<f64> {
+    type Symbolic = UmfpackRealSymbolic;
+
+    fn analyze(&self) -> UmfpackResult<Self::Symbolic> {
+        let matrix = Arc::new(CscMatrix::from_csr(self)?);
         let mut raw = ptr::null_mut();
         let status = unsafe {
             sys::umfpack_dl_symbolic(
@@ -163,9 +178,11 @@ impl UmfpackSymbolic {
             return Err(UmfpackError::NullHandle("symbolic analysis"));
         }
 
-        Ok(Self { raw, matrix })
+        Ok(UmfpackRealSymbolic { raw, matrix })
     }
+}
 
+impl UmfpackRealSymbolic {
     /// Create a numeric factorization that can solve systems with the analyzed
     /// matrix.
     pub fn factorize(&self) -> UmfpackResult<UmfpackNumeric> {
@@ -203,7 +220,7 @@ impl UmfpackSymbolic {
     }
 }
 
-impl Drop for UmfpackSymbolic {
+impl Drop for UmfpackRealSymbolic {
     fn drop(&mut self) {
         if !self.raw.is_null() {
             unsafe { sys::umfpack_dl_free_symbolic(&mut self.raw) };
@@ -214,7 +231,7 @@ impl Drop for UmfpackSymbolic {
 /// Numeric UMFPACK factorization of an RLST CSR matrix.
 pub struct UmfpackNumeric {
     raw: *mut c_void,
-    matrix: Arc<CscMatrix>,
+    matrix: Arc<CscMatrix<f64>>,
     status: UmfpackFactorizationStatus,
 }
 
@@ -281,17 +298,200 @@ impl Drop for UmfpackNumeric {
     }
 }
 
+/// Symbolic UMFPACK factorization of a complex RLST CSR matrix.
+///
+/// Construct this handle by calling [`UmfpackSymbolic::analyze`] on a
+/// [`CsrMatrix<c64>`], then call [`UmfpackComplexSymbolic::factorize`] to obtain
+/// a numeric factorization.
+pub struct UmfpackComplexSymbolic {
+    raw: *mut c_void,
+    matrix: Arc<ComplexCscMatrix>,
+}
+
+impl UmfpackSymbolic for CsrMatrix<c64> {
+    type Symbolic = UmfpackComplexSymbolic;
+
+    fn analyze(&self) -> UmfpackResult<Self::Symbolic> {
+        let matrix = Arc::new(ComplexCscMatrix::from_csr(self)?);
+        let mut raw = ptr::null_mut();
+        let status = unsafe {
+            sys::umfpack_zl_symbolic(
+                matrix.rows_i64()?,
+                matrix.columns_i64()?,
+                matrix.column_pointers.as_ptr(),
+                matrix.row_indices.as_ptr(),
+                matrix.real_values.as_ptr(),
+                matrix.imaginary_values.as_ptr(),
+                &mut raw,
+                ptr::null(),
+                ptr::null_mut(),
+            )
+        };
+
+        if status != 0 {
+            if !raw.is_null() {
+                unsafe { sys::umfpack_zl_free_symbolic(&mut raw) };
+            }
+            return Err(UmfpackError::NativeFailure {
+                operation: "complex symbolic analysis",
+                status,
+            });
+        }
+        if raw.is_null() {
+            return Err(UmfpackError::NullHandle("complex symbolic analysis"));
+        }
+
+        Ok(UmfpackComplexSymbolic { raw, matrix })
+    }
+}
+
+impl UmfpackComplexSymbolic {
+    /// Create a numeric factorization that can solve systems with the analyzed
+    /// matrix.
+    pub fn factorize(&self) -> UmfpackResult<UmfpackComplexNumeric> {
+        let mut raw = ptr::null_mut();
+        let status = unsafe {
+            sys::umfpack_zl_numeric(
+                self.matrix.column_pointers.as_ptr(),
+                self.matrix.row_indices.as_ptr(),
+                self.matrix.real_values.as_ptr(),
+                self.matrix.imaginary_values.as_ptr(),
+                self.raw,
+                &mut raw,
+                ptr::null(),
+                ptr::null_mut(),
+            )
+        };
+
+        if status < 0 {
+            if !raw.is_null() {
+                unsafe { sys::umfpack_zl_free_numeric(&mut raw) };
+            }
+            return Err(UmfpackError::NativeFailure {
+                operation: "complex numeric factorization",
+                status,
+            });
+        }
+        if raw.is_null() {
+            return Err(UmfpackError::NullHandle("complex numeric factorization"));
+        }
+
+        Ok(UmfpackComplexNumeric {
+            raw,
+            matrix: Arc::clone(&self.matrix),
+            status: factorization_status(status),
+        })
+    }
+}
+
+impl Drop for UmfpackComplexSymbolic {
+    fn drop(&mut self) {
+        if !self.raw.is_null() {
+            unsafe { sys::umfpack_zl_free_symbolic(&mut self.raw) };
+        }
+    }
+}
+
+/// Numeric UMFPACK factorization of a complex RLST CSR matrix.
+pub struct UmfpackComplexNumeric {
+    raw: *mut c_void,
+    matrix: Arc<ComplexCscMatrix>,
+    status: UmfpackFactorizationStatus,
+}
+
+impl UmfpackComplexNumeric {
+    /// Return the non-error status reported while this factorization was
+    /// created.
+    pub fn status(&self) -> UmfpackFactorizationStatus {
+        self.status
+    }
+
+    /// Solve `Ax = rhs` and return the solution vector.
+    pub fn solve(&self, rhs: &[c64]) -> UmfpackResult<Vec<c64>> {
+        let mut solution = vec![c64::new(0.0, 0.0); self.matrix.rows];
+        self.solve_into(rhs, &mut solution)?;
+        Ok(solution)
+    }
+
+    /// Solve `Ax = rhs`, writing the result into `solution`.
+    pub fn solve_into(&self, rhs: &[c64], solution: &mut [c64]) -> UmfpackResult<()> {
+        self.validate_vector_len(rhs.len())?;
+        self.validate_vector_len(solution.len())?;
+
+        let (rhs_real, rhs_imaginary) = complex_parts(rhs);
+        let mut solution_real = vec![0.0; solution.len()];
+        let mut solution_imaginary = vec![0.0; solution.len()];
+        let status = unsafe {
+            sys::umfpack_zl_solve(
+                UMFPACK_A,
+                self.matrix.column_pointers.as_ptr(),
+                self.matrix.row_indices.as_ptr(),
+                self.matrix.real_values.as_ptr(),
+                self.matrix.imaginary_values.as_ptr(),
+                solution_real.as_mut_ptr(),
+                solution_imaginary.as_mut_ptr(),
+                rhs_real.as_ptr(),
+                rhs_imaginary.as_ptr(),
+                self.raw,
+                ptr::null(),
+                ptr::null_mut(),
+            )
+        };
+
+        if status == 0 {
+            for (value, (real, imaginary)) in solution
+                .iter_mut()
+                .zip(solution_real.into_iter().zip(solution_imaginary))
+            {
+                *value = c64::new(real, imaginary);
+            }
+            Ok(())
+        } else {
+            Err(UmfpackError::NativeFailure {
+                operation: "complex solve",
+                status,
+            })
+        }
+    }
+
+    fn validate_vector_len(&self, actual: usize) -> UmfpackResult<()> {
+        if actual == self.matrix.rows {
+            Ok(())
+        } else {
+            Err(UmfpackError::DimensionMismatch {
+                expected: self.matrix.rows,
+                actual,
+            })
+        }
+    }
+}
+
+impl Drop for UmfpackComplexNumeric {
+    fn drop(&mut self) {
+        if !self.raw.is_null() {
+            unsafe { sys::umfpack_zl_free_numeric(&mut self.raw) };
+        }
+    }
+}
+
+fn complex_parts(values: &[c64]) -> (Vec<f64>, Vec<f64>) {
+    values.iter().map(|value| (value.re, value.im)).unzip()
+}
+
 #[derive(Debug)]
-struct CscMatrix {
+struct CscMatrix<Item> {
     rows: usize,
     columns: usize,
     column_pointers: Vec<i64>,
     row_indices: Vec<i64>,
-    values: Vec<f64>,
+    values: Vec<Item>,
 }
 
-impl CscMatrix {
-    fn from_csr(matrix: &CsrMatrix<f64>) -> UmfpackResult<Self> {
+impl<Item> CscMatrix<Item>
+where
+    Item: AddAssign + Copy + Default,
+{
+    fn from_csr(matrix: &CsrMatrix<Item>) -> UmfpackResult<Self> {
         let [rows, columns] = matrix.shape();
         if rows == 0 || columns == 0 {
             return Err(UmfpackError::EmptyMatrix);
@@ -327,7 +527,7 @@ impl CscMatrix {
         }
         let mut offsets = pointers[..columns].to_vec();
         let mut raw_rows = vec![0usize; indices.len()];
-        let mut raw_values = vec![0.0; data.len()];
+        let mut raw_values = vec![Item::default(); data.len()];
 
         for row in 0..rows {
             for entry in indptr[row]..indptr[row + 1] {
@@ -377,12 +577,46 @@ impl CscMatrix {
     }
 }
 
-fn validate_csr(
+#[derive(Debug)]
+struct ComplexCscMatrix {
+    rows: usize,
+    columns: usize,
+    column_pointers: Vec<i64>,
+    row_indices: Vec<i64>,
+    real_values: Vec<f64>,
+    imaginary_values: Vec<f64>,
+}
+
+impl ComplexCscMatrix {
+    fn from_csr(matrix: &CsrMatrix<c64>) -> UmfpackResult<Self> {
+        let csc = CscMatrix::from_csr(matrix)?;
+        let (real_values, imaginary_values) = complex_parts(&csc.values);
+
+        Ok(Self {
+            rows: csc.rows,
+            columns: csc.columns,
+            column_pointers: csc.column_pointers,
+            row_indices: csc.row_indices,
+            real_values,
+            imaginary_values,
+        })
+    }
+
+    fn rows_i64(&self) -> UmfpackResult<i64> {
+        to_i64(self.rows)
+    }
+
+    fn columns_i64(&self) -> UmfpackResult<i64> {
+        to_i64(self.columns)
+    }
+}
+
+fn validate_csr<Item>(
     rows: usize,
     columns: usize,
     indptr: &[usize],
     indices: &[usize],
-    data: &[f64],
+    data: &[Item],
 ) -> UmfpackResult<()> {
     if indptr.len() != rows + 1 {
         return Err(UmfpackError::InvalidCsr(
@@ -460,6 +694,43 @@ mod sys {
         ) -> i32;
         pub fn umfpack_dl_free_symbolic(symbolic: *mut *mut c_void);
         pub fn umfpack_dl_free_numeric(numeric: *mut *mut c_void);
+        pub fn umfpack_zl_symbolic(
+            n_row: i64,
+            n_col: i64,
+            ap: *const i64,
+            ai: *const i64,
+            ax: *const f64,
+            az: *const f64,
+            symbolic: *mut *mut c_void,
+            control: *const f64,
+            info: *mut f64,
+        ) -> i32;
+        pub fn umfpack_zl_numeric(
+            ap: *const i64,
+            ai: *const i64,
+            ax: *const f64,
+            az: *const f64,
+            symbolic: *mut c_void,
+            numeric: *mut *mut c_void,
+            control: *const f64,
+            info: *mut f64,
+        ) -> i32;
+        pub fn umfpack_zl_solve(
+            system: i32,
+            ap: *const i64,
+            ai: *const i64,
+            ax: *const f64,
+            az: *const f64,
+            solution_real: *mut f64,
+            solution_imaginary: *mut f64,
+            rhs_real: *const f64,
+            rhs_imaginary: *const f64,
+            numeric: *mut c_void,
+            control: *const f64,
+            info: *mut f64,
+        ) -> i32;
+        pub fn umfpack_zl_free_symbolic(symbolic: *mut *mut c_void);
+        pub fn umfpack_zl_free_numeric(numeric: *mut *mut c_void);
     }
 }
 
@@ -470,6 +741,20 @@ mod tests {
 
     fn test_matrix() -> CsrMatrix<f64> {
         CsrMatrix::from_aij([2, 2], &[0, 0, 1, 1], &[0, 1, 0, 1], &[4.0, 1.0, 2.0, 3.0])
+    }
+
+    fn complex_test_matrix() -> CsrMatrix<c64> {
+        CsrMatrix::from_aij(
+            [2, 2],
+            &[0, 0, 1, 1],
+            &[0, 1, 0, 1],
+            &[
+                c64::new(4.0, 1.0),
+                c64::new(1.0, -1.0),
+                c64::new(2.0, 1.0),
+                c64::new(3.0, -2.0),
+            ],
+        )
     }
 
     #[test]
@@ -498,7 +783,7 @@ mod tests {
 
     #[test]
     fn solves_a_real_system() {
-        let symbolic = UmfpackSymbolic::analyze(&test_matrix()).unwrap();
+        let symbolic = test_matrix().analyze().unwrap();
         let numeric = symbolic.factorize().unwrap();
         let solution = numeric.solve(&[1.0, 1.0]).unwrap();
 
@@ -509,7 +794,7 @@ mod tests {
 
     #[test]
     fn rejects_incompatible_rhs() {
-        let symbolic = UmfpackSymbolic::analyze(&test_matrix()).unwrap();
+        let symbolic = test_matrix().analyze().unwrap();
         let numeric = symbolic.factorize().unwrap();
 
         assert_eq!(
@@ -519,5 +804,18 @@ mod tests {
                 actual: 1,
             })
         );
+    }
+
+    #[test]
+    fn solves_a_complex_system() {
+        let symbolic = complex_test_matrix().analyze().unwrap();
+        let numeric = symbolic.factorize().unwrap();
+        let solution = numeric
+            .solve(&[c64::new(4.0, 2.0), c64::new(5.0, -4.0)])
+            .unwrap();
+
+        assert_eq!(numeric.status(), UmfpackFactorizationStatus::Success);
+        assert!((solution[0] - c64::new(1.0, 1.0)).norm() < 1e-12);
+        assert!((solution[1] - c64::new(2.0, -1.0)).norm() < 1e-12);
     }
 }
