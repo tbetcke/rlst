@@ -8,7 +8,7 @@ on:
 jobs:
   run-tests-rust:
     name: run-tests
-    runs-on: codeberg-small
+    runs-on: docker
     steps:
       - name: Install Rust
         uses: https://github.com/dtolnay/rust-toolchain@stable
@@ -39,6 +39,9 @@ jobs:
 
       - name: Install MPI
         run: sudo apt-get install -y openmpi-bin libopenmpi-dev
+
+      - name: Install SuiteSparse
+        run: sudo apt-get install -y libsuitesparse-dev
 
       - name: Format
         run: cargo fmt -- --check

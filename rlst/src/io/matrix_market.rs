@@ -276,42 +276,39 @@ fn parse_header(reader: &mut io::Lines<io::BufReader<File>>) -> RlstResult<Matri
             ));
         }
 
-        let format;
-        if items[2] == "coordinate" {
-            format = MatrixFormat::Coordinate;
+        let format = if items[2] == "coordinate" {
+            MatrixFormat::Coordinate
         } else if items[2] == "array" {
-            format = MatrixFormat::Array;
+            MatrixFormat::Array
         } else {
             return Err(RlstError::IoError(
                 "Header line has unknown format.".to_string(),
             ));
-        }
+        };
 
-        let data_type;
-        if items[3] == "real" {
-            data_type = DataType::Real;
+        let data_type = if items[3] == "real" {
+            DataType::Real
         } else if items[3] == "complex" {
-            data_type = DataType::Complex;
+            DataType::Complex
         } else if items[3] == "integer" {
-            data_type = DataType::Integer;
+            DataType::Integer
         } else {
             return Err(RlstError::IoError(
                 "Header line has unknown format.".to_string(),
             ));
-        }
+        };
 
-        let symmetry: SymmetryType;
-        if items[4] == "general" {
-            symmetry = SymmetryType::General;
+        let symmetry: SymmetryType = if items[4] == "general" {
+            SymmetryType::General
         } else if items[4] == "symmetric" {
-            symmetry = SymmetryType::Symmetric;
+            SymmetryType::Symmetric
         } else if items[4] == "skew-symmetric" {
-            symmetry = SymmetryType::Skew;
+            SymmetryType::Skew
         } else {
             return Err(RlstError::IoError(
                 "Header line has unknown format.".to_string(),
             ));
-        }
+        };
 
         return Ok(MatrixMarketInfo {
             format,

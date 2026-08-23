@@ -1,3 +1,3 @@
 [workspace]
-members = ["rlst"]
+members = ["rlst", "rlst-suitesparse"]
 resolver = "2"
