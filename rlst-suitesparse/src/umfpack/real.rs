@@ -7,25 +7,26 @@ use rlst::sparse::csr_mat::CsrMatrix;
 use super::csc::CscMatrix;
 use super::sys;
 use super::{
-    UMFPACK_A, UmfpackError, UmfpackFactorizationStatus, UmfpackResult, UmfpackSymbolic,
+    UMFPACK_A, UmfpackError, UmfpackFactorizationStatus, UmfpackFactorize, UmfpackResult,
     factorization_status,
 };
 
-/// Symbolic UMFPACK factorization of a real RLST CSR matrix.
-///
-/// Construct this handle by calling [`UmfpackSymbolic::analyze`] on a
-/// [`CsrMatrix<f64>`], then call [`UmfpackRealSymbolic::factorize`] to obtain a
-/// numeric factorization.
-pub struct UmfpackRealSymbolic {
+struct UmfpackRealSymbolic {
     raw: *mut c_void,
     matrix: Arc<CscMatrix<f64>>,
 }
 
-impl UmfpackSymbolic for CsrMatrix<f64> {
-    type Symbolic = UmfpackRealSymbolic;
+impl UmfpackFactorize for CsrMatrix<f64> {
+    type Numeric = UmfpackNumeric;
 
-    fn analyze(&self) -> UmfpackResult<Self::Symbolic> {
-        let matrix = Arc::new(CscMatrix::from_csr(self)?);
+    fn factorize(&self) -> UmfpackResult<Self::Numeric> {
+        UmfpackRealSymbolic::analyze(self)?.factorize()
+    }
+}
+
+impl UmfpackRealSymbolic {
+    fn analyze(matrix: &CsrMatrix<f64>) -> UmfpackResult<Self> {
+        let matrix = Arc::new(CscMatrix::from_csr(matrix)?);
         let mut raw = ptr::null_mut();
         let status = unsafe {
             sys::umfpack_dl_symbolic(
@@ -53,14 +54,10 @@ impl UmfpackSymbolic for CsrMatrix<f64> {
             return Err(UmfpackError::NullHandle("symbolic analysis"));
         }
 
-        Ok(UmfpackRealSymbolic { raw, matrix })
+        Ok(Self { raw, matrix })
     }
-}
 
-impl UmfpackRealSymbolic {
-    /// Create a numeric factorization that can solve systems with the analyzed
-    /// matrix.
-    pub fn factorize(&self) -> UmfpackResult<UmfpackNumeric> {
+    fn factorize(&self) -> UmfpackResult<UmfpackNumeric> {
         let mut raw = ptr::null_mut();
         let status = unsafe {
             sys::umfpack_dl_numeric(

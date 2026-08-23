@@ -8,25 +8,26 @@ use rlst::sparse::csr_mat::CsrMatrix;
 use super::csc::{ComplexCscMatrix, complex_parts};
 use super::sys;
 use super::{
-    UMFPACK_A, UmfpackError, UmfpackFactorizationStatus, UmfpackResult, UmfpackSymbolic,
+    UMFPACK_A, UmfpackError, UmfpackFactorizationStatus, UmfpackFactorize, UmfpackResult,
     factorization_status,
 };
 
-/// Symbolic UMFPACK factorization of a complex RLST CSR matrix.
-///
-/// Construct this handle by calling [`UmfpackSymbolic::analyze`] on a
-/// [`CsrMatrix<c64>`], then call [`UmfpackComplexSymbolic::factorize`] to obtain
-/// a numeric factorization.
-pub struct UmfpackComplexSymbolic {
+struct UmfpackComplexSymbolic {
     raw: *mut c_void,
     matrix: Arc<ComplexCscMatrix>,
 }
 
-impl UmfpackSymbolic for CsrMatrix<c64> {
-    type Symbolic = UmfpackComplexSymbolic;
+impl UmfpackFactorize for CsrMatrix<c64> {
+    type Numeric = UmfpackComplexNumeric;
 
-    fn analyze(&self) -> UmfpackResult<Self::Symbolic> {
-        let matrix = Arc::new(ComplexCscMatrix::from_csr(self)?);
+    fn factorize(&self) -> UmfpackResult<Self::Numeric> {
+        UmfpackComplexSymbolic::analyze(self)?.factorize()
+    }
+}
+
+impl UmfpackComplexSymbolic {
+    fn analyze(matrix: &CsrMatrix<c64>) -> UmfpackResult<Self> {
+        let matrix = Arc::new(ComplexCscMatrix::from_csr(matrix)?);
         let mut raw = ptr::null_mut();
         let status = unsafe {
             sys::umfpack_zl_symbolic(
@@ -55,14 +56,10 @@ impl UmfpackSymbolic for CsrMatrix<c64> {
             return Err(UmfpackError::NullHandle("complex symbolic analysis"));
         }
 
-        Ok(UmfpackComplexSymbolic { raw, matrix })
+        Ok(Self { raw, matrix })
     }
-}
 
-impl UmfpackComplexSymbolic {
-    /// Create a numeric factorization that can solve systems with the analyzed
-    /// matrix.
-    pub fn factorize(&self) -> UmfpackResult<UmfpackComplexNumeric> {
+    fn factorize(&self) -> UmfpackResult<UmfpackComplexNumeric> {
         let mut raw = ptr::null_mut();
         let status = unsafe {
             sys::umfpack_zl_numeric(

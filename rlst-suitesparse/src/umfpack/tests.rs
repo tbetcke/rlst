@@ -2,7 +2,7 @@ use rlst::sparse::csr_mat::CsrMatrix;
 use rlst::{DynArray, FromAij, c64};
 
 use super::csc::CscMatrix;
-use super::{UmfpackError, UmfpackFactorizationStatus, UmfpackSymbolic};
+use super::{UmfpackError, UmfpackFactorizationStatus, UmfpackFactorize};
 
 fn test_matrix() -> CsrMatrix<f64> {
     CsrMatrix::from_aij([2, 2], &[0, 0, 1, 1], &[0, 1, 0, 1], &[4.0, 1.0, 2.0, 3.0])
@@ -48,8 +48,7 @@ fn combines_duplicate_csr_entries() {
 
 #[test]
 fn solves_a_real_system() {
-    let symbolic = test_matrix().analyze().unwrap();
-    let numeric = symbolic.factorize().unwrap();
+    let numeric = test_matrix().factorize().unwrap();
     let solution = numeric.solve(&[1.0, 1.0]).unwrap();
 
     assert_eq!(numeric.status(), UmfpackFactorizationStatus::Success);
@@ -59,8 +58,7 @@ fn solves_a_real_system() {
 
 #[test]
 fn rejects_incompatible_rhs() {
-    let symbolic = test_matrix().analyze().unwrap();
-    let numeric = symbolic.factorize().unwrap();
+    let numeric = test_matrix().factorize().unwrap();
 
     assert_eq!(
         numeric.solve(&[1.0]),
@@ -73,8 +71,7 @@ fn rejects_incompatible_rhs() {
 
 #[test]
 fn solves_a_complex_system() {
-    let symbolic = complex_test_matrix().analyze().unwrap();
-    let numeric = symbolic.factorize().unwrap();
+    let numeric = complex_test_matrix().factorize().unwrap();
     let solution = numeric
         .solve(&[c64::new(4.0, 2.0), c64::new(5.0, -4.0)])
         .unwrap();

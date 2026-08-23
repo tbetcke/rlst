@@ -8,7 +8,7 @@
 //! ```
 //! use rlst::FromAij;
 //! use rlst::sparse::csr_mat::CsrMatrix;
-//! use rlst_suitesparse::UmfpackSymbolic;
+//! use rlst_suitesparse::UmfpackFactorize;
 //!
 //! let matrix = CsrMatrix::from_aij(
 //!     [2, 2],
@@ -16,8 +16,7 @@
 //!     &[0, 1, 0, 1],
 //!     &[4.0, 1.0, 2.0, 3.0],
 //! );
-//! let symbolic = matrix.analyze()?;
-//! let numeric = symbolic.factorize()?;
+//! let numeric = matrix.factorize()?;
 //! let solution = numeric.solve(&[1.0, 1.0])?;
 //! assert!((solution[0] - 0.2).abs() < 1e-12);
 //! assert!((solution[1] - 0.2).abs() < 1e-12);
@@ -30,6 +29,6 @@
 pub mod umfpack;
 
 pub use umfpack::{
-    UmfpackComplexNumeric, UmfpackComplexSymbolic, UmfpackError, UmfpackFactorizationStatus,
-    UmfpackNumeric, UmfpackRealSymbolic, UmfpackResult, UmfpackSymbolic,
+    UmfpackComplexNumeric, UmfpackError, UmfpackFactorizationStatus, UmfpackFactorize,
+    UmfpackNumeric, UmfpackResult,
 };

@@ -9,9 +9,9 @@ mod sys;
 #[cfg(test)]
 mod tests;
 
-pub use complex::{UmfpackComplexNumeric, UmfpackComplexSymbolic};
+pub use complex::UmfpackComplexNumeric;
 pub use error::{UmfpackError, UmfpackResult};
-pub use real::{UmfpackNumeric, UmfpackRealSymbolic};
+pub use real::UmfpackNumeric;
 
 const UMFPACK_A: i32 = 0;
 const UMFPACK_WARNING_SINGULAR_MATRIX: i32 = 1;
@@ -27,18 +27,18 @@ pub enum UmfpackFactorizationStatus {
     Warning(i32),
 }
 
-/// Perform an UMFPACK symbolic analysis of an RLST CSR matrix.
+/// Factorize an RLST CSR matrix with UMFPACK.
 ///
-/// Import this trait and call [`analyze`](UmfpackSymbolic::analyze) on a
+/// Import this trait and call [`factorize`](UmfpackFactorize::factorize) on a
 /// [`rlst::sparse::csr_mat::CsrMatrix<f64>`] or
 /// [`rlst::sparse::csr_mat::CsrMatrix<rlst::c64>`].
-pub trait UmfpackSymbolic {
-    /// Concrete symbolic factorization returned for the matrix scalar type.
-    type Symbolic;
+pub trait UmfpackFactorize {
+    /// Concrete numeric factorization returned for the matrix scalar type.
+    type Numeric;
 
-    /// Convert this matrix from CSR to UMFPACK's CSC representation and perform
-    /// symbolic analysis.
-    fn analyze(&self) -> UmfpackResult<Self::Symbolic>;
+    /// Convert this matrix from CSR to UMFPACK's CSC representation, perform
+    /// symbolic analysis, and create a numeric factorization.
+    fn factorize(&self) -> UmfpackResult<Self::Numeric>;
 }
 
 fn factorization_status(status: i32) -> UmfpackFactorizationStatus {
