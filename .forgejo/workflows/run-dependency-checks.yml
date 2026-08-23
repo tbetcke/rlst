@@ -8,7 +8,7 @@ on:
 jobs:
   run-dependency-checks-rust:
     name: run-dependency-checks
-    runs-on: codeberg-small-lazy
+    runs-on: docker
     steps:
       - name: Install Rust
         uses: https://github.com/dtolnay/rust-toolchain@stable
