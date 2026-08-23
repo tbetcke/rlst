@@ -1,5 +1,7 @@
 //! Safe UMFPACK factorization and solve support for RLST CSR matrices.
 
+use rlst::{Array, MutableRawAccessArrayImpl, RawAccessArrayImpl};
+
 mod complex;
 mod csc;
 mod error;
@@ -47,4 +49,30 @@ fn factorization_status(status: i32) -> UmfpackFactorizationStatus {
         UMFPACK_WARNING_SINGULAR_MATRIX => UmfpackFactorizationStatus::SingularMatrix,
         status => UmfpackFactorizationStatus::Warning(status),
     }
+}
+
+fn array_data<'a, Item, ArrayImpl>(
+    array: &'a Array<ArrayImpl, 1>,
+    name: &'static str,
+) -> UmfpackResult<&'a [Item]>
+where
+    ArrayImpl: RawAccessArrayImpl<Item, 1>,
+{
+    if !array.is_contiguous() {
+        return Err(UmfpackError::NonContiguousArray(name));
+    }
+    array.data().ok_or(UmfpackError::DataUnavailable(name))
+}
+
+fn array_data_mut<'a, Item, ArrayImpl>(
+    array: &'a mut Array<ArrayImpl, 1>,
+    name: &'static str,
+) -> UmfpackResult<&'a mut [Item]>
+where
+    ArrayImpl: MutableRawAccessArrayImpl<Item, 1>,
+{
+    if !array.is_contiguous() {
+        return Err(UmfpackError::NonContiguousArray(name));
+    }
+    array.data_mut().ok_or(UmfpackError::DataUnavailable(name))
 }

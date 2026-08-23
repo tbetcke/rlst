@@ -1,5 +1,5 @@
 use rlst::sparse::csr_mat::CsrMatrix;
-use rlst::{DynArray, FromAij, c64};
+use rlst::{DynArray, FromAij, StridedDynArray, c64, rlst_dynamic_array};
 
 use super::csc::CscMatrix;
 use super::{UmfpackError, UmfpackFactorizationStatus, UmfpackFactorize};
@@ -49,34 +49,76 @@ fn combines_duplicate_csr_entries() {
 #[test]
 fn solves_a_real_system() {
     let numeric = test_matrix().factorize().unwrap();
-    let solution = numeric.solve(&[1.0, 1.0]).unwrap();
+    let mut rhs = rlst_dynamic_array!(f64, [2]);
+    rhs[[0]] = 1.0;
+    rhs[[1]] = 1.0;
+    let solution = numeric.solve(&rhs).unwrap();
 
     assert_eq!(numeric.status(), UmfpackFactorizationStatus::Success);
-    assert!((solution[0] - 0.2).abs() < 1e-12);
-    assert!((solution[1] - 0.2).abs() < 1e-12);
+    assert!((solution[[0]] - 0.2).abs() < 1e-12);
+    assert!((solution[[1]] - 0.2).abs() < 1e-12);
 }
 
 #[test]
 fn rejects_incompatible_rhs() {
     let numeric = test_matrix().factorize().unwrap();
+    let rhs = rlst_dynamic_array!(f64, [1]);
 
-    assert_eq!(
-        numeric.solve(&[1.0]),
+    assert!(matches!(
+        numeric.solve(&rhs),
         Err(UmfpackError::DimensionMismatch {
             expected: 2,
             actual: 1,
         })
-    );
+    ));
+}
+
+#[test]
+fn solves_into_a_mutable_array() {
+    let numeric = test_matrix().factorize().unwrap();
+    let mut rhs = rlst_dynamic_array!(f64, [2]);
+    let mut solution = rlst_dynamic_array!(f64, [2]);
+    rhs[[0]] = 1.0;
+    rhs[[1]] = 1.0;
+
+    numeric.solve_into(&rhs, &mut solution).unwrap();
+
+    assert!((solution[[0]] - 0.2).abs() < 1e-12);
+    assert!((solution[[1]] - 0.2).abs() < 1e-12);
+}
+
+#[test]
+fn rejects_non_contiguous_rhs() {
+    let numeric = test_matrix().factorize().unwrap();
+    let rhs = StridedDynArray::from_shape_and_stride([2], [2]);
+
+    assert!(matches!(
+        numeric.solve(&rhs),
+        Err(UmfpackError::NonContiguousArray("right-hand side"))
+    ));
+}
+
+#[test]
+fn rejects_non_contiguous_solution() {
+    let numeric = test_matrix().factorize().unwrap();
+    let rhs = rlst_dynamic_array!(f64, [2]);
+    let mut solution = StridedDynArray::from_shape_and_stride([2], [2]);
+
+    assert!(matches!(
+        numeric.solve_into(&rhs, &mut solution),
+        Err(UmfpackError::NonContiguousArray("solution"))
+    ));
 }
 
 #[test]
 fn solves_a_complex_system() {
     let numeric = complex_test_matrix().factorize().unwrap();
-    let solution = numeric
-        .solve(&[c64::new(4.0, 2.0), c64::new(5.0, -4.0)])
-        .unwrap();
+    let mut rhs = rlst_dynamic_array!(c64, [2]);
+    rhs[[0]] = c64::new(4.0, 2.0);
+    rhs[[1]] = c64::new(5.0, -4.0);
+    let solution = numeric.solve(&rhs).unwrap();
 
     assert_eq!(numeric.status(), UmfpackFactorizationStatus::Success);
-    assert!((solution[0] - c64::new(1.0, 1.0)).norm() < 1e-12);
-    assert!((solution[1] - c64::new(2.0, -1.0)).norm() < 1e-12);
+    assert!((solution[[0]] - c64::new(1.0, 1.0)).norm() < 1e-12);
+    assert!((solution[[1]] - c64::new(2.0, -1.0)).norm() < 1e-12);
 }

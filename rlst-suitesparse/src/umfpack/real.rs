@@ -3,12 +3,13 @@ use std::ptr;
 use std::sync::Arc;
 
 use rlst::sparse::csr_mat::CsrMatrix;
+use rlst::{Array, DynArray, MutableRawAccessArrayImpl, RawAccessArrayImpl, rlst_dynamic_array};
 
 use super::csc::CscMatrix;
 use super::sys;
 use super::{
     UMFPACK_A, UmfpackError, UmfpackFactorizationStatus, UmfpackFactorize, UmfpackResult,
-    factorization_status,
+    array_data, array_data_mut, factorization_status,
 };
 
 struct UmfpackRealSymbolic {
@@ -114,15 +115,28 @@ impl UmfpackNumeric {
         self.status
     }
 
-    /// Solve `Ax = rhs` and return the solution vector.
-    pub fn solve(&self, rhs: &[f64]) -> UmfpackResult<Vec<f64>> {
-        let mut solution = vec![0.0; self.matrix.rows];
+    /// Solve `Ax = rhs` and return the solution in a new dynamic array.
+    pub fn solve<ArrayImpl>(&self, rhs: &Array<ArrayImpl, 1>) -> UmfpackResult<DynArray<f64, 1>>
+    where
+        ArrayImpl: RawAccessArrayImpl<f64, 1>,
+    {
+        let mut solution = rlst_dynamic_array!(f64, [self.matrix.rows]);
         self.solve_into(rhs, &mut solution)?;
         Ok(solution)
     }
 
     /// Solve `Ax = rhs`, writing the result into `solution`.
-    pub fn solve_into(&self, rhs: &[f64], solution: &mut [f64]) -> UmfpackResult<()> {
+    pub fn solve_into<RhsArrayImpl, SolutionArrayImpl>(
+        &self,
+        rhs: &Array<RhsArrayImpl, 1>,
+        solution: &mut Array<SolutionArrayImpl, 1>,
+    ) -> UmfpackResult<()>
+    where
+        RhsArrayImpl: RawAccessArrayImpl<f64, 1>,
+        SolutionArrayImpl: MutableRawAccessArrayImpl<f64, 1>,
+    {
+        let rhs = array_data(rhs, "right-hand side")?;
+        let solution = array_data_mut(solution, "solution")?;
         self.validate_vector_len(rhs.len())?;
         self.validate_vector_len(solution.len())?;
 

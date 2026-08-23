@@ -25,6 +25,10 @@ pub enum UmfpackError {
         /// Actual vector length.
         actual: usize,
     },
+    /// An array argument is not contiguous in memory.
+    NonContiguousArray(&'static str),
+    /// An array argument does not expose its backing data.
+    DataUnavailable(&'static str),
     /// UMFPACK returned a failure status.
     NativeFailure {
         /// Native operation that failed.
@@ -59,6 +63,10 @@ impl Display for UmfpackError {
                     "dimension mismatch: expected {expected}, got {actual}"
                 )
             }
+            Self::NonContiguousArray(name) => {
+                write!(formatter, "{name} must be stored contiguously")
+            }
+            Self::DataUnavailable(name) => write!(formatter, "{name} does not expose raw data"),
             Self::NativeFailure { operation, status } => {
                 write!(formatter, "UMFPACK {operation} failed with status {status}")
             }

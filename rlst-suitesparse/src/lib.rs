@@ -6,7 +6,7 @@
 //! installation prefix when it is not discoverable in a standard location.
 //!
 //! ```
-//! use rlst::FromAij;
+//! use rlst::{FromAij, rlst_dynamic_array};
 //! use rlst::sparse::csr_mat::CsrMatrix;
 //! use rlst_suitesparse::UmfpackFactorize;
 //!
@@ -17,9 +17,12 @@
 //!     &[4.0, 1.0, 2.0, 3.0],
 //! );
 //! let numeric = matrix.factorize()?;
-//! let solution = numeric.solve(&[1.0, 1.0])?;
-//! assert!((solution[0] - 0.2).abs() < 1e-12);
-//! assert!((solution[1] - 0.2).abs() < 1e-12);
+//! let mut rhs = rlst_dynamic_array!(f64, [2]);
+//! rhs[[0]] = 1.0;
+//! rhs[[1]] = 1.0;
+//! let solution = numeric.solve(&rhs)?;
+//! assert!((solution[[0]] - 0.2).abs() < 1e-12);
+//! assert!((solution[[1]] - 0.2).abs() < 1e-12);
 //! # Ok::<(), rlst_suitesparse::UmfpackError>(())
 //! ```
 
