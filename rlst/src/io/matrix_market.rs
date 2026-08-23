@@ -276,7 +276,6 @@ fn parse_header(reader: &mut io::Lines<io::BufReader<File>>) -> RlstResult<Matri
             ));
         }
 
-        
         let format = if items[2] == "coordinate" {
             MatrixFormat::Coordinate
         } else if items[2] == "array" {
@@ -287,7 +286,6 @@ fn parse_header(reader: &mut io::Lines<io::BufReader<File>>) -> RlstResult<Matri
             ));
         };
 
-        
         let data_type = if items[3] == "real" {
             DataType::Real
         } else if items[3] == "complex" {
@@ -300,7 +298,6 @@ fn parse_header(reader: &mut io::Lines<io::BufReader<File>>) -> RlstResult<Matri
             ));
         };
 
-        
         let symmetry: SymmetryType = if items[4] == "general" {
             SymmetryType::General
         } else if items[4] == "symmetric" {
