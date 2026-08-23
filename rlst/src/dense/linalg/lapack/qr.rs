@@ -154,6 +154,7 @@ mod test {
     use crate::base_types::{c32, c64};
     use crate::dense::array::DynArray;
     use crate::empty_array;
+    use num::One;
     use paste::paste;
 
     macro_rules! implement_qr_tests {
@@ -182,10 +183,10 @@ mod test {
             let qtq = crate::empty_array().mult_into_resize(
                 TransMode::ConjTrans,
                 TransMode::NoTrans,
-                1.0.into(),
+                One::one(),
                 q_mat.r(),
                 q_mat.r(),
-                1.0.into(),
+                One::one(),
             );
 
             crate::assert_array_abs_diff_eq!(qtq, ident, $tol);
@@ -215,10 +216,10 @@ mod test {
             let qtq = empty_array().mult_into_resize(
                 TransMode::ConjTrans,
                 TransMode::NoTrans,
-                1.0.into(),
+                One::one(),
                 q_mat.r(),
                 q_mat.r(),
-                1.0.into(),
+                One::one(),
             );
 
             crate::assert_array_abs_diff_eq!(qtq, ident, $tol);
@@ -248,10 +249,10 @@ mod test {
             let qtq = empty_array().mult_into_resize(
                 TransMode::ConjTrans,
                 TransMode::NoTrans,
-                1.0.into(),
+                One::one(),
                 q_mat.r(),
                 q_mat.r(),
-                1.0.into(),
+                One::one(),
             );
 
             crate::assert_array_abs_diff_eq!(qtq, ident, $tol);
@@ -281,10 +282,10 @@ mod test {
             let qtq = empty_array().mult_into_resize(
                 TransMode::ConjTrans,
                 TransMode::NoTrans,
-                1.0.into(),
+                One::one(),
                 q_mat.r(),
                 q_mat.r(),
-                1.0.into(),
+                One::one(),
             );
 
             crate::assert_array_abs_diff_eq!(qtq, ident, $tol);
