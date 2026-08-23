@@ -18,6 +18,9 @@ fn main() {
         "cargo:warning=linking against SuiteSparse from {}",
         installation.prefix.display()
     );
+    println!(
+        "cargo:warning=UMFPACK is licensed GPL-2.0-or-later; review the licensing implications before distributing a combined work"
+    );
 }
 
 struct SuiteSparseInstallation {
