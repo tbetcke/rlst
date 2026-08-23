@@ -18,6 +18,13 @@ export SUITESPARSE_PATH=/custom/prefix
 cargo test -p rlst-suitesparse
 ```
 
+## UMFPACK license warning
+
+UMFPACK is licensed under GPL-2.0-or-later. Although `rlst-suitesparse` is
+dual-licensed under MIT OR Apache-2.0, linking it with UMFPACK can have GPL
+licensing implications for a distributed combined work. Review those
+implications before distribution.
+
 ## License
 
 This crate is dual-licensed under MIT and Apache-2.0, matching RLST. Native SuiteSparse components have their own licensing terms.
