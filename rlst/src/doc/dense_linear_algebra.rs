@@ -10,6 +10,7 @@
 //! - [Array iterators](#array-iterators)
 //! - [Operations on arrays](#operations-on-arrays)
 //! - [Matrix multiplication](#matrix-multiplication)
+//! - [Direct tensor multiplication](#direct-tensor-multiplication)
 //!
 //! # Basic concepts
 //!
@@ -363,9 +364,73 @@
 //! is possible. Arrays are multiplied with `dot` from right to left. For combined array multiplication/addition of the form `Y -> alpha * A B + beta * Y`
 //! the [apply](crate::AsMatrixApply::apply) is implemented for all array types that support BLAS operations.
 //!
-//
-//
-//
+//! # Direct tensor multiplication
+//!
+//! [`dot_direct!`](crate::dot_direct) and [`dot_direct_into!`](crate::dot_direct_into)
+//! contract the **last axis of A with the first axis of B**, without requiring BLAS.
+//! For shapes `[a0, ..., aN, k]` and `[k, b0, ..., bM]`, the result has shape
+//! `[a0, ..., aN, b0, ..., bM]`: the uncontracted axes of A followed by those of B.
+//! Each result element is the sum over `k` of the corresponding products.
+//! Complex values are multiplied without conjugating either operand.
+//!
+//! | A shape | B shape | Result shape |
+//! | --- | --- | --- |
+//! | `[k]` | `[k]` | `[1]` |
+//! | `[m, k]` | `[k]` | `[m]` |
+//! | `[k]` | `[k, n]` | `[n]` |
+//! | `[m, k]` | `[k, n]` | `[m, n]` |
+//! | `[p, q, k]` | `[k, r, s]` | `[p, q, r, s]` |
+//!
+//! A vector-vector product uses a length-one vector, not a rank-zero scalar array;
+//! read its scalar value with `result[[0]]`. Both inputs must have at least one axis.
+//! Arbitrary positive input ranks are supported. Supply an output type annotation
+//! when Rust cannot infer the result rank:
+//!
+//! ```
+//! use rlst::DynArray;
+//! let mut a = DynArray::<f64, 3>::from_shape([2, 3, 4]);
+//! let mut b = DynArray::<f64, 3>::from_shape([4, 5, 2]);
+//! a.fill_with_value(2.0);
+//! b.fill_with_value(3.0);
+//! let result: DynArray<f64, 4> = rlst::dot_direct!(a, b);
+//! assert_eq!(result.shape(), [2, 3, 5, 2]);
+//! assert_eq!(result[[1, 2, 4, 1]], 24.0);
+//! // The macros borrow named operands, so a and b remain usable.
+//! assert_eq!(a.shape(), [2, 3, 4]);
+//! ```
+//!
+//! `dot_direct!(a, b)` allocates a dynamic output using
+//! [`rlst_dynamic_array!`](crate::rlst_dynamic_array), then delegates to
+//! `dot_direct_into!(c, a, b)`. The latter returns `()`, overwrites every output
+//! element, and neither allocates nor resizes the destination. Its shape and rank
+//! must already match the result. A contraction of length zero writes zeros; an
+//! output with any zero-length axis has no elements to write.
+//!
+//! ```
+//! let mut a = rlst::rlst_static_array!(f64, [2, 3]);
+//! let mut b = rlst::rlst_static_array!(f64, [3, 4]);
+//! a.fill_with_value(2.0);
+//! b.fill_with_value(3.0);
+//! let mut storage = rlst::rlst_dynamic_array!(f64, [4, 6]);
+//! storage.fill_with_value(-1.0);
+//! rlst::dot_direct_into!(storage.r_mut().into_subview([1, 1], [2, 4]), a, b);
+//! assert_eq!(storage[[1, 1]], 18.0);
+//! assert_eq!(storage[[0, 0]], -1.0);
+//! ```
+//!
+//! Inputs can be normal or static arrays, strided or transposed views, or lazy
+//! expressions supporting element access. Destinations must support mutable
+//! element access, including mutable subviews. The direct kernel traverses logical
+//! column-major coordinates while respecting each operand's layout.
+//! Each macro argument expression is evaluated once and borrowed for the call.
+//! When constructing views or lazy expressions, use `r()` and `r_mut()` to retain
+//! ownership of their underlying arrays, as in the examples above.
+//!
+//! A mismatched contraction length, output rank, or output shape panics before
+//! any output element is changed. Rank-zero inputs are unsupported and panic.
+//! The allocating form also validates the inferred or annotated result rank;
+//! an incorrect annotation is an error at runtime, not a reshape operation.
+//!
 // ! # Pivoted QR Decomposition
 // !
 // ! The pivted QR decomposition of a matrix `A` is given as `AP=QR`, where `P` is a permutation matrix, `R` is upper triangular, and
