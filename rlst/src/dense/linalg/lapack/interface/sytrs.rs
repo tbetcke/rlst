@@ -9,7 +9,12 @@ use crate::{base_types::LapackResult, traits::rlst_num::RlstScalar};
 
 /// ?sytrs/?hetrs - Solve a system of linear equations using symmetric/Hermitian factorization.
 pub trait Sytrs: RlstScalar {
-    /// Solve a system of linear equations using symmetric/Hermitian factorization.
+    /// Solve from packed factors produced by [`super::sytrf::Sytrf::sytrf`].
+    ///
+    /// `a` and `ipiv` are unchanged. The column-major `n x nrhs` array B is
+    /// overwritten by the solution. `uplo` must match the factorization.
+    /// Invalid slice lengths or leading dimensions panic; LAPACK failures are
+    /// returned as errors.
     #[allow(clippy::too_many_arguments)]
     fn sytrs(
         uplo: SytrfUplo,

@@ -79,14 +79,19 @@ pub mod shared_array;
 pub mod slice;
 pub mod subview;
 
-/// A basic dynamically allocated array.
+/// A heap-allocated, contiguous column-major array.
+///
+/// Construct one with [`DynArray::from_shape`], [`DynArray::from_shape_and_vec`], or
+/// [`crate::rlst_dynamic_array`]. Elements supplied as a flat vector use column-major order.
 pub type DynArray<Item, const NDIM: usize> = Array<BaseArray<VectorContainer<Item>, NDIM>, NDIM>;
 
-/// A basic dynamically allocated array with given alignment.
+/// A contiguous column-major array with an explicitly aligned heap allocation.
 pub type AlignedDynArray<Item, const NDIM: usize, const ALIGNMENT: usize = CACHELINE_ALIGN> =
     Array<BaseArray<AlignedVectorContainer<Item, ALIGNMENT>, NDIM>, NDIM>;
 
-/// A basic dynamically allocated array with a given stride.
+/// A heap-allocated array with an explicit non-overlapping stride.
+///
+/// Logical iteration remains column-major even when the physical storage layout is not.
 pub type StridedDynArray<Item, const NDIM: usize> =
     Array<StridedBaseArray<VectorContainer<Item>, NDIM>, NDIM>;
 
@@ -113,11 +118,19 @@ pub type SliceArrayMut<'a, Item, const NDIM: usize> =
 pub type StridedSliceArrayMut<'a, Item, const NDIM: usize> =
     Array<StridedBaseArray<SliceContainerMut<'a, Item>, NDIM>, NDIM>;
 
-/// The basic tuple type defining an array.
+/// Public array wrapper around a storage, view, or lazy-expression implementation.
+///
+/// `NDIM` is the number of axes. The implementation determines whether data is owned or
+/// borrowed, contiguous or strided, mutable, or computed lazily. Most users construct one of
+/// the aliases such as [`DynArray`] rather than naming the implementation type.
 pub struct Array<ArrayImpl, const NDIM: usize>(ArrayImpl);
 
 impl<ArrayImpl, const NDIM: usize> Array<ArrayImpl, NDIM> {
-    /// Instantiate a new array from an `ArrayImpl` structure.
+    /// Wrap an array implementation.
+    ///
+    /// # Panics
+    ///
+    /// Panics when `NDIM` is zero; RLST arrays always have at least one axis.
     pub fn new(arr: ArrayImpl) -> Self {
         assert!(
             NDIM > 0,
@@ -144,13 +157,18 @@ impl<ArrayImpl, const NDIM: usize> Array<ArrayImpl, NDIM> {
         self.0
     }
 
-    /// Create an owned reference to the array.
+    /// Wrap a shared borrow in an array value.
+    ///
+    /// This is useful with operators and views that consume their operands. The returned value
+    /// does not copy data and cannot outlive `self`.
     #[inline(always)]
     pub fn r(&self) -> Array<ArrayRef<'_, ArrayImpl, NDIM>, NDIM> {
         Array::new(ArrayRef::new(self))
     }
 
-    /// Create an owned mutable reference to the array.
+    /// Wrap an exclusive borrow in an array value.
+    ///
+    /// The returned value does not copy data and cannot outlive the mutable borrow of `self`.
     #[inline(always)]
     pub fn r_mut(&mut self) -> Array<ArrayRefMut<'_, ArrayImpl, NDIM>, NDIM> {
         Array::new(ArrayRefMut::new(self))
@@ -173,17 +191,22 @@ impl<ArrayImpl: Shape<NDIM>, const NDIM: usize> Array<ArrayImpl, NDIM> {
 }
 
 impl<Item: Copy + Default, const NDIM: usize> DynArray<Item, NDIM> {
-    /// Create a new heap allocated array from a given `shape`.
+    /// Allocate a default-initialized column-major array with `shape`.
+    ///
+    /// A zero extent is permitted and produces an empty array.
     #[inline(always)]
     pub fn from_shape(shape: [usize; NDIM]) -> Self {
         let size = shape.iter().product();
         Self::new(BaseArray::new(VectorContainer::new(size), shape))
     }
 
-    /// Create a new heap allocated array by providing a `shape` and a vector of `data`.
+    /// Create a column-major array from `data` without copying the vector.
     ///
-    /// The number of elements in the vector must be compatible with the given shape.
-    /// Otherwise, an assertion error is triggered.
+    /// Flat element `i` corresponds to the column-major logical index `i`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `data.len()` differs from the product of `shape`.
     #[inline(always)]
     pub fn from_shape_and_vec(shape: [usize; NDIM], data: Vec<Item>) -> Self {
         assert_eq!(
@@ -200,17 +223,20 @@ impl<Item: Copy + Default, const NDIM: usize> DynArray<Item, NDIM> {
 impl<Item: Copy + Default, const NDIM: usize, const ALIGNMENT: usize>
     AlignedDynArray<Item, NDIM, ALIGNMENT>
 {
-    /// Create a new heap allocated array from a given `shape`.
+    /// Allocate a default-initialized column-major array with `shape` and `ALIGNMENT`.
+    ///
+    /// `ALIGNMENT` must satisfy the allocator requirements documented by `aligned-vec`.
     #[inline(always)]
     pub fn from_shape(shape: [usize; NDIM]) -> Self {
         let size = shape.iter().product();
         Self::new(BaseArray::new(AlignedVectorContainer::new(size), shape))
     }
 
-    /// Create a new heap allocated array by providing a `shape` and a vector of `data`.
+    /// Create an aligned column-major array from an aligned vector without copying it.
     ///
-    /// The number of elements in the vector must be compatible with the given shape.
-    /// Otherwise, an assertion error is triggered.
+    /// # Panics
+    ///
+    /// Panics if `data.len()` differs from the product of `shape`.
     #[inline(always)]
     pub fn from_shape_and_avec(
         shape: [usize; NDIM],
@@ -309,7 +335,16 @@ impl<Item: Copy + Default> From<Vec<Vec<Item>>> for DynArray<Item, 2> {
 }
 
 impl<Item: Copy + Default, const NDIM: usize> StridedDynArray<Item, NDIM> {
-    /// Create a new heap allocated array from a given `shape` and `stride`.
+    /// Allocate an array with an explicit physical `stride`.
+    ///
+    /// The allocation spans through the greatest reachable storage offset. Strides must map
+    /// every logical index to a distinct storage element.
+    ///
+    /// # Panics
+    ///
+    /// Panics if two computed logical offsets are equal. Shape/stride arithmetic uses ordinary
+    /// `usize` operations, so callers must provide metadata whose products, offsets, and storage
+    /// span are representable.
     #[inline(always)]
     pub fn from_shape_and_stride(shape: [usize; NDIM], stride: [usize; NDIM]) -> Self {
         let size = required_storage_len(shape, stride);
@@ -494,10 +529,10 @@ impl<ArrayImpl, const NDIM: usize> Array<ArrayImpl, NDIM>
 where
     ArrayImpl: RawAccess,
 {
-    /// Return the raw data as slice.
+    /// Return the complete backing storage when it is exposed as one contiguous slice.
     ///
-    /// # Traits
-    /// - [RawAccess]
+    /// The slice follows physical storage order, which may differ from logical column-major
+    /// iteration for a row-major array. Views and lazy expressions can return `None`.
     #[inline(always)]
     pub fn data(&self) -> Option<&[ArrayImpl::Item]> {
         self.0.data()
@@ -508,10 +543,9 @@ impl<ArrayImpl, const NDIM: usize> Array<ArrayImpl, NDIM>
 where
     ArrayImpl: RawAccessMut,
 {
-    /// Return the raw data as slice.
+    /// Return the complete mutable backing storage when exposed as one contiguous slice.
     ///
-    /// # Traits
-    /// - [RawAccessMut]
+    /// The slice follows physical storage order. Views and lazy expressions can return `None`.
     #[inline(always)]
     pub fn data_mut(&mut self) -> Option<&mut [ArrayImpl::Item]> {
         self.0.data_mut()
@@ -844,11 +878,11 @@ impl<Item, ArrayImpl, const NDIM: usize> Array<ArrayImpl, NDIM>
 where
     ArrayImpl: UnsafeDisjointRandom1DAccessMut<Item = Item> + Shape<NDIM>,
 {
-    /// Fill from another array.
+    /// Copy values from another array in logical column-major order.
     ///
-    /// #Traits
-    /// - [UnsafeRandomAccessMut]
-    /// - [Shape]
+    /// # Panics
+    ///
+    /// Panics if the shapes differ.
     #[inline(always)]
     pub fn fill_from<ArrayImplOther>(&mut self, other: &Array<ArrayImplOther, NDIM>)
     where
@@ -930,13 +964,10 @@ impl<ArrayImpl, const NDIM: usize> Array<ArrayImpl, NDIM>
 where
     ArrayImpl: UnsafeDisjointRandom1DAccessMut + Shape<NDIM>,
 {
-    /// Fill from an iterator.
+    /// Fill elements in logical column-major order from an iterator.
     ///
-    /// Note that the array only fills as many values as the other iterator provides.
-    ///
-    /// # Traits
-    /// - [UnsafeDisjointRandom1DAccessMut]
-    /// - [Shape]
+    /// Filling stops when either the array or iterator is exhausted. Existing trailing array
+    /// elements are unchanged when the iterator is short; excess iterator values are ignored.
     #[inline(always)]
     pub fn fill_from_iter<Iter>(&mut self, iter: Iter)
     where
@@ -1331,7 +1362,13 @@ where
 {
     /// Permute axes of an array.
     ///
-    /// The `permutation` gives the new ordering of the axes.
+    /// For a valid permutation, `permutation[output_axis]` identifies the corresponding source
+    /// axis. For example, `[1, 0, 2]` swaps the first two axes.
+    ///
+    /// # Panics
+    ///
+    /// Panics if an entry is outside `0..NDIM` or if an axis occurs more than once.
+    /// Every source axis must occur exactly once.
     pub fn permute_axes(
         self,
         permutation: [usize; NDIM],
@@ -1412,7 +1449,11 @@ where
 }
 
 impl<ArrayImpl, const NDIM: usize> Array<ArrayImpl, NDIM> {
-    /// Reverse a single `axis` of the array.
+    /// Return a lazy view with one axis indexed in reverse.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `axis >= NDIM`.
     pub fn reverse_axis(self, axis: usize) -> Array<ReverseAxis<ArrayImpl, NDIM>, NDIM> {
         assert!(axis < NDIM, "Axis out of bounds");
         Array::new(ReverseAxis::new(self, axis))

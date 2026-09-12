@@ -1,4 +1,13 @@
-//! LAPACK interface for RLST.
+//! Checked, scalar-generic wrappers around selected LAPACK routines.
+//!
+//! These low-level traits operate on flat **column-major** storage. Dimensions
+//! and leading dimensions follow LAPACK conventions; wrappers assert their
+//! slice-size invariants and query workspaces internally where supported.
+//! Mutable matrix arguments are generally overwritten with factors or
+//! solutions. A nonzero LAPACK `info` is returned as
+//! [`crate::base_types::LapackError`]. Prefer the high-level decomposition
+//! traits in [`crate::traits::linalg::decompositions`] unless packed factors or
+//! LAPACK-specific controls are required.
 
 use crate::base_types::LapackError;
 use crate::base_types::LapackResult;

@@ -6,7 +6,10 @@
 //! 1. Generate a plan for the desired FFT
 //! 2. Execute the FFT
 //!
-//! FFTW supports FFT computations on one, two, and three dimensional input arrays.
+//! FFTW supports FFT computations on one-, two-, and three-dimensional input arrays.
+//! Enable `fftw` together with one backend feature: `fftw_system`, `fftw_source`, or
+//! `fftw_mkl`. The system backend must provide both single- and double-precision
+//! libraries (`fftw3f` and `fftw3`), normally discovered through `pkg-config`.
 //!
 //! ## Complex-to-Complex transform
 //!
@@ -166,19 +169,19 @@ pub enum FftwPlanFlags {
     Measure = fftw_sys::FFTW_MEASURE,
     /// Like [FftwPlanFlags::Measure] but selects from a wider set of algorithms.
     Patient = fftw_sys::FFTW_PATIENT,
-    /// Even wider search than [FftwPlanFlags::Patient]
+    /// Even wider search than [`FftwPlanFlags::Patient`]. May overwrite input while planning.
     Exhaustive = fftw_sys::FFTW_EXHAUSTIVE,
     /// Allow out of place transform to overwrite the input.
     DestroyInput = fftw_sys::FFTW_DESTROY_INPUT,
-    /// Only use wisdowm to generate a plan. Do not return a plan if there is no wisdom.
+    /// Only use saved wisdom to generate a plan; fail if no applicable wisdom exists.
     WisdomOnly = fftw_sys::FFTW_WISDOM_ONLY,
-    /// Out-of-place transforms must not overwrite input (not available for all plan types).
+    /// Do not assume SIMD-compatible alignment of input and output arrays.
     Unaligned = fftw_sys::FFTW_UNALIGNED,
 }
 
 /// Description of a plan with different input and output arrays.
 pub trait FftPlanInplace {
-    /// Execute the plan
+    /// Execute the plan in place, overwriting the plan's shared array data.
     fn execute(&mut self);
 }
 

@@ -11,17 +11,36 @@
 //! by three arrays.
 //!
 //! - `indices`: This array contains the column indices of all nonzero elements. It is of length `nnz`.
-//! - `indptr`: The column indices of row `i` are contained in `indptr[i]..indptr[i + 1]`. The `indptr` array
-//!   has `1 + m` elements, where `m` is the number of rows in the sparse matrix. The last element of `indptr` is
-//!   always identical to `nnz`.
+//! - `indptr`: The entries belonging to row `i` occupy the half-open range
+//!   `indptr[i]..indptr[i + 1]` in `indices` and `data`. It has `1 + m`
+//!   elements for an `m`-row matrix, starts at zero, is nondecreasing, and ends at `nnz`.
 //! - `data`: The data entries of the sparse matrix.
 //!
 //! CSR constructors produce a canonical representation: column indices are sorted within each
 //! row, duplicate coordinates are summed, and explicit zeros are removed. Both raw
 //! [`CsrMatrix::new`](crate::sparse::csr_mat::CsrMatrix::new) construction and AIJ construction
-//! enforce this construction-time invariant. Mutable entry access can subsequently introduce a
-//! stored zero; `map_stored` applies its function to every currently stored entry and filters zero
-//! results when the mapped matrix is assembled.
+//! enforce this construction-time invariant. [`CsrMatrix::new`](crate::sparse::csr_mat::CsrMatrix::new)
+//! panics if the pointer length, pointer endpoints, pointer ordering, data/index lengths, or column
+//! bounds are invalid. AIJ construction requires equally long slices and in-bounds row and column
+//! indices. Mutable entry access can subsequently introduce a stored zero; `map_stored` applies its
+//! function to every currently stored entry and filters zero results when the mapped matrix is assembled.
+//!
+//! ```
+//! use rlst::{FromAij, Nonzeros};
+//! use rlst::sparse::csr_mat::CsrMatrix;
+//!
+//! // Duplicates are summed, rows are sorted, and explicit zeros are discarded.
+//! let matrix = CsrMatrix::from_aij(
+//!     [2, 3],
+//!     &[1, 0, 0, 0],
+//!     &[2, 1, 1, 2],
+//!     &[4.0, 2.0, 3.0, 0.0],
+//! );
+//! assert_eq!(matrix.nnz(), 2);
+//! assert_eq!(matrix.indptr().data().unwrap(), &[0, 1, 2]);
+//! assert_eq!(matrix.indices().data().unwrap(), &[1, 2]);
+//! assert_eq!(matrix.data().data().unwrap(), &[5.0, 4.0]);
+//! ```
 //!
 //! On a single node the [CsrMatrix](crate::sparse::csr_mat::CsrMatrix) defines this structure. To initialize a new sparse
 //! matrix the easiest is to use the [CsrMatrix::from_aij](crate::traits::FromAij::from_aij) method. It creates a sparse
@@ -51,10 +70,10 @@
 //!
 //! # Matrix-vector products
 //!
-//! The `CsrMatrix` type in RLST supports the [AsMatrixApply](crate::AsMatrixApply) trait for multiplication of sparse matrices with
-//! one and two dimensional dense arrays. Alternatively, one can use the [dot](crate::dot) macro, which instantiates
-//! a new array to hold the result of a sparse matrix-vector product. Alternatively, one can use the `[dot](crate::dot)` macro to evaluate
-//! a matrix-vector product. An example for the use of `dot` is given below.
+//! The `CsrMatrix` type in RLST supports the [`AsMatrixApply`](crate::AsMatrixApply) trait for
+//! multiplication with one- and two-dimensional dense arrays. The [`dot!`](crate::dot) macro
+//! allocates the result of a sparse matrix-vector or matrix-matrix product. Its inner dimension
+//! must equal the sparse matrix column count.
 //!
 //! ```
 //! # use rlst;
@@ -119,4 +138,41 @@
 //! The result is then turned back into a sparse matrix. The implementation uses lazy evalution. The operations are only executed
 //! when `into_csr` is called.
 //!
+//! # Direct sparse solves with UMFPACK
 //!
+//! The companion `rlst-suitesparse` crate added during 0.7 development factorizes real `f64`
+//! and complex `c64` CSR matrices with SuiteSparse UMFPACK. Call `factorize()` once and reuse the
+//! returned numeric factorization for multiple contiguous vector right-hand sides. Matrices must
+//! be nonempty and square; singularity is exposed through the factorization status.
+//!
+//! This integration requires a native SuiteSparse installation. UMFPACK is GPL-2.0-or-later, so
+//! linking it can affect distribution licensing even though the Rust crates are dual-licensed.
+//! See the companion crate's [real and complex solve tutorial](https://codeberg.org/linalg-rs/rlst/src/branch/main/rlst-suitesparse/README.md#real-and-complex-solves)
+//! for setup, factorization reuse, status handling, and `SUITESPARSE_PATH` discovery.
+//!
+//! # Matrix Market files
+//!
+//! [`write_coordinate_mm`](crate::io::matrix_market::write_coordinate_mm) writes stored entries
+//! using Matrix Market's one-based coordinate indices. [`read_coordinate_mm`](crate::io::matrix_market::read_coordinate_mm)
+//! accepts general real or complex coordinate files and assembles duplicates with the same CSR
+//! canonicalization described above. Dense [`write_array_mm`](crate::io::matrix_market::write_array_mm)
+//! and [`read_array_mm`](crate::io::matrix_market::read_array_mm) use Matrix Market column-major
+//! record order, regardless of the source array's internal layout. Readers reject unsupported
+//! integer and symmetric variants, malformed records, count mismatches, and out-of-range indices
+//! with an [`RlstError`](crate::RlstError).
+//!
+//! A coordinate-file round trip is:
+//!
+//! ```no_run
+//! use rlst::{FromAij, Nonzeros};
+//! use rlst::io::matrix_market::{read_coordinate_mm, write_coordinate_mm};
+//! use rlst::sparse::csr_mat::CsrMatrix;
+//!
+//! let matrix = CsrMatrix::from_aij([2, 2], &[0, 1], &[1, 0], &[2.0_f64, 3.0]);
+//! let path = std::env::temp_dir().join("rlst-matrix-market-example.mtx");
+//! write_coordinate_mm(&matrix, path.to_str().unwrap())?;
+//! let restored = read_coordinate_mm::<f64>(path.to_str().unwrap())?;
+//! assert_eq!(restored.nnz(), 2);
+//! std::fs::remove_file(path)?;
+//! # Ok::<(), Box<dyn std::error::Error>>(())
+//! ```

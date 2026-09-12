@@ -3,7 +3,7 @@
 //! A CSR matrix consists of three arrays.
 //! - `data` - Stores all entries of the CSR matrix.
 //! - `indices` - The column indices associated with each entry in `data`.
-//! - `indptr` - An arry of pointers. The data entries for row `i` are contained in `data[indptr[i]]..data[indptr[i + 1]]`.
+//! - `indptr` - An array of offsets. Entries for row `i` occupy `indptr[i]..indptr[i + 1]`.
 //!
 //! The last entry of `indptr` is the number of nonzero elements of the sparse matrix.
 
@@ -73,6 +73,12 @@ impl<Item> CsrMatrix<Item> {
     /// `Item::default()` are removed. Consequently, every matrix constructed by
     /// this function has sorted, unique column indices in each row and stores no
     /// explicit zeros.
+    ///
+    /// # Panics
+    ///
+    /// Panics unless `indptr` has `shape[0] + 1` entries, starts at zero, is
+    /// nondecreasing, and ends at the common length of `indices` and `data`.
+    /// Also panics if any column index is at least `shape[1]`.
     pub fn new(
         shape: [usize; 2],
         indices: DynArray<usize, 1>,
@@ -110,17 +116,17 @@ impl<Item> CsrMatrix<Item> {
         Self::from_canonical_aij(shape, rows, cols, data)
     }
 
-    /// Return the index pointer.
+    /// Return the row offsets (`shape[0] + 1` entries).
     pub fn indptr(&self) -> &DynArray<usize, 1> {
         &self.indptr
     }
 
-    /// Return the indices.
+    /// Return the canonical column indices, sorted within each row.
     pub fn indices(&self) -> &DynArray<usize, 1> {
         &self.indices
     }
 
-    /// Return the data.
+    /// Return values in one-to-one correspondence with [`Self::indices`].
     pub fn data(&self) -> &DynArray<Item, 1> {
         &self.data
     }
@@ -241,7 +247,15 @@ impl<Item: Copy + Default> CsrMatrix<Item> {
 impl<Item: Default + Mul<Output = Item> + AddAssign<Item> + Add<Output = Item> + Copy + One>
     CsrMatrix<Item>
 {
-    /// Apply the matrix to a vector or dense matrix.
+    /// Apply the matrix to a vector or dense matrix and allocate the result.
+    ///
+    /// A vector input has length `self.shape()[1]`. A matrix input has shape
+    /// `[self.shape()[1], nrhs]`; the result has shape `[self.shape()[0], nrhs]`.
+    ///
+    /// # Panics
+    ///
+    /// Panics for inputs whose rank is not one or two, or whose leading dimension
+    /// does not match the matrix column count.
     pub fn dot<ArrayImpl, const NDIM: usize>(
         &self,
         other: &Array<ArrayImpl, NDIM>,

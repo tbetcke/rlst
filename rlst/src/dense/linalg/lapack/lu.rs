@@ -41,7 +41,18 @@ impl<Item> LuDecomposition<Item>
 where
     Item: Lapack,
 {
-    /// Return the solution of `x` of the linear system `Ax = b`.
+    /// Solve `op(A) x = b` from the stored factors.
+    ///
+    /// `trans` selects A, its transpose, or its conjugate transpose. The
+    /// factorized matrix must be square. A vector RHS has length `n`; a matrix
+    /// RHS has `n` rows. The RHS is copied and the factors are unchanged.
+    ///
+    /// # Errors
+    /// Returns an error for RHS rank above two or a LAPACK solve failure.
+    ///
+    /// # Panics
+    /// Panics for a nonsquare factorization, incompatible RHS shape, or an
+    /// unsupported transpose mode.
     pub fn solve<ArrayImpl, const NDIM: usize>(
         &self,
         trans: TransMode,
@@ -153,9 +164,9 @@ where
         Ok(p_mat)
     }
 
-    /// Return the permutation vector that defines P
-    /// If `perm[i] = j`, then the `i`-th row of the LU decomposition corresponds to the `j`-th row of
-    /// the original matrix.
+    /// Return the zero-based permutation vector defining P.
+    ///
+    /// If `perm[i] = j`, row `i` of `L U` corresponds to row `j` of A.
     pub fn perm_vec(&self) -> RlstResult<Vec<usize>> {
         let ipiv: Vec<usize> = self.ipiv.iter().map(|&elem| (elem as usize) - 1).collect();
 
@@ -168,7 +179,11 @@ where
         Ok(perm)
     }
 
-    /// Return the determinat of the matrix `A`.
+    /// Return the determinant of A from its factors.
+    ///
+    /// # Panics
+    /// Panics unless the factorized matrix is square (and currently also for
+    /// an empty `0 x 0` factorization).
     pub fn det(&self) -> Item {
         let [m, n] = self.lu.shape();
         assert_eq!(m, n, "Matrix must be square to compute determinant.");

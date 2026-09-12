@@ -30,7 +30,15 @@ pub trait FromAij
 where
     Self: BaseItem + Sized,
 {
-    /// Create a sparse matrix from `rows`, `cols`, and `data` slices.
+    /// Create a sparse matrix from parallel `rows`, `cols`, and `data` slices.
+    ///
+    /// Implementations require equal slice lengths and coordinates within `shape`.
+    /// Duplicate-coordinate and explicit-zero handling is implementation-defined;
+    /// [`crate::sparse::csr_mat::CsrMatrix`] sums duplicates and removes zeros.
+    ///
+    /// # Panics
+    ///
+    /// May panic when slice lengths differ or a coordinate is out of bounds.
     fn from_aij(
         shape: [usize; 2],
         rows: &[usize],
@@ -38,7 +46,9 @@ where
         data: &[<Self as BaseItem>::Item],
     ) -> Self;
 
-    /// Create a sparse matrix from an iterator of ([i, j], value) tuples.
+    /// Create a sparse matrix from an iterator of `([row, column], value)` tuples.
+    ///
+    /// Coordinates use zero-based indexing and are subject to [`Self::from_aij`]'s contract.
     fn from_aij_iter<I>(shape: [usize; 2], iter: I) -> Self
     where
         I: Iterator<Item = ([usize; 2], <Self as BaseItem>::Item)>,
@@ -69,7 +79,12 @@ where
 {
     /// The communicator type used for distributed operations.
     type C: Communicator;
-    /// Create a sparse matrix from `rows`, `cols`, and `data` slices.
+    /// Collectively create a matrix from parallel global-row, global-column, and value slices.
+    ///
+    /// Every rank must participate with compatible domain/range layouts, including ranks
+    /// with empty contributions. Contributions may target rows owned by other ranks;
+    /// implementations route them to the range owner. Slice lengths must match, rows must
+    /// lie in the range layout, and columns in the domain layout.
     fn from_aij(
         domain_layout: Rc<IndexLayout<'a, Self::C>>,
         range_layout: Rc<IndexLayout<'a, Self::C>>,

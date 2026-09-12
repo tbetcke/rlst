@@ -32,9 +32,13 @@ where
     Item: RlstScalar + 'static,
     FftwPlanPtrType<Item::Real>: FftwPlanPtrTypeTrait,
 {
-    /// Create a new c2c plan.
+    /// Create an in-place complex-to-complex plan.
     ///
-    /// For details see the [FFTW module description](crate::fftw).
+    /// Returns `None` for empty or noncontiguous arrays, ranks above three, or
+    /// when FFTW cannot construct the requested plan. Planning flags other than
+    /// [`FftwPlanFlags::Estimate`] may overwrite the array while benchmarking.
+    /// FFTW's backward transform is unnormalized. For details see the
+    /// [FFTW module description](crate::fftw).
     fn c2c_fft(
         &self,
         flags: FftwPlanFlags,

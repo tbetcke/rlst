@@ -18,7 +18,7 @@ use super::{
     Array, Shape, Stride, UnsafeRandomAccessByRef, UnsafeRandomAccessByValue, UnsafeRandomAccessMut,
 };
 
-/// Generic structure to store Array slices.
+/// Rank-reducing view obtained by fixing one source axis at one index.
 pub struct ArraySlice<ArrayImpl, const ADIM: usize, const NDIM: usize>
 where
     NumberType<ADIM>: IsGreaterByOne<NDIM>,
@@ -57,7 +57,13 @@ where
     NumberType<ADIM>: IsGreaterByOne<NDIM>,
     NumberType<NDIM>: IsGreaterZero,
 {
-    /// Create new array slice
+    /// Create a slice, where `slice` is `[axis, index_on_axis]`.
+    ///
+    /// Remaining axes retain their original order and strides.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the axis or its fixed index is out of bounds.
     pub fn new(arr: Array<ArrayImpl, ADIM>, slice: [usize; 2]) -> Self {
         // The mask is zero for all entries before the sliced out one and
         // one for all entries after.

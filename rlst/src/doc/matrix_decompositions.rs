@@ -9,12 +9,15 @@
 //! - [Solvers for linear systems and least-squares problems](#solvers-for-linear-systems-and-least-squares-problems)
 //! - [Triangular linear systems](#triangular-linear-systems)
 //! - [Cholesky decomposition and linear system solves](#cholesky-decomposition-and-linear-system-solves)
+//! - [LDL factorization and indefinite systems](#ldl-factorization-and-indefinite-systems)
 //! - [QR Decomposition](#qr-decomposition)
 //! - [LQ Decomposition and minimum-norm solves](#lq-decomposition-and-minimum-norm-solves)
 //! - [Singular Value Decomposition](#singular-value-decomposition)
 //! - [Pseudo-Inverse of a matrix](#pseudo-inverse-of-a-matrix)
 //! - [Symmetric Eigenvalue Decomposition](#symmetric-eigenvalue-decomposition)
+//! - [Definite generalized symmetric eigenproblems](#definite-generalized-symmetric-eigenproblems)
 //! - [General Eigenvalue Decomposition](#general-eigenvalue-decomposition)
+//! - [Generalized Eigenvalue Decomposition](#generalized-eigenvalue-decomposition)
 //! - [Schur decomposition](#schur-decomposition)
 //! - [Generalized Schur (QZ) decomposition](#generalized-schur-qz-decomposition)
 //! - [Sylvester equations](#sylvester-equations)
@@ -195,6 +198,36 @@
 //! rlst::assert_array_relative_eq!(dot!(a, x), b, 1E-10);
 //! ```
 //!
+//! Both Cholesky operations require a square Hermitian positive-definite
+//! matrix. Only the triangle selected by `UpLo` is read. A non-positive pivot
+//! is reported as a LAPACK error; incompatible shapes panic.
+//!
+//! # LDL factorization and indefinite systems
+//!
+//! Unlike Cholesky, pivoted LDL factorization accepts an indefinite real
+//! symmetric or complex Hermitian matrix. RLST stores LAPACK's packed factors
+//! and pivots internally and exposes solves rather than factor extraction.
+//! Only the triangle selected by `UpLo` is read.
+//!
+//! ```
+//! # extern crate lapack_src;
+//! # extern crate blas_src;
+//! use rlst::{Ldl, dot};
+//! use rlst::base_types::UpLo;
+//! let mut a = rlst::rlst_dynamic_array!(f64, [2, 2]);
+//! a[[0, 1]] = 1.0;
+//! a[[1, 0]] = 1.0; // eigenvalues are 1 and -1
+//! let mut b = rlst::rlst_dynamic_array!(f64, [2]);
+//! b[[0]] = 2.0;
+//! b[[1]] = -3.0;
+//! let x = a.ldl(UpLo::Upper).unwrap().solve(&b).unwrap();
+//! rlst::assert_array_relative_eq!(dot!(a, x), b, 1E-12);
+//! ```
+//!
+//! The input must be square. Solves accept a vector or a matrix whose first
+//! dimension is the matrix order and report LAPACK failures for singular
+//! factors. The original input and right-hand side are copied, not mutated.
+//!
 //! # QR Decomposition
 //!
 //! The QR Decomposition of a `m x n` matrix `A` is defined as the decomposition
@@ -226,7 +259,7 @@
 //! let r = qr.r_mat().unwrap();
 //! rlst::assert_array_relative_eq!(dot!(q, r, p.r().transpose().eval()), a, 1E-10);
 //! ```
-//! For the matrix `Q` we have used the paramter [QMode::Compact](crate::dense::linalg::lapack::qr::QMode::Compact).
+//! For the matrix `Q` we have used the parameter [QMode::Compact](crate::dense::linalg::lapack::qr::QMode::Compact).
 //! This returns a `Q` matrix of dimension `m x k`. One can also return a full `m x m` matrix by
 //! providing the parameter [QMode::Full](crate::dense::linalg::lapack::qr::QMode::Full) instead.
 //!
@@ -358,11 +391,13 @@
 //!
 //! # Pseudo-Inverse of a matrix
 //!
-//! The pseudo-inverse for an `m x n` matrix with `m >= n` is given as `P = (A^H* A )^{-1} * A^H`.
-//! If `m < n` then the pseudo-inverse is `P = A^H * (A * A^H)`. The pseudo-inverse can be computed
-//! with the singular value decomposition. In practice the pseudo-inverse is usually regularized in the
-//! sense that only a certain number of the largest singular values are used, either specified through a
-//! tolerance or through a maximum number of singular values.
+//! For a full-column-rank `m x n` matrix with `m >= n`, the pseudo-inverse is
+//! `(A^H A)^{-1} A^H`; for a full-row-rank matrix with `m < n`, it is
+//! `A^H (A A^H)^{-1}`. RLST uses the SVD definition, which also applies to
+//! rank-deficient matrices: singular values at or below the relative cutoff,
+//! or beyond the requested maximum count, are discarded. The returned
+//! pseudo-inverse therefore has shape `n x m` and may be a truncated,
+//! regularized pseudo-inverse.
 //!
 //! The following computes the pseudo-inverse of a given matrix using a singular-value cut-off of `1E-10`
 //! and no maximum number of singular values.
@@ -444,6 +479,40 @@
 //! let eig_mat = diag!(eig);
 //! rlst::assert_array_relative_eq!(a, dot!(Q.r(), eig_mat, Q.r().transpose().eval()), 1E-10);
 //! ```
+//! Eigenvalues are returned in ascending order. Only the triangle selected by
+//! `UpLo` is read; the other triangle need not contain matching values.
+//!
+//! # Definite generalized symmetric eigenproblems
+//!
+//! For Hermitian A and Hermitian positive-definite B, RLST solves one of
+//! `A x = lambda B x`, `A B x = lambda x`, or `B A x = lambda x`. Eigenvalues
+//! are real and ascending. The selected triangle is used for both matrices.
+//!
+//! ```
+//! # extern crate lapack_src;
+//! # extern crate blas_src;
+//! use rlst::{GeneralizedSymmEig, GeneralizedSymmEigType};
+//! use rlst::base_types::UpLo;
+//! use rlst::dense::linalg::lapack::symmeig::SymmEigMode;
+//! let mut a = rlst::rlst_dynamic_array!(f64, [2, 2]);
+//! let mut b = rlst::rlst_dynamic_array!(f64, [2, 2]);
+//! a[[0, 0]] = 2.0;
+//! a[[1, 1]] = 6.0;
+//! b[[0, 0]] = 1.0;
+//! b[[1, 1]] = 2.0;
+//! let (values, vectors) = a.eigh_generalized(
+//!     &b, UpLo::Upper, SymmEigMode::EigenvaluesAndEigenvectors,
+//!     GeneralizedSymmEigType::AxEqualLambdaBx,
+//! ).unwrap();
+//! assert!((values[[0]] - 2.0).abs() < 1E-12);
+//! assert!((values[[1]] - 3.0).abs() < 1E-12);
+//! assert_eq!(vectors.unwrap().shape(), [2, 2]);
+//! ```
+//!
+//! A and B must be equally sized square matrices. B must be positive definite;
+//! LAPACK reports failure if it cannot factor B. The eigenvector normalization
+//! depends on the selected problem type (for the first type, `V^H B V = I`).
+//!
 //! # General Eigenvalue Decomposition
 //!
 //! The general eigenvalue decomposition for a `n x n` matrix `A` is of the form
@@ -498,12 +567,45 @@
 //! ```
 //! With the parameter enum [EigMode](crate::dense::linalg::lapack::eigenvalue_decomposition::EigMode) one can control whether
 //! to compute only eigenvalues, only the left eigenvectors, only the right eigenvectors, or all eigenvectors.
+//! The matrix must be square; eigenvalue order is unspecified.
+//!
+//! # Generalized Eigenvalue Decomposition
+//!
+//! A general matrix pencil `(A, B)` satisfies `A v = lambda B v` for right
+//! eigenvectors and `u^H A = lambda u^H B` for left eigenvectors. Even for real
+//! inputs, eigenvalues and returned eigenvectors use the corresponding complex
+//! scalar type.
+//!
+//! ```
+//! # extern crate lapack_src;
+//! # extern crate blas_src;
+//! use rlst::GeneralizedEigenvalueDecomposition;
+//! use rlst::dense::linalg::lapack::eigenvalue_decomposition::EigMode;
+//! let mut a = rlst::rlst_dynamic_array!(f64, [2, 2]);
+//! let mut b = rlst::rlst_dynamic_array!(f64, [2, 2]);
+//! a[[0, 0]] = 2.0;
+//! a[[1, 1]] = 6.0;
+//! b[[0, 0]] = 1.0;
+//! b[[1, 1]] = 2.0;
+//! let (values, right, left) = a.eig_generalized(&b, EigMode::BothEigenvectors).unwrap();
+//! assert!(values.iter_value().any(|value| (value.re - 2.0).abs() < 1E-12));
+//! assert!(values.iter_value().any(|value| (value.re - 3.0).abs() < 1E-12));
+//! assert_eq!(right.unwrap().shape(), [2, 2]);
+//! assert_eq!(left.unwrap().shape(), [2, 2]);
+//! ```
+//!
+//! A and B must be equally sized square matrices. The returned ordering is
+//! unspecified. This convenience API divides LAPACK's homogeneous `alpha` and
+//! `beta`, so a singular B can produce infinite or NaN values; use the QZ
+//! decomposition below when those cases must be distinguished safely.
 //!
 //! # Schur Decomposition
 //!
-//! The Schur decomposition for a `n x n` matrix `A` is defined as `A = Q * R * Q^H`
-//! with `Q` having orthogonal columns of unit length and `R` upper triangular. The diagonal
-//! values of `R` contain the eigenvalues of `A`. The following example computes the Schur
+//! The Schur decomposition for an `n x n` matrix `A` is `A = Q R Q^H`, with
+//! unitary Q. For complex inputs R is upper triangular. For real inputs it is
+//! quasi-upper triangular: 1-by-1 and 2-by-2 diagonal blocks encode real
+//! eigenvalues and complex-conjugate pairs, respectively, so the diagonal
+//! entries alone need not be the eigenvalues. The following example computes the Schur
 //! decomposition. The Schur decomposition is contained in the same trait [EigenvalueDecomposition](crate::EigenvalueDecomposition)
 //! as the eigenvalue decomposition.
 //! ```

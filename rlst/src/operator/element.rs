@@ -11,15 +11,21 @@ use crate::base_types::{c32, c64};
 
 /// Define a generic element type for a given implementation.
 ///
-/// An element stores a reference to the underlying space
-/// and a concrete implementation.
+/// An element stores a reference to the underlying space and a concrete value.
+///
+/// Arithmetic delegates to that stored space. Although the type ensures that
+/// operands have the same *space type*, callers must not mix elements created
+/// by distinct incompatible instances (for example, different dimensions).
 pub struct Element<'a, Space: LinearSpace> {
     space: &'a Space,
     imp: Space::Impl,
 }
 
 impl<'a, Space: LinearSpace> Element<'a, Space> {
-    /// Create a new element from a space and an implementation.
+    /// Associate a concrete implementation value with `space`.
+    ///
+    /// The constructor does not validate that `imp` satisfies instance-level
+    /// invariants such as the space's dimension.
     pub fn new(space: &'a Space, imp: <Space as LinearSpace>::Impl) -> Self {
         Self { space, imp }
     }
@@ -39,7 +45,7 @@ impl<'a, Space: LinearSpace> Element<'a, Space> {
         &mut self.imp
     }
 
-    ///  Destruct into the implementation.
+    /// Consume the wrapper and return its concrete implementation value.
     pub fn into_imp(self) -> Space::Impl {
         self.imp
     }

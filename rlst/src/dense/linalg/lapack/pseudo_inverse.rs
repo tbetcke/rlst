@@ -13,7 +13,10 @@ use crate::{
     },
 };
 
-/// A structure representing the pseudo-inverse of a matrix.
+/// An SVD-based (possibly truncated) pseudo-inverse.
+///
+/// It stores `V`, retained positive singular values, and `U^H`, so it can be
+/// applied without first materializing the `n x m` matrix.
 pub struct PInv<Item> {
     s: DynArray<Item, 1>,
     ut: DynArray<Item, 2>,
@@ -21,9 +24,11 @@ pub struct PInv<Item> {
 }
 
 impl<Item: Lapack + Gemm> PInv<Item> {
-    /// Create a new pseudo-inverse from singular values and matrices.
-    /// It is assumed that only positive singular values and corresponding
-    /// singular vectors are provided.
+    /// Create a pseudo-inverse representation from `s`, `U^H`, and V.
+    ///
+    /// `s` must contain positive retained singular values; `ut` has shape
+    /// `s.len() x m` and `v` has shape `n x s.len()`. These invariants are not
+    /// checked by the constructor and invalid dimensions will panic when used.
     pub fn new(s: DynArray<Item, 1>, ut: DynArray<Item, 2>, v: DynArray<Item, 2>) -> Self {
         Self { s, ut, v }
     }
@@ -33,7 +38,7 @@ impl<Item: Lapack + Gemm> PInv<Item> {
         &self.s
     }
 
-    /// Get the U^T matrix.
+    /// Return the stored `U^H` factor (`U^T` for real scalars).
     pub fn ut(&self) -> &DynArray<Item, 2> {
         &self.ut
     }
@@ -43,7 +48,7 @@ impl<Item: Lapack + Gemm> PInv<Item> {
         &self.v
     }
 
-    /// Return the matrix form of the pseudo-inverse
+    /// Materialize the `n x m` matrix `V diag(1/s) U^H`.
     pub fn as_matrix(&self) -> DynArray<Item, 2> {
         if self.s.is_empty() {
             return DynArray::from_shape([self.v.shape()[0], self.ut.shape()[1]]);
@@ -57,7 +62,13 @@ impl<Item: Lapack + Gemm> PInv<Item> {
         dot!(self.v.r(), diag!(sinv), self.ut.r())
     }
 
-    /// Apply the pseudo-inverse to a matrix.
+    /// Apply the pseudo-inverse to a vector or matrix.
+    ///
+    /// The input must have first dimension `m`; output has first dimension
+    /// `n`, preserving the number of right-hand-side columns.
+    ///
+    /// # Panics
+    /// Panics for dimensions other than one or two, or incompatible shapes.
     pub fn apply<ArrayImpl, const NDIM: usize>(
         &self,
         arr: &Array<ArrayImpl, NDIM>,

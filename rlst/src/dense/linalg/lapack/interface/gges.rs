@@ -11,6 +11,12 @@ use crate::traits::rlst_num::RlstScalar;
 /// Compute an unsorted generalized Schur factorization.
 pub trait Gges: RlstScalar {
     /// Overwrite A/B with S/T and optionally compute left/right Schur vectors.
+    ///
+    /// All matrices use column-major storage. A and B are `n x n`; requested Q
+    /// and Z outputs must also provide `n` columns. Alpha/beta retain
+    /// homogeneous generalized eigenvalues in unspecified order. Invalid slice
+    /// lengths, leading dimensions, or missing requested outputs panic;
+    /// LAPACK failures are returned as errors. Workspace is queried internally.
     #[allow(clippy::too_many_arguments)]
     fn gges(
         jobq: JobVs,

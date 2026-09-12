@@ -12,7 +12,10 @@ impl<Item: RlstScalar, S: InnerProductSpace<F = Item>> NormedSpace for S {
     }
 }
 
-/// Return the zero element of a given space.
+/// Create the additive identity belonging to this specific space instance.
+///
+/// The returned element borrows `space`, preventing it from outliving the
+/// object that defines its operations and instance-level metadata.
 pub fn zero_element<Space: LinearSpace>(space: &Space) -> Element<'_, Space> {
     space.zero()
 }

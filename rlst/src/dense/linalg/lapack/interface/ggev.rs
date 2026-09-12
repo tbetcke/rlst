@@ -21,7 +21,13 @@ pub enum Job {
 
 /// ?ggev - Generalized Eigenvalue Problem for general matrices.
 pub trait Ggev: RlstScalar {
-    /// Compute generalized eigenvalues and optionally left and/or right eigenvectors.
+    /// Compute generalized eigenvalues and optionally left/right eigenvectors.
+    ///
+    /// A and B are `n x n` column-major matrices and are overwritten. Results
+    /// are homogeneous pairs `(alpha[i], beta[i])`; do not divide without
+    /// checking beta. Requested eigenvector arrays are column-major `n x n`.
+    /// Slice lengths and leading dimensions are asserted; LAPACK convergence
+    /// failures are returned as errors. Workspace is queried internally.
     #[allow(clippy::too_many_arguments)]
     fn ggev(
         jobvl: Job,

@@ -8,46 +8,51 @@ use mpi::traits::Communicator;
 
 use crate::distributed_tools::IndexLayout;
 
-/// Gather to all processes.
+/// Collective gather to every process.
+///
+/// Every rank in the communicator must call the operation in the same order.
 pub trait GatherToAll {
     /// The output type after gathering the distributed data.
     type Output;
-    /// Gather the distributed data to all processes.
+    /// Gather the complete global data to every rank, preserving global index order.
     fn gather_to_all(&self) -> Self::Output;
 }
 
-/// Gather to one process.
+/// Collective gather to one process using distinct root and non-root calls.
 pub trait GatherToOne {
     /// The output type after gathering the distributed array to one process.
     type Output;
-    /// Gather the distributed array rank `root`.
+    /// Participate as a non-root rank in a gather to `root`.
     ///
-    /// Call this method on all ranks that are not `root`.
+    /// All ranks must participate, select the same root, and use compatible layouts.
     fn gather_to_one(&self, root: usize);
-    /// Gather the distributed array rank `root`.
+    /// Participate as the root rank and return the gathered global data.
     ///
-    /// Call this on the root rank that will receive the data.
+    /// Every other rank must simultaneously call [`Self::gather_to_one`] with this rank.
     fn gather_to_one_root(&self) -> Self::Output;
 }
 
-/// Scatter data from one process to all processes.
+/// Collective scatter from one process using distinct root and non-root calls.
+///
+/// Data is partitioned along its first dimension according to the index layout.
 pub trait ScatterFromOne {
     /// The output type after scattering the data.
     type Output<'a, C>
     where
         C: 'a,
         C: Communicator;
-    /// Scatter the distributed array from one process to all processes.
+    /// Participate as root, scattering this array according to `index_layout`.
     ///
-    /// Call this on the root process that will send the data.
+    /// The source first dimension must equal the layout's global size. All other
+    /// ranks must call [`Self::scatter_from_one`] with this root and a compatible layout.
     fn scatter_from_one_root<'a, C: Communicator>(
         &self,
         index_layout: Rc<IndexLayout<'a, C>>,
     ) -> Self::Output<'a, C>;
 
-    /// Scatter the distributed array from one process to all processes.
+    /// Participate as a non-root receiver in a scatter from `root`.
     ///
-    /// Call this on all receivers of data.
+    /// All ranks must select the same root and use compatible layouts.
     fn scatter_from_one<'a, C: Communicator>(
         root: usize,
         index_layout: Rc<IndexLayout<'a, C>>,

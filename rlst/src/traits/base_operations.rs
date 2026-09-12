@@ -12,7 +12,10 @@ pub trait BaseItem {
     type Item: Copy + Default;
 }
 
-/// Allow data to be borrowed using runtime borrowing checks
+/// Allow shared access guarded by runtime borrow or lock checking.
+///
+/// Implementations choose the guard type: for example, shared arrays use either a `RefCell`
+/// borrow guard or an `RwLock` result.
 pub trait BorrowAtRuntime {
     /// The result of the borrow
     type Target<'a>
@@ -23,9 +26,9 @@ pub trait BorrowAtRuntime {
     fn borrow(&self) -> Self::Target<'_>;
 }
 
-/// Allow data to be mutably borrowed using runtime borrowing checks
+/// Allow exclusive access guarded by runtime borrow or lock checking.
 pub trait BorrowAtRuntimeMut {
-    /// The
+    /// The mutable guard or lock-result type.
     type Target<'a>
     where
         Self: 'a;
@@ -54,7 +57,7 @@ pub trait Shape<const NDIM: usize> {
     }
 }
 
-/// Associate a strice with a given object.
+/// Associate a stride with a given object.
 ///
 /// A stride describes the memory layout of an array.
 /// If the stride is e.g. `[1, 5]`, this means
@@ -109,8 +112,8 @@ pub trait Stride<const NDIM: usize> {
 
     /// Return true if the array is contiguous in memory.
     ///
-    /// This is the case of the data is either row-major or column-major.
-    /// Contgiuous memory orderings with respect to other layouts are not supported.
+    /// This is the case if the data is either row-major or column-major.
+    /// Other gapless permutations are reported as non-contiguous.
     fn is_contiguous(&self) -> bool
     where
         Self: Shape<NDIM>,
@@ -133,8 +136,8 @@ pub trait ResizeInPlace<const NDIM: usize> {
 
 /// Fill an object with values from another object.
 ///
-/// Behaviour if `self` and `other` have incompatible sizes
-/// is not determined.
+/// Individual implementations define how incompatible shapes are handled. RLST dense arrays
+/// require equal shapes and panic otherwise.
 pub trait FillFrom<Other> {
     /// Fill `self` with values from `other`.
     fn fill_from(&mut self, other: &Other);
@@ -142,8 +145,8 @@ pub trait FillFrom<Other> {
 
 /// Fill an array with values from an iterator.
 ///
-/// Behaviour if `self` and `iter` have incompatible sizes
-/// is not determined.
+/// For RLST dense arrays, values are consumed in logical column-major order until either side is
+/// exhausted; a short iterator leaves trailing elements unchanged.
 pub trait FillFromIter<Iter: Iterator> {
     /// Fill `self` with values from `iter`.
     fn fill_from_iter(&mut self, iter: Iter);
@@ -201,7 +204,7 @@ pub trait SetZero {
 
 /// Set elements of current object to one.
 pub trait SetOne {
-    /// Set all elemnets of `self` to `zero`.
+    /// Set all elements of `self` to one.
     fn set_one(&mut self);
 }
 
@@ -253,7 +256,10 @@ pub trait ConjObject {
     fn conj(self) -> Self::Output;
 }
 
-/// Evaluate into a new Array.
+/// Evaluate an array or lazy expression into a newly created column-major array.
+///
+/// Evaluation never aliases the source. The source's container type controls whether the output
+/// uses dynamic storage or a statically sized container.
 pub trait EvaluateArray<Item, const NDIM: usize>
 where
     Item: Copy + Default,
@@ -265,7 +271,9 @@ where
     fn eval(&self) -> Array<Self::OutputImpl, NDIM>;
 }
 
-/// Evaluate array into a new row-major array.
+/// Evaluate an array or lazy expression into a newly created row-major array.
+///
+/// Logical values are preserved while physical storage order changes.
 pub trait EvaluateRowMajorArray<Item, const NDIM: usize>
 where
     Item: Copy + Default,
@@ -318,8 +326,10 @@ pub trait ToType<T> {
 
 /// Fill an array with equidistant values.
 pub trait Linspace<Item> {
-    /// Fill an array with equidistant points with start `a` and last value `b`.
+    /// Fill an array with equally spaced points, including first value `a` and last value `b`.
     ///
-    /// The function panics if `b <= a` or the array has less than two elements.
+    /// # Panics
+    ///
+    /// Panics if `b <= a` or the array has fewer than two elements.
     fn linspace(&mut self, a: Item, b: Item);
 }

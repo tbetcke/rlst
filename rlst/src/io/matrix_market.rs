@@ -51,14 +51,21 @@ pub enum SymmetryType {
     Hermitian,
 }
 
-/// Information declared by a Matrix Market header.
+/// Parsed Matrix Market header information used internally by the readers.
+///
+/// Its fields are intentionally private; callers select a typed reader rather than
+/// constructing or inspecting this parser state.
 pub struct MatrixMarketInfo {
     format: MatrixFormat,
     data_type: DataType,
     symmetry: SymmetryType,
 }
 
-/// Export a matrix in coordinate format.
+/// Write stored matrix entries in general Matrix Market coordinate format.
+///
+/// Coordinates emitted by the matrix's AIJ iterator are converted from Rust's
+/// zero-based indices to Matrix Market's one-based indices. Existing files are
+/// truncated. Returns [`RlstError::IoError`] if the file cannot be created or written.
 pub fn write_coordinate_mm<
     T: MmIdentifier + Display,
     Mat: crate::traits::iterators::AijIteratorByValue<Item = T> + crate::traits::Shape<2>,
@@ -91,7 +98,10 @@ pub fn write_coordinate_mm<
     Ok(())
 }
 
-/// Export a matrix in array format.
+/// Write a dense matrix in general Matrix Market array format.
+///
+/// Values are emitted in Matrix Market column-major record order. Existing files
+/// are truncated. Returns [`RlstError::IoError`] if the file cannot be created or written.
 pub fn write_array_mm<
     T: MmIdentifier + Display,
     ArrayImpl: UnsafeRandom1DAccessByValue<Item = T> + crate::traits::Shape<2>,
@@ -116,6 +126,9 @@ pub fn write_array_mm<
 ///
 /// The header field must match `T` (`real` for `f32`/`f64`, `complex` for
 /// `c32`/`c64`). Complex records contain separate real and imaginary fields.
+/// Records are loaded in Matrix Market column-major order. The reader returns
+/// [`RlstError::IoError`] for unsupported format, field, or symmetry declarations,
+/// malformed dimensions or values, and missing or excess records.
 pub fn read_array_mm<T: Copy + Default + MmIdentifier>(fname: &str) -> RlstResult<DynArray<T, 2>> {
     let mut reader = open_file(fname)
         .map_err(|error| RlstError::IoError(format!("could not open {fname}: {error}")))?;
@@ -146,7 +159,10 @@ pub fn read_array_mm<T: Copy + Default + MmIdentifier>(fname: &str) -> RlstResul
 ///
 /// Record counts and one-based coordinate bounds are validated before the CSR
 /// matrix is constructed. Complex records contain separate real and imaginary
-/// fields.
+/// fields. Duplicate coordinates are summed and explicit zeros removed by CSR
+/// assembly. The reader returns [`RlstError::IoError`] for unsupported headers,
+/// malformed dimensions or records, count mismatches, and coordinates outside
+/// the declared shape.
 pub fn read_coordinate_mm<T: Default + Copy + Num + AddAssign + MmIdentifier>(
     fname: &str,
 ) -> RlstResult<CsrMatrix<T>> {

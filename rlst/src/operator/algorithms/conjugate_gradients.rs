@@ -13,7 +13,11 @@ use crate::{
     operator::{abstract_operator::Operator, element::Element},
 };
 
-/// Iteration for CG
+/// Builder and in-place iteration for the conjugate-gradient method.
+///
+/// CG assumes a self-adjoint positive-definite operator on one inner-product
+/// space. [`Self::run`] mutates the supplied initial guess and returns a
+/// residual measure, not a convergence flag.
 pub struct CgIteration<
     'a,
     Scalar: RlstScalar,
@@ -43,7 +47,7 @@ where
     ///
     /// This function takes an operator `op`, a right-hand side `rhs`, and an element `x` of the
     /// function space as starting approximation. Typically, `x` can be chosen to be the zero
-    /// element of the space.
+    /// element of the space. Defaults are tolerance `1E-6` and 1000 iterations.
     pub fn new(
         op: &'a Operator<OpImpl>,
         rhs: &'a Element<'a, Space>,
@@ -84,7 +88,9 @@ where
     /// executed in each step of the iteration. The first parameter is
     /// the current approximation `x` and the second parameter is the
     /// current residual `b - Ax`. This callable can be used to obtain
-    /// information about each step of the iteration.
+    /// information about each step of the iteration. It runs after each
+    /// successful update, before convergence is checked. It is not called for
+    /// an already-converged initial guess or a pre-update breakdown.
     pub fn set_callable(
         mut self,
         callable: impl FnMut(&Element<Space>, &Element<Space>) + 'a,
@@ -104,10 +110,12 @@ where
     /// Run the CG iteration.
     ///
     /// Returns the final relative residual, or the absolute residual when the
-    /// right-hand side is zero. An exact initial solution returns immediately.
+    /// right-hand side is zero. The caller determines convergence by comparing
+    /// this value with the configured tolerance; exhausting `max_iter` is not
+    /// otherwise signaled. An exact initial solution returns immediately.
     /// If CG encounters a zero or non-finite search-direction denominator, it
     /// terminates without applying an invalid update and returns the current
-    /// residual.
+    /// residual. The callback is invoked only after successful updates.
     pub fn run(mut self) -> Scalar::Real {
         fn print_success<T: RlstScalar>(it_count: usize, rel_res: T) {
             println!("CG converged in {it_count} iterations with relative residual {rel_res:+E}.");

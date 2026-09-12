@@ -1,4 +1,4 @@
-//! Extend an array by an empty axis either at the front or back.
+//! Extend an array by a singleton (extent-one) axis at the front or back.
 
 use crate::{
     ContainerType,
@@ -17,7 +17,7 @@ use super::{
     UnsafeRandomAccessByValue, UnsafeRandomAccessMut,
 };
 
-/// Axis position.
+/// Position at which to insert the singleton axis.
 #[derive(Clone, Copy)]
 pub enum AxisPosition {
     /// Insert axis at the front.
@@ -26,7 +26,7 @@ pub enum AxisPosition {
     Back,
 }
 
-/// Array implementation that provides an appended empty axis.
+/// Array view with one additional extent-one axis.
 pub struct ArrayAppendAxis<ArrayImpl, const ADIM: usize, const NDIM: usize>
 where
     NumberType<ADIM>: IsSmallerByOne<NDIM>,
@@ -39,7 +39,7 @@ impl<ArrayImpl, const ADIM: usize, const NDIM: usize> ArrayAppendAxis<ArrayImpl,
 where
     NumberType<ADIM>: IsSmallerByOne<NDIM>,
 {
-    /// Create new
+    /// Create a view with a singleton axis at `axis_position`.
     pub fn new(arr: Array<ArrayImpl, ADIM>, axis_position: AxisPosition) -> Self {
         Self { arr, axis_position }
     }
@@ -209,7 +209,10 @@ where
 }
 
 impl<ArrayImpl, const ADIM: usize> Array<ArrayImpl, ADIM> {
-    /// Insert empty axis
+    /// Insert a singleton axis at the front or back.
+    ///
+    /// Despite the historical method name, the inserted axis has extent one, not zero. The view
+    /// owns its array operand and does not allocate or copy element storage.
     pub fn insert_empty_axis<const NDIM: usize>(
         self,
         axis_position: AxisPosition,

@@ -1,7 +1,6 @@
 //! Definition of [StridedBaseArray], a container for array data with custom stride.
 //!
-//! A [StridedBaseArray] is a simple container for array data. It is mainly a convient interface
-//! to a data container and adds a `shape`, `stride`, and n-dimensional accessor methods.
+//! A [StridedBaseArray] combines a data container with explicit shape and stride metadata.
 
 use std::collections::HashSet;
 
@@ -22,8 +21,10 @@ use crate::{
     },
 };
 
-/// Definition of a [StridedBaseArray]. The `data` stores the actual array data, `shape` stores
-/// the shape of the array, and `stride` contains the `stride` of the underlying data.
+/// Array implementation with explicit non-negative strides.
+///
+/// A logical index maps to the storage offset `sum(index[axis] * stride[axis])`. The layout may
+/// contain gaps, but distinct logical indices may not alias.
 pub struct StridedBaseArray<Data, const NDIM: usize> {
     data: Data,
     shape: [usize; NDIM],
@@ -51,7 +52,15 @@ pub(crate) fn required_storage_len<const NDIM: usize>(
 }
 
 impl<Data: DataContainer, const NDIM: usize> StridedBaseArray<Data, NDIM> {
-    /// Create new
+    /// Combine a data container with a shape and stride.
+    ///
+    /// The container may be longer than the reachable storage span.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the computed data requirement exceeds the container length or if two computed
+    /// logical offsets are equal. Shape/stride arithmetic uses ordinary `usize` operations, so
+    /// callers must provide metadata whose products, offsets, and storage span are representable.
     pub fn new(data: Data, shape: [usize; NDIM], stride: [usize; NDIM]) -> Self {
         let number_of_elements = shape.iter().product::<usize>();
         let required_span = required_storage_len(shape, stride);

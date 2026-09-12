@@ -14,4 +14,5 @@ pub mod distributed_computations {
 
 pub mod getting_started;
 pub mod matrix_decompositions;
+pub mod optional_integrations;
 pub mod sparse_matrices;

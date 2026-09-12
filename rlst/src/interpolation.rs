@@ -52,8 +52,8 @@
 //! barycentric_evaluate_1d(
 //!     &eval_points,
 //!     &cheb_points,
-//!     &interp_values,
 //!     &weights,
+//!     &interp_values,
 //!     &mut eval_values,
 //! );
 //!
@@ -66,7 +66,7 @@
 //!
 //! The complexity of evaluating a Chebychev interpolation with `n` values at `m` evaluation points
 //! has a complexity of `O(n * m)`. The direct computation of the weights with [barycentric_weights]
-//! costs `O(n^2)`, while the generation of the Chebychev weights with `barycentric_chebycev_weights]`
+//! costs `O(n^2)`, while generation with [`barycentric_chebychev_weights`]
 //! costs only `O(n)`.
 
 use itertools::izip;
@@ -87,11 +87,14 @@ pub enum Kind {
     Second,
 }
 
-/// Return the n + 1 Chebychev points of type `kind` in [-1, 1].
+/// Return `n` Chebychev points of `kind` in `[-1, 1]`, in descending order.
 ///
-/// - The Chebychev points are returned in descending order.
-/// - Chebychev points of the first kind include the end points. Chebychev points of the second kind don't.
-/// - For Chebychev points of the second kind require `n > 1`.
+/// First-kind points are interior roots and require `n > 0`. Second-kind points
+/// include both endpoints and require `n > 1`.
+///
+/// # Panics
+///
+/// Panics when the selected kind's requirement on `n` is not met.
 pub fn chebychev_points<Item: RlstScalar>(kind: Kind, n: usize) -> DynArray<Item, 1> {
     let mut output = DynArray::<Item, 1>::from_shape([n]);
     let indices = 0..n;
@@ -118,7 +121,10 @@ pub fn chebychev_points<Item: RlstScalar>(kind: Kind, n: usize) -> DynArray<Item
     output
 }
 
-/// Compute a set of general barycentric weights given interpolation points
+/// Compute general barycentric weights for distinct interpolation points.
+///
+/// Returns weights `w[j] = 1 / product(i != j, x[j] - x[i])`. Repeated points
+/// cause division by zero; an empty input produces an empty output.
 pub fn barycentric_weights<
     Item: RlstScalar,
     ArrayImpl: UnsafeRandomAccessByValue<1, Item = Item> + Shape<1>,
@@ -147,8 +153,14 @@ pub fn barycentric_weights<
     result
 }
 
-/// Return the n + 1 barycentric weights required for barycentric interpolation on Chebychev points of order n
+/// Return `n` analytic weights for `n` Chebychev interpolation points.
 ///
+/// Overall scaling of barycentric weights is immaterial. Use the same `kind` and
+/// `n` passed to [`chebychev_points`].
+///
+/// # Panics
+///
+/// Panics for first-kind `n == 0` or second-kind `n <= 1`.
 pub fn barycentric_chebychev_weights<T: RlstScalar>(kind: Kind, n: usize) -> DynArray<T, 1> {
     let mut output = DynArray::<T, 1>::from_shape([n]);
     match kind {
@@ -187,14 +199,21 @@ pub fn barycentric_chebychev_weights<T: RlstScalar>(kind: Kind, n: usize) -> Dyn
 /// # Arguments
 /// - `eval_points`: The points at which to evaluate the interpolation polynomial.
 /// - `interp_nodes`: The interpolation nodes.
-/// - `interp_values`: The values of the interpolation polynomial at the nodes.
 /// - `interp_weights`: The barycentric weights of the interpolation formula.
+/// - `interp_values`: The values of the interpolation polynomial at the nodes.
+/// - `result`: Output storage, with one entry per evaluation point.
 ///
 /// The following routines are provides to compute the interpolation weights.
 /// - [barycentric_weights]: Given an array of interpolation points directly compute the associated weights.
 /// - [barycentric_chebychev_weights]: Use an analytic formula to compute the weights for Chebychev points of the first or second kind.
 ///
-/// The output `result` is an array with the same length as the array `eval_points`.
+/// The output `result` is an array with the same length as `eval_points`. Evaluation
+/// points exactly equal to a node receive that node's value directly.
+///
+/// # Panics
+///
+/// Panics unless node, weight, and value lengths match and `result` has the same
+/// length as `eval_points`.
 #[inline(always)]
 pub fn barycentric_evaluate_1d<
     Item,
@@ -360,15 +379,15 @@ pub fn tensor_barycentric_evaluate_2d<
 /// # Arguments
 /// - `eval_points_x`: The coordinates of the points along the x-direction.
 /// - `eval_points_y`: The coordinates of the points along the y-direction.
-/// - `eval_points_z`: The coordinates of the points along the y-direction.
+/// - `eval_points_z`: The coordinates of the points along the z-direction.
 /// - `interp_nodes_x`: The interpolation nodes in the x-direction
 /// - `interp_nodes_y`: The interpolation nodes in the y-direction
-/// - `interp_nodes_z`: The interpolation nodes in the y-direction
+/// - `interp_nodes_z`: The interpolation nodes in the z-direction
 /// - `interp_values`: A `[interp_nodes_x.len(), interp_nodes_y.len(), interp_nodes_z.len()]` array of values at the tensor product of the interpolation nodes.
 ///   The values of the interpolation polynomial at the nodes.
 /// - `interp_weights_x`: The interpolation weights in the x-direction.
 /// - `interp_weights_y`: The interpolation weights in the y-direction.
-/// - `interp_weights_z`: The interpolation weights in the y-direction.
+/// - `interp_weights_z`: The interpolation weights in the z-direction.
 ///
 /// The following routines are provides to compute the interpolation weights.
 /// - [barycentric_weights]: Given an array of interpolation points directly compute the associated weights.
@@ -559,15 +578,12 @@ pub fn barycentric_evaluate_2d<
 /// Evaluate an interpolation polynomial on a given array of points.
 ///
 /// # Arguments
-/// - `eval_points`: The coordinates of the points as an `(2, npts)` array.
-/// - `interp_nodes_x`: The interpolation nodes in the x-direction
-/// - `interp_nodes_y`: The interpolation nodes in the y-direction
-/// - `interp_values`: A `[interp_nodes_x.len(), interp_nodes_y.len()]` array of values at the tensor product of the interpolation nodes.
-///   The values of the interpolation polynomial at the nodes.
-/// - `interp_weights_x`: The interpolation weights in the x-direction.
-/// - `interp_weights_y`: The interpolation weights in the y-direction.
+/// - `eval_points`: Coordinates as a `(3, npts)` array.
+/// - `interp_nodes_x`, `interp_nodes_y`, `interp_nodes_z`: Nodes on each axis.
+/// - `interp_values`: Values on the tensor grid, with shape equal to the three node lengths.
+/// - `interp_weights_x`, `interp_weights_y`, `interp_weights_z`: Weights on each axis.
 ///
-/// The following routines are provides to compute the interpolation weights.
+/// The following routines are provided to compute the interpolation weights.
 /// - [barycentric_weights]: Given an array of interpolation points directly compute the associated weights.
 /// - [barycentric_chebychev_weights]: Use an analytic formula to compute the weights for Chebychev points of the first or second kind.
 ///

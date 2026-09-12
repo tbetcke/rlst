@@ -5,29 +5,32 @@ use num::{One, Zero};
 use crate::base_types::{c32, c64};
 use crate::{LinearSpace, abstract_operator::OperatorBase};
 
-/// A concrete operator.
+/// Owning wrapper that gives an [`OperatorBase`] implementation operator algebra.
+///
+/// Addition, subtraction, products, negation, and scalar multiplication consume
+/// their operands. Use [`Self::r`] when an expression should borrow an operator.
 pub struct Operator<OpImpl>(OpImpl);
 
 impl<OpImpl> Operator<OpImpl>
 where
     OpImpl: OperatorBase,
 {
-    /// Create a new operator.
+    /// Wrap an operator implementation without changing its domain or range.
     pub fn new(op_impl: OpImpl) -> Self {
         Self(op_impl)
     }
 
-    /// Create a reference to the current operator.
+    /// Return a lightweight operator that borrows this operator.
     pub fn r(&self) -> Operator<RlstOperatorReference<'_, OpImpl>> {
         Operator::new(RlstOperatorReference::new(self))
     }
 }
 
-/// Operator reference
+/// Operator implementation that forwards all operations to a borrowed [`Operator`].
 pub struct RlstOperatorReference<'a, OpImpl>(&'a Operator<OpImpl>);
 
 impl<'a, OpImpl: OperatorBase> RlstOperatorReference<'a, OpImpl> {
-    /// Create a new operator reference.
+    /// Borrow `op` for use in ownership-consuming operator expressions.
     pub fn new(op: &'a Operator<OpImpl>) -> Self {
         Self(op)
     }
@@ -85,19 +88,21 @@ impl<OpImpl: OperatorBase> OperatorBase for RlstOperatorReference<'_, OpImpl> {
     }
 }
 
-/// Sum of two operators.
+/// Lazy owning sum of two operators with identical domain and range.
 pub struct OperatorSum<OpImpl1, OpImpl2>(Operator<OpImpl1>, Operator<OpImpl2>);
 
-/// Scalar multiple of an operator.
+/// Lazy owning scalar multiple of an operator.
 pub struct OperatorScalarMul<Scalar, OpImpl>(Scalar, Operator<OpImpl>);
 
-/// Difference of two operators.
+/// Lazy owning difference of operators with identical domain and range.
 pub struct OperatorSub<OpImpl1, OpImpl2>(Operator<OpImpl1>, Operator<OpImpl2>);
 
-/// Product `Op1 * Op2` of two operators.
+/// Lazy composition `Op1 * Op2`, applying `Op2` first.
+///
+/// The range of `Op2` must equal the domain of `Op1`.
 pub struct OperatorProduct<OpImpl1, OpImpl2>(Operator<OpImpl1>, Operator<OpImpl2>);
 
-/// Negation of an operator.
+/// Lazy owning negation of an operator.
 pub struct OperatorNegation<OpImpl>(Operator<OpImpl>);
 
 impl<Domain, Range, OpImpl1, OpImpl2> OperatorBase for OperatorSum<OpImpl1, OpImpl2>

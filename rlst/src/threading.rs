@@ -1,4 +1,7 @@
-//! BLAS threading control. This module provides interfaces to threading control functions in BLAS libraries that support it.
+//! BLAS threading control.
+//!
+//! Thread control is available only when RLST is compiled with the feature matching the linked
+//! backend. Without such a feature, [`set_blas_threads`] is a no-op.
 
 #[allow(unused_imports)]
 use std::ffi::c_int;
@@ -27,7 +30,11 @@ extern "C" {
     fn openblas_set_num_threads(nthreads: c_int);
 }
 
-/// Set the number of threads for BLAS threading.
+/// Request `nthreads` threads from the configured BLAS backend.
+///
+/// This changes process-global backend state and can affect concurrent BLAS calls. With none of
+/// `blis_threading`, `mkl_threading`, or `openblas_threading` enabled, this function is a no-op.
+/// Callers should pass a positive count; the meaning of zero is backend-defined.
 #[allow(unused_variables)]
 pub fn set_blas_threads(nthreads: usize) {
     #[cfg(feature = "blis_threading")]

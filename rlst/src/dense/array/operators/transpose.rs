@@ -1,4 +1,4 @@
-//! Container representing multiplication with a scalar
+//! Lazy axis-permutation array view.
 
 use crate::{
     ContainerType,
@@ -12,7 +12,7 @@ use crate::{
     },
 };
 
-/// Transpose array
+/// Array implementation that presents source axes in a new order.
 pub struct ArrayTranspose<ArrayImpl, const NDIM: usize> {
     arr: Array<ArrayImpl, NDIM>,
     permutation: [usize; NDIM],
@@ -23,13 +23,27 @@ impl<ArrayImpl, const NDIM: usize> ArrayTranspose<ArrayImpl, NDIM>
 where
     ArrayImpl: Shape<NDIM>,
 {
-    /// Create new transpose array
+    /// Create an axis-permuted view.
+    ///
+    /// For a valid permutation, `permutation[output_axis]` names the corresponding source axis.
+    ///
+    /// # Panics
+    ///
+    /// Panics if an entry is outside `0..NDIM` or if an axis occurs more than once.
+    /// Every source axis must occur exactly once.
     pub fn new(arr: Array<ArrayImpl, NDIM>, permutation: [usize; NDIM]) -> Self {
+        let mut seen = [false; NDIM];
         let mut shape = [0; NDIM];
-        let operator_shape = arr.shape();
+        let source_shape = arr.shape();
 
-        for &index in &permutation {
-            shape[index] = operator_shape[permutation[index]];
+        for (output_axis, &source_axis) in permutation.iter().enumerate() {
+            assert!(source_axis < NDIM, "axis permutation entry out of range");
+            assert!(
+                !seen[source_axis],
+                "axis permutation contains repeated axes"
+            );
+            seen[source_axis] = true;
+            shape[output_axis] = source_shape[source_axis];
         }
         Self {
             arr,
@@ -144,10 +158,95 @@ fn inverse_permute_multi_index<const NDIM: usize>(
     result
 }
 
-// SAFETY: transposition is an injective permutation of source indices.
+// SAFETY: the constructor enforces a bijection of axes, so distinct output indices
+// map to distinct source indices. The source guarantees disjoint mutable access.
 unsafe impl<ArrayImpl, const NDIM: usize> crate::UnsafeDisjointRandom1DAccessMut
     for ArrayTranspose<ArrayImpl, NDIM>
 where
     ArrayImpl: crate::UnsafeDisjointRandom1DAccessMut + UnsafeRandomAccessMut<NDIM> + Shape<NDIM>,
 {
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ArrayTranspose;
+    use crate::DynArray;
+
+    #[test]
+    #[should_panic(expected = "axis permutation contains repeated axes")]
+    fn constructor_rejects_repeated_axes() {
+        let array = DynArray::<f64, 2>::from_shape([2, 3]);
+        let _ = ArrayTranspose::new(array, [0, 0]);
+    }
+
+    #[test]
+    #[should_panic(expected = "axis permutation contains repeated axes")]
+    fn permute_axes_rejects_repeated_axes() {
+        let _ = DynArray::<f64, 2>::from_shape([2, 3]).permute_axes([1, 1]);
+    }
+
+    #[test]
+    #[should_panic(expected = "axis permutation contains repeated axes")]
+    fn empty_array_rejects_repeated_axes() {
+        let _ = DynArray::<f64, 2>::from_shape([0, 3]).permute_axes([0, 0]);
+    }
+
+    #[test]
+    #[should_panic(expected = "axis permutation entry out of range")]
+    fn constructor_rejects_out_of_range_axis() {
+        let array = DynArray::<f64, 2>::from_shape([2, 3]);
+        let _ = ArrayTranspose::new(array, [0, 2]);
+    }
+
+    #[test]
+    fn cyclic_permutation_maps_shape_and_elements() {
+        let mut array = DynArray::<f64, 3>::from_shape([2, 3, 4]);
+        for i in 0..2 {
+            for j in 0..3 {
+                for k in 0..4 {
+                    array[[i, j, k]] = (100 * i + 10 * j + k) as f64;
+                }
+            }
+        }
+        let view = array.permute_axes([2, 0, 1]);
+        assert_eq!(view.shape(), [4, 2, 3]);
+        for i in 0..2 {
+            for j in 0..3 {
+                for k in 0..4 {
+                    assert_eq!(view[[k, i, j]], (100 * i + 10 * j + k) as f64);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn mutable_iteration_yields_disjoint_elements() {
+        let mut array = DynArray::<f64, 3>::from_shape([2, 3, 4]);
+        {
+            let mut view = array.r_mut().permute_axes([2, 0, 1]);
+            // Keep every reference alive at once, as the disjoint-access contract permits.
+            let elements: Vec<_> = view.iter_mut().collect();
+            for (index, element) in elements.into_iter().enumerate() {
+                *element = index as f64;
+            }
+        }
+        for i in 0..2 {
+            for j in 0..3 {
+                for k in 0..4 {
+                    assert_eq!(array[[i, j, k]], (k + 4 * i + 8 * j) as f64);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn identity_and_empty_permutations_are_valid() {
+        let view = DynArray::<f64, 3>::from_shape([2, 3, 4]).permute_axes([0, 1, 2]);
+        assert_eq!(view.shape(), [2, 3, 4]);
+        let empty = DynArray::<f64, 2>::from_shape([0, 3]).permute_axes([1, 0]);
+        assert_eq!(empty.shape(), [3, 0]);
+        assert_eq!(empty.iter_value().count(), 0);
+        let vector = DynArray::<f64, 1>::from_shape([3]).permute_axes([0]);
+        assert_eq!(vector.shape(), [3]);
+    }
 }

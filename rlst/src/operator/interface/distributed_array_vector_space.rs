@@ -17,14 +17,18 @@ use crate::{
     sparse::distributed_array::DistributedArray,
 };
 
-/// Array vector space
+/// Distributed vector space defined by a shared global index layout.
+///
+/// Elements use the layout's communicator and local index range. All ranks
+/// participating in collective element operations must use compatible layouts,
+/// including ranks whose local range is empty.
 pub struct DistributedArrayVectorSpace<'a, C: Communicator, Item: Equivalence> {
     index_layout: Rc<IndexLayout<'a, C>>,
     _marker: PhantomData<Item>,
 }
 
 impl<'a, C: Communicator, Item: Equivalence> DistributedArrayVectorSpace<'a, C, Item> {
-    /// Create a new vector space
+    /// Create a space sharing ownership of `index_layout`.
     pub fn new(index_layout: Rc<IndexLayout<'a, C>>) -> Self {
         Self {
             index_layout,
@@ -32,12 +36,12 @@ impl<'a, C: Communicator, Item: Equivalence> DistributedArrayVectorSpace<'a, C, 
         }
     }
 
-    /// Return the communicator
+    /// Return the communicator owned by the index layout.
     pub fn comm(&self) -> &C {
         self.index_layout.comm()
     }
 
-    /// Return the index layout
+    /// Clone the reference-counted index-layout handle.
     pub fn index_layout(&self) -> Rc<IndexLayout<'a, C>> {
         self.index_layout.clone()
     }

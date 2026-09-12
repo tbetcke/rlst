@@ -1,4 +1,8 @@
-//! Interface routines to [Burn Tensors](burn::Tensor).
+//! Conversions between RLST arrays and [Burn tensors](burn::Tensor).
+//!
+//! Enable the `burn` feature to use this module. Conversions copy data: Burn tensors
+//! become row-major [`StridedDynArray`](crate::StridedDynArray) values, while RLST arrays
+//! are evaluated in row-major order before creating a tensor on the backend's default device.
 
 use burn::{
     Tensor,
@@ -15,23 +19,35 @@ use crate::{
     },
 };
 
-/// Convert a Burn tensor into a RLST array
+/// Convert a floating-point Burn tensor into an owned RLST array.
+///
+/// The requested `Item` must exactly match the tensor's runtime dtype. A mismatch
+/// is returned as [`crate::RlstError::GeneralError`]. Shape and row-major logical
+/// order are preserved, and the tensor data is copied.
 pub trait TensorIntoRlstArray<const NDIM: usize> {
-    /// Convert a Burn tensor into a RLST array
+    /// Consume the tensor and copy it into a row-major RLST array.
     fn into_array<Item: RlstScalar + RlstAsTensorDtype + Element>(
         self,
     ) -> RlstResult<StridedDynArray<Item, NDIM>>;
 }
 
-/// Convert a RLST array into a Burn tensor
+/// Convert an RLST array into an owned Burn tensor.
+///
+/// The implementation evaluates arbitrary RLST layouts in row-major logical order
+/// and creates the tensor on `B::Device::default()`. `Item` must exactly equal the
+/// backend's float or integer element type; otherwise conversion returns
+/// [`crate::RlstError::GeneralError`].
 pub trait RlstArrayIntoBurnTensor<Item, B: Backend, const NDIM: usize, K: TensorKind<B>> {
-    /// Convert array into Burn tensor
+    /// Consume and copy the array into a tensor while preserving its shape.
     fn into_tensor(self) -> RlstResult<Tensor<B, NDIM, K>>;
 }
 
-/// Helper trait to return the Burn runtime type from a Rust type
+/// Map a supported Rust scalar to its Burn runtime [`DType`].
+///
+/// Implementations are provided for `f32`, `f64`, and signed and unsigned integer
+/// types from 8 through 64 bits. Complex RLST scalars are not supported.
 pub trait RlstAsTensorDtype {
-    /// Return the Burn type
+    /// Return the corresponding Burn dtype.
     fn burn_type() -> DType;
 }
 
