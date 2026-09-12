@@ -64,14 +64,14 @@ impl<A, Item, const NDIM: usize> RefArrayImpl<Item, NDIM> for A where
 /// Default trait for mutable arrays.
 pub trait MutableArrayImpl<Item, const NDIM: usize>:
     RefArrayImpl<Item, NDIM>
-    + UnsafeRandom1DAccessMut<Item = Item>
+    + UnsafeDisjointRandom1DAccessMut<Item = Item>
     + UnsafeRandomAccessMut<NDIM, Item = Item>
 {
 }
 
 impl<A, Item, const NDIM: usize> MutableArrayImpl<Item, NDIM> for A where
     A: RefArrayImpl<Item, NDIM>
-        + UnsafeRandom1DAccessMut<Item = Item>
+        + UnsafeDisjointRandom1DAccessMut<Item = Item>
         + UnsafeRandomAccessMut<NDIM, Item = Item>
 {
 }

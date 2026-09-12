@@ -50,13 +50,14 @@ use crate::{
             AlignedVectorContainer, SliceContainer, SliceContainerMut, VectorContainer,
         },
         layout::check_multi_index_in_bounds,
-        strided_base_array::StridedBaseArray,
+        strided_base_array::{StridedBaseArray, required_storage_len},
     },
     traits::{
         accessors::{
-            RandomAccessByRef, RandomAccessMut, RawAccess, RawAccessMut, UnsafeRandom1DAccessByRef,
-            UnsafeRandom1DAccessByValue, UnsafeRandom1DAccessMut, UnsafeRandomAccessByRef,
-            UnsafeRandomAccessByValue, UnsafeRandomAccessMut,
+            RandomAccessByRef, RandomAccessMut, RawAccess, RawAccessMut,
+            UnsafeDisjointRandom1DAccessMut, UnsafeRandom1DAccessByRef,
+            UnsafeRandom1DAccessByValue, UnsafeRandomAccessByRef, UnsafeRandomAccessByValue,
+            UnsafeRandomAccessMut,
         },
         base_operations::{BaseItem, ResizeInPlace, Shape, Stride},
         data_container::ContainerType,
@@ -311,7 +312,7 @@ impl<Item: Copy + Default, const NDIM: usize> StridedDynArray<Item, NDIM> {
     /// Create a new heap allocated array from a given `shape` and `stride`.
     #[inline(always)]
     pub fn from_shape_and_stride(shape: [usize; NDIM], stride: [usize; NDIM]) -> Self {
-        let size = shape.iter().product();
+        let size = required_storage_len(shape, stride);
         Self::new(StridedBaseArray::new(
             VectorContainer::new(size),
             shape,
@@ -779,14 +780,14 @@ where
 
 impl<ArrayImpl, const NDIM: usize> Array<ArrayImpl, NDIM>
 where
-    ArrayImpl: UnsafeRandom1DAccessMut + Shape<NDIM>,
+    ArrayImpl: UnsafeDisjointRandom1DAccessMut + Shape<NDIM>,
 {
     /// Iterate through the array by mutable reference.
     ///
     /// The iterator always proceeds in column-major order.
     ///
     /// # Traits
-    /// - [UnsafeRandom1DAccessMut]
+    /// - [UnsafeDisjointRandom1DAccessMut]
     /// - [Shape]
     #[inline(always)]
     pub fn iter_mut(&mut self) -> ArrayDefaultIteratorMut<'_, ArrayImpl, NDIM> {
@@ -841,7 +842,7 @@ where
 
 impl<Item, ArrayImpl, const NDIM: usize> Array<ArrayImpl, NDIM>
 where
-    ArrayImpl: UnsafeRandom1DAccessMut<Item = Item> + Shape<NDIM>,
+    ArrayImpl: UnsafeDisjointRandom1DAccessMut<Item = Item> + Shape<NDIM>,
 {
     /// Fill from another array.
     ///
@@ -897,7 +898,7 @@ impl<Item, ArrayImpl, const NDIM: usize> Array<ArrayImpl, NDIM>
 where
     Const<NDIM>: ToUInt,
     <Const<NDIM> as ToUInt>::Output: Unsigned + NonZero,
-    ArrayImpl: UnsafeRandom1DAccessMut<Item = Item>
+    ArrayImpl: UnsafeDisjointRandom1DAccessMut<Item = Item>
         + UnsafeRandomAccessMut<NDIM, Item = Item>
         + Shape<NDIM>,
 {
@@ -927,14 +928,14 @@ where
 
 impl<ArrayImpl, const NDIM: usize> Array<ArrayImpl, NDIM>
 where
-    ArrayImpl: UnsafeRandom1DAccessMut + Shape<NDIM>,
+    ArrayImpl: UnsafeDisjointRandom1DAccessMut + Shape<NDIM>,
 {
     /// Fill from an iterator.
     ///
     /// Note that the array only fills as many values as the other iterator provides.
     ///
     /// # Traits
-    /// - [UnsafeRandom1DAccessMut]
+    /// - [UnsafeDisjointRandom1DAccessMut]
     /// - [Shape]
     #[inline(always)]
     pub fn fill_from_iter<Iter>(&mut self, iter: Iter)
@@ -949,14 +950,14 @@ where
 
 impl<ArrayImpl, const NDIM: usize> Array<ArrayImpl, NDIM>
 where
-    ArrayImpl: ResizeInPlace<NDIM> + Shape<NDIM> + UnsafeRandom1DAccessMut,
+    ArrayImpl: ResizeInPlace<NDIM> + Shape<NDIM> + UnsafeDisjointRandom1DAccessMut,
 {
     /// Fill from another array and resize if necessary.
     ///
     /// This method is especially useful together with [empty_array].
     ///
     /// #Traits
-    /// - [UnsafeRandom1DAccessMut]
+    /// - [UnsafeDisjointRandom1DAccessMut]
     /// - [Shape]
     #[inline(always)]
     pub fn fill_from_resize<ArrayImplOther>(&mut self, other: &Array<ArrayImplOther, NDIM>)
@@ -970,12 +971,12 @@ where
 
 impl<ArrayImpl, const NDIM: usize> Array<ArrayImpl, NDIM>
 where
-    ArrayImpl: UnsafeRandom1DAccessMut + Shape<NDIM>,
+    ArrayImpl: UnsafeDisjointRandom1DAccessMut + Shape<NDIM>,
 {
     /// Fill array with a given value.
     ///
     /// # Traits
-    /// - [UnsafeRandom1DAccessMut]
+    /// - [UnsafeDisjointRandom1DAccessMut]
     /// - [Shape]
     #[inline(always)]
     pub fn fill_with_value(&mut self, value: ArrayImpl::Item) {
@@ -987,7 +988,7 @@ where
 
 impl<ArrayImpl, const NDIM: usize> Array<ArrayImpl, NDIM>
 where
-    ArrayImpl: UnsafeRandom1DAccessMut + Shape<NDIM>,
+    ArrayImpl: UnsafeDisjointRandom1DAccessMut + Shape<NDIM>,
 {
     /// Set the elements of the array to zero.
     pub fn set_zero(&mut self) {
@@ -999,7 +1000,7 @@ where
 
 impl<ArrayImpl, const NDIM: usize> Array<ArrayImpl, NDIM>
 where
-    ArrayImpl: UnsafeRandom1DAccessMut + UnsafeRandomAccessMut<NDIM> + Shape<NDIM>,
+    ArrayImpl: UnsafeDisjointRandom1DAccessMut + UnsafeRandomAccessMut<NDIM> + Shape<NDIM>,
     ArrayImpl::Item: One,
 {
     /// Set all off-diagonal elements to zero and the diagonal to one.
@@ -1274,7 +1275,7 @@ where
 
 impl<ArrayImpl> Array<ArrayImpl, 2>
 where
-    ArrayImpl: UnsafeRandom1DAccessMut + Shape<2>,
+    ArrayImpl: UnsafeDisjointRandom1DAccessMut + Shape<2>,
 {
     /// Return an iterator of the form `(i, j, &mut data)`.
     ///
@@ -1355,14 +1356,14 @@ where
 impl<Item, ArrayImpl, const NDIM: usize> Array<ArrayImpl, NDIM>
 where
     Item: RandScalar + RlstScalar,
-    ArrayImpl: UnsafeRandom1DAccessMut<Item = Item> + Shape<NDIM>,
+    ArrayImpl: UnsafeDisjointRandom1DAccessMut<Item = Item> + Shape<NDIM>,
     StandardNormal: Distribution<Item::Real>,
     StandardUniform: Distribution<Item::Real>,
 {
     /// Fill an array with normally distributed random numbers.
     ///
     /// # Traits
-    /// - [UnsafeRandom1DAccessMut]
+    /// - [UnsafeDisjointRandom1DAccessMut]
     /// - [Shape]
     /// - Item: [RandScalar] + [RlstScalar]
     pub fn fill_from_standard_normal<R: Rng>(&mut self, rng: &mut R) {
@@ -1374,7 +1375,7 @@ where
     /// Fill an array with equally distributed random numbers.
     ///
     /// # Traits
-    /// - [UnsafeRandom1DAccessMut]
+    /// - [UnsafeDisjointRandom1DAccessMut]
     /// - [Shape]
     /// - Item: [RandScalar] + [RlstScalar]
     pub fn fill_from_equally_distributed<R: Rng>(&mut self, rng: &mut R) {
@@ -1386,7 +1387,7 @@ where
     /// Fill an array with equally distributed random numbers using a given `seed`.
     ///
     /// # Traits
-    /// - [UnsafeRandom1DAccessMut]
+    /// - [UnsafeDisjointRandom1DAccessMut]
     /// - [Shape]
     /// - Item: [RandScalar] + [RlstScalar]
     pub fn fill_from_seed_equally_distributed(&mut self, seed: usize) {
@@ -1399,7 +1400,7 @@ where
     /// Fill an array with normally distributed random numbers using a given `seed`.
     ///
     /// # Traits
-    /// - [UnsafeRandom1DAccessMut]
+    /// - [UnsafeDisjointRandom1DAccessMut]
     /// - [Shape]
     /// - Item: [RandScalar] + [RlstScalar]
     pub fn fill_from_seed_normally_distributed(&mut self, seed: usize) {
@@ -1535,7 +1536,7 @@ where
 impl<Item, ArrayImpl1, ArrayImpl2, const NDIM: usize> std::ops::AddAssign<Array<ArrayImpl2, NDIM>>
     for Array<ArrayImpl1, NDIM>
 where
-    ArrayImpl1: Shape<NDIM> + UnsafeRandom1DAccessMut<Item = Item>,
+    ArrayImpl1: Shape<NDIM> + UnsafeDisjointRandom1DAccessMut<Item = Item>,
     ArrayImpl2: Shape<NDIM> + UnsafeRandom1DAccessByValue<Item = Item>,
     Item: std::ops::AddAssign,
 {
@@ -1564,7 +1565,7 @@ where
 impl<Item, ArrayImpl1, ArrayImpl2, const NDIM: usize> std::ops::SubAssign<Array<ArrayImpl2, NDIM>>
     for Array<ArrayImpl1, NDIM>
 where
-    ArrayImpl1: Shape<NDIM> + UnsafeRandom1DAccessMut<Item = Item>,
+    ArrayImpl1: Shape<NDIM> + UnsafeDisjointRandom1DAccessMut<Item = Item>,
     ArrayImpl2: Shape<NDIM> + UnsafeRandom1DAccessByValue<Item = Item>,
     Item: std::ops::SubAssign,
 {
@@ -1616,7 +1617,7 @@ where
 
 impl<Item, ArrayImpl, const NDIM: usize> std::ops::DivAssign<Item> for Array<ArrayImpl, NDIM>
 where
-    ArrayImpl: Shape<NDIM> + UnsafeRandom1DAccessMut<Item = Item>,
+    ArrayImpl: Shape<NDIM> + UnsafeDisjointRandom1DAccessMut<Item = Item>,
     Item: std::ops::DivAssign + Copy,
 {
     fn div_assign(&mut self, rhs: Item) {
@@ -1642,7 +1643,7 @@ where
 impl<Item, ArrayImpl1, ArrayImpl2, const NDIM: usize> std::ops::MulAssign<Array<ArrayImpl2, NDIM>>
     for Array<ArrayImpl1, NDIM>
 where
-    ArrayImpl1: Shape<NDIM> + UnsafeRandom1DAccessMut<Item = Item>,
+    ArrayImpl1: Shape<NDIM> + UnsafeDisjointRandom1DAccessMut<Item = Item>,
     ArrayImpl2: Shape<NDIM> + UnsafeRandom1DAccessByValue<Item = Item>,
     Item: std::ops::MulAssign,
 {
@@ -1656,7 +1657,7 @@ where
 impl<Item, ArrayImpl1, ArrayImpl2, const NDIM: usize> std::ops::DivAssign<Array<ArrayImpl2, NDIM>>
     for Array<ArrayImpl1, NDIM>
 where
-    ArrayImpl1: Shape<NDIM> + UnsafeRandom1DAccessMut<Item = Item>,
+    ArrayImpl1: Shape<NDIM> + UnsafeDisjointRandom1DAccessMut<Item = Item>,
     ArrayImpl2: Shape<NDIM> + UnsafeRandom1DAccessByValue<Item = Item>,
     Item: std::ops::DivAssign,
 {
@@ -1706,7 +1707,7 @@ impl_scalar_mult!(u64);
 
 impl<Item, ArrayImpl, const NDIM: usize> std::ops::MulAssign<Item> for Array<ArrayImpl, NDIM>
 where
-    ArrayImpl: Shape<NDIM> + UnsafeRandom1DAccessMut<Item = Item>,
+    ArrayImpl: Shape<NDIM> + UnsafeDisjointRandom1DAccessMut<Item = Item>,
     Item: std::ops::MulAssign + Copy,
 {
     fn mul_assign(&mut self, rhs: Item) {
@@ -2162,6 +2163,7 @@ mod test {
         x.fill_from_equally_distributed(&mut rng);
 
         let mut y = DynArray::<f64, 1>::from_shape([3]);
+        y.fill_from_equally_distributed(&mut rng);
         let y2 = y.eval();
 
         a.apply(alpha, &x, beta, &mut y);
@@ -2178,6 +2180,7 @@ mod test {
         x.fill_from_equally_distributed(&mut rng);
 
         let mut y = DynArray::<f64, 2>::from_shape([3, 5]);
+        y.fill_from_equally_distributed(&mut rng);
         let y2 = y.eval();
 
         a.apply(alpha, &x, beta, &mut y);

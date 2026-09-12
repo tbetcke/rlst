@@ -6,7 +6,8 @@ use crate::{
     dense::layout::convert_1d_nd_from_shape,
     traits::{
         accessors::{
-            UnsafeRandom1DAccessByRef, UnsafeRandom1DAccessByValue, UnsafeRandom1DAccessMut,
+            UnsafeDisjointRandom1DAccessMut, UnsafeRandom1DAccessByRef,
+            UnsafeRandom1DAccessByValue, UnsafeRandom1DAccessMut,
         },
         base_operations::BaseItem,
         number_relations::{IsGreaterByOne, IsGreaterZero},
@@ -196,6 +197,17 @@ where
     unsafe fn get_1d_unchecked_mut(&mut self, index: usize) -> &mut Self::Item {
         unsafe { self.get_unchecked_mut(convert_1d_nd_from_shape(index, self.shape())) }
     }
+}
+
+// SAFETY: slicing fixes one coordinate and injectively maps all remaining
+// coordinates into a source with a disjoint mutable index mapping.
+unsafe impl<ArrayImpl, const ADIM: usize, const NDIM: usize> UnsafeDisjointRandom1DAccessMut
+    for ArraySlice<ArrayImpl, ADIM, NDIM>
+where
+    NumberType<ADIM>: IsGreaterByOne<NDIM>,
+    NumberType<NDIM>: IsGreaterZero,
+    ArrayImpl: UnsafeDisjointRandom1DAccessMut + UnsafeRandomAccessMut<ADIM> + Shape<ADIM>,
+{
 }
 
 impl<

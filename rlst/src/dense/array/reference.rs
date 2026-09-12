@@ -8,9 +8,9 @@ use crate::{
     dense::array::Array,
     traits::{
         accessors::{
-            RawAccess, RawAccessMut, UnsafeRandom1DAccessByRef, UnsafeRandom1DAccessByValue,
-            UnsafeRandom1DAccessMut, UnsafeRandomAccessByRef, UnsafeRandomAccessByValue,
-            UnsafeRandomAccessMut,
+            RawAccess, RawAccessMut, StableRawAccessMut, UnsafeDisjointRandom1DAccessMut,
+            UnsafeRandom1DAccessByRef, UnsafeRandom1DAccessByValue, UnsafeRandom1DAccessMut,
+            UnsafeRandomAccessByRef, UnsafeRandomAccessByValue, UnsafeRandomAccessMut,
         },
         base_operations::{BaseItem, ResizeInPlace, Shape, Stride},
     },
@@ -144,6 +144,11 @@ impl<ArrayImpl: RawAccess, const NDIM: usize> RawAccess for ArrayRefMut<'_, Arra
     }
 }
 
+unsafe impl<ArrayImpl: StableRawAccessMut, const NDIM: usize> StableRawAccessMut
+    for ArrayRefMut<'_, ArrayImpl, NDIM>
+{
+}
+
 impl<ArrayImpl: RawAccessMut, const NDIM: usize> RawAccessMut for ArrayRefMut<'_, ArrayImpl, NDIM> {
     #[inline(always)]
     fn data_mut(&mut self) -> Option<&mut [Self::Item]> {
@@ -185,6 +190,13 @@ impl<ArrayImpl: UnsafeRandom1DAccessMut, const NDIM: usize> UnsafeRandom1DAccess
     unsafe fn get_1d_unchecked_mut(&mut self, index: usize) -> &mut Self::Item {
         unsafe { self.0.imp_mut().get_1d_unchecked_mut(index) }
     }
+}
+
+// SAFETY: the view forwards indices unchanged and its source provides the
+// disjointness and stability guarantee.
+unsafe impl<ArrayImpl: UnsafeDisjointRandom1DAccessMut, const NDIM: usize>
+    UnsafeDisjointRandom1DAccessMut for ArrayRefMut<'_, ArrayImpl, NDIM>
+{
 }
 
 impl<ArrayImpl: UnsafeRandomAccessByRef<NDIM>, const NDIM: usize> UnsafeRandomAccessByRef<NDIM>

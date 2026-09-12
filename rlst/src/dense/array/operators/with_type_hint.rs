@@ -181,3 +181,12 @@ where
         unsafe { self.arr.imp_mut().get_1d_unchecked_mut(index) }
     }
 }
+
+// SAFETY: the type hint wrapper forwards one-dimensional indices unchanged.
+unsafe impl<ArrayImpl, TypeHint, const NDIM: usize> crate::UnsafeDisjointRandom1DAccessMut
+    for WithEvalType<ArrayImpl, TypeHint, NDIM>
+where
+    ArrayImpl: crate::UnsafeDisjointRandom1DAccessMut,
+    TypeHint: RowMajorArrayFromContainerType + ArrayFromContainerType + ContainerTypeRepr,
+{
+}

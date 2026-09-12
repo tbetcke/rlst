@@ -7,14 +7,16 @@ use crate::{
     dense::layout::{check_multi_index_in_bounds, col_major_stride_from_shape},
     traits::{
         accessors::{
-            RawAccess, RawAccessMut, UnsafeRandom1DAccessByRef, UnsafeRandom1DAccessByValue,
-            UnsafeRandom1DAccessMut, UnsafeRandomAccessByRef, UnsafeRandomAccessByValue,
-            UnsafeRandomAccessMut,
+            RawAccess, RawAccessMut, StableRawAccessMut, UnsafeDisjointRandom1DAccessMut,
+            UnsafeRandom1DAccessByRef, UnsafeRandom1DAccessByValue, UnsafeRandom1DAccessMut,
+            UnsafeRandomAccessByRef, UnsafeRandomAccessByValue, UnsafeRandomAccessMut,
         },
         base_operations::{BaseItem, ResizeInPlace, Shape, Stride},
         data_container::{
-            ContainerType, DataContainer, MutableRawAccessDataContainer, RawAccessDataContainer,
-            RefDataContainer, RefDataContainerMut, ResizeableDataContainer, ValueDataContainer,
+            ContainerType, DataContainer, DisjointRefDataContainerMut,
+            MutableRawAccessDataContainer, RawAccessDataContainer, RefDataContainer,
+            RefDataContainerMut, ResizeableDataContainer, StableRawAccessDataContainer,
+            ValueDataContainer,
         },
     },
 };
@@ -96,6 +98,13 @@ impl<Data: RefDataContainerMut, const NDIM: usize> UnsafeRandom1DAccessMut
     }
 }
 
+// SAFETY: column-major linear indices map one-to-one to container elements and
+// the shape does not change while mutable references are outstanding.
+unsafe impl<Data: DisjointRefDataContainerMut, const NDIM: usize> UnsafeDisjointRandom1DAccessMut
+    for BaseArray<Data, NDIM>
+{
+}
+
 impl<Data: ValueDataContainer, const NDIM: usize> UnsafeRandomAccessByValue<NDIM>
     for BaseArray<Data, NDIM>
 {
@@ -127,6 +136,11 @@ impl<Data: RawAccessDataContainer, const NDIM: usize> RawAccess for BaseArray<Da
     fn data(&self) -> Option<&[Self::Item]> {
         self.data.data()
     }
+}
+
+unsafe impl<Data: StableRawAccessDataContainer, const NDIM: usize> StableRawAccessMut
+    for BaseArray<Data, NDIM>
+{
 }
 
 impl<Data: MutableRawAccessDataContainer, const NDIM: usize> RawAccessMut

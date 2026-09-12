@@ -6,7 +6,7 @@ use std::{
 };
 
 use crate::{
-    BaseItem, RawAccessMut, RlstScalar, Shape, Stride, c32, c64,
+    BaseItem, RlstScalar, Shape, StableRawAccessMut, Stride, c32, c64,
     fftw::{FftwPlanFlags, FftwPlanPtrType, FftwPlanPtrTypeTrait, PlanInplace},
 };
 
@@ -46,7 +46,7 @@ macro_rules! impl_c2c_inplace {
     ($ty: ty, $precision: ident) => {
         impl<ArrayImpl, const NDIM: usize> C2CPlan<$ty, ArrayImpl, NDIM> for Fft<ArrayImpl, NDIM>
         where
-            ArrayImpl: Shape<NDIM> + Stride<NDIM> + RawAccessMut<Item = $ty>,
+            ArrayImpl: Shape<NDIM> + Stride<NDIM> + StableRawAccessMut<Item = $ty>,
         {
             /// Create a new plan wrapped inside an array structure. Returns None if the Plan cannot be created.
             fn c2c_fft(
@@ -54,7 +54,8 @@ macro_rules! impl_c2c_inplace {
                 flags: FftwPlanFlags,
                 direction: C2CDirection,
             ) -> Option<PlanInplace<$ty, ArrayImpl, NDIM>> {
-                let mut arr = self.borrow_mut().unwrap();
+                let mut guard = self.borrow_mut().unwrap();
+                let arr = guard.array_mut();
 
                 // Return None if NDIM > 3 as FFTW only supports up to three dimensions
                 if NDIM > 3 {
@@ -123,7 +124,8 @@ impl_c2c_inplace!(c64, fftw_double);
 #[cfg(test)]
 mod test {
 
-    use num::FromPrimitive;
+    use num::{Complex, FromPrimitive};
+    use std::f64::consts::PI;
 
     use crate::fftw::c2c_inplace::C2CDirection;
     use crate::{EvaluateArray, c64};
@@ -132,6 +134,50 @@ mod test {
     use crate::fftw::{FftPlanInplace, FftwPlanFlags};
 
     use super::*;
+
+    #[test]
+    fn test_plan_keeps_storage_while_elements_are_mutated() {
+        let input = [
+            Complex::new(1.0, 0.5),
+            Complex::new(-2.0, 1.0),
+            Complex::new(0.25, -0.75),
+            Complex::new(3.0, 2.0),
+        ];
+        let fft = DynArray::<c64, _>::from_shape([input.len()]).into_fft();
+        let mut plan = fft
+            .c2c_fft(FftwPlanFlags::Estimate, C2CDirection::Forward)
+            .unwrap();
+
+        fft.borrow_mut()
+            .unwrap()
+            .data_mut()
+            .unwrap()
+            .copy_from_slice(&input);
+        plan.execute();
+
+        let actual = fft.borrow().unwrap().eval();
+        for k in 0..input.len() {
+            let expected = input
+                .iter()
+                .enumerate()
+                .map(|(j, value)| {
+                    let angle = -2.0 * PI * (j * k) as f64 / input.len() as f64;
+                    value * Complex::new(angle.cos(), angle.sin())
+                })
+                .sum::<c64>();
+            approx::assert_relative_eq!(actual[[k]], expected, epsilon = 1E-10);
+        }
+
+        // The same plan remains valid after another element-only mutation.
+        fft.borrow_mut()
+            .unwrap()
+            .data_mut()
+            .unwrap()
+            .copy_from_slice(&input);
+        plan.execute();
+        let repeated = fft.borrow().unwrap().eval();
+        crate::assert_array_relative_eq!(actual.r(), repeated.r(), 1E-10);
+    }
 
     #[test]
     fn test_c2c_1d_f64() {

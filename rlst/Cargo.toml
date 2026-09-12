@@ -58,6 +58,7 @@ blas-src = { version = "0.14", features = ["openblas"] }
 
 
 [build-dependencies]
+pkg-config = { version = "0.3", optional = true }
 cc = "=1.2"
 bindgen = { version = "0.72.1", default-features = false }
 cmake = "0.1"
@@ -74,7 +75,7 @@ mkl_threading = []
 burn = ["dep:burn"]
 enable_tracing = ["rlst-proc-macro/enable_tracing", "dep:log"]
 fftw = ["dep:fftw-sys"]
-fftw_system = ["fftw-sys/system"]
+fftw_system = ["fftw-sys/system", "dep:pkg-config"]
 fftw_source = ["fftw-sys/source"]
 fftw_mkl = ["fftw-sys/intel-mkl"]
 

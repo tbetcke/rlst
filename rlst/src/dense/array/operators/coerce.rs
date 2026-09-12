@@ -6,9 +6,9 @@ use crate::{
     dense::array::Array,
     traits::{
         accessors::{
-            RawAccess, RawAccessMut, UnsafeRandom1DAccessByRef, UnsafeRandom1DAccessByValue,
-            UnsafeRandom1DAccessMut, UnsafeRandomAccessByRef, UnsafeRandomAccessByValue,
-            UnsafeRandomAccessMut,
+            RawAccess, RawAccessMut, UnsafeDisjointRandom1DAccessMut, UnsafeRandom1DAccessByRef,
+            UnsafeRandom1DAccessByValue, UnsafeRandom1DAccessMut, UnsafeRandomAccessByRef,
+            UnsafeRandomAccessByValue, UnsafeRandomAccessMut,
         },
         base_operations::{BaseItem, Shape, Stride},
     },
@@ -151,6 +151,15 @@ where
     unsafe fn get_1d_unchecked_mut(&mut self, index: usize) -> &mut Self::Item {
         unsafe { self.arr.imp_mut().get_1d_unchecked_mut(index) }
     }
+}
+
+// SAFETY: construction requires equal dimensions and one-dimensional access is
+// forwarded unchanged to the disjoint source mapping.
+unsafe impl<ArrayImpl, const NDIM: usize, const CDIM: usize> UnsafeDisjointRandom1DAccessMut
+    for CoerceArray<ArrayImpl, NDIM, CDIM>
+where
+    ArrayImpl: UnsafeDisjointRandom1DAccessMut,
+{
 }
 
 impl<ArrayImpl, const NDIM: usize, const CDIM: usize> ResizeInPlace<CDIM>

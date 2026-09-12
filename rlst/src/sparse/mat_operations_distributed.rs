@@ -1,6 +1,6 @@
 //! Operations for sparse matrices
 
-use std::ops::{Add, AddAssign, Div, Mul, Sub};
+use std::ops::{Add, AddAssign, Mul, Sub};
 use std::rc::Rc;
 
 use mpi::traits::{Communicator, Equivalence};
@@ -58,6 +58,22 @@ where
     /// Return the index layout for the range (rows).
     pub fn range_layout(&self) -> &Rc<IndexLayout<'a, C>> {
         &self.range_layout
+    }
+
+    /// Apply a function to explicitly stored entries without visiting implicit zeros.
+    pub fn map_stored<Out, F>(
+        self,
+        func: F,
+    ) -> DistributedSparseMatOpIterator<'a, Out, UnaryAijOperator<Item, I, Out, F>, C>
+    where
+        Out: Copy + Default + PartialEq,
+        F: Fn(Item) -> Out,
+    {
+        DistributedSparseMatOpIterator::new(
+            UnaryAijOperator::new(self.iter, func),
+            self.domain_layout,
+            self.range_layout,
+        )
     }
 
     /// Convert into a Csr matrix.
@@ -133,20 +149,13 @@ impl_unary_op!(Abs, abs);
 impl_unary_op!(Square, square);
 impl_unary_op!(AbsSquare, abs_square);
 impl_unary_op!(Sqrt, sqrt);
-impl_unary_op!(Exp, exp);
-impl_unary_op!(Ln, ln);
-impl_unary_op!(Recip, recip);
 impl_unary_op!(Sin, sin);
-impl_unary_op!(Cos, cos);
 impl_unary_op!(Tan, tan);
 impl_unary_op!(Asin, asin);
-impl_unary_op!(Acos, acos);
 impl_unary_op!(Atan, atan);
 impl_unary_op!(Sinh, sinh);
-impl_unary_op!(Cosh, cosh);
 impl_unary_op!(Tanh, tanh);
 impl_unary_op!(Asinh, asinh);
-impl_unary_op!(Acosh, acosh);
 impl_unary_op!(Atanh, atanh);
 
 impl<'a, Item1, Item2, Out, I1, I2, C>
@@ -292,35 +301,6 @@ where
         assert!(self.range_layout().is_same(other.range_layout()));
         DistributedSparseMatOpIterator::new(
             BinaryAijOperator::new(self.iter, other.iter, |a, b| a * b),
-            self.domain_layout.clone(),
-            self.range_layout.clone(),
-        )
-    }
-}
-
-impl<'a, Item1, Item2, Out, I1, I2, C>
-    std::ops::Div<DistributedSparseMatOpIterator<'a, Item2, I2, C>>
-    for DistributedSparseMatOpIterator<'a, Item1, I1, C>
-where
-    Item1: Div<Item2, Output = Out> + Copy + Default,
-    Item2: Default + Copy,
-    Out: PartialEq + Default + Copy,
-    I1: Iterator<Item = ([usize; 2], Item1)>,
-    I2: Iterator<Item = ([usize; 2], Item2)>,
-    C: Communicator,
-{
-    type Output = DistributedSparseMatOpIterator<
-        'a,
-        Out,
-        BinaryAijOperator<Item1, Item2, I1, I2, Out, fn(Item1, Item2) -> Out>,
-        C,
-    >;
-
-    fn div(self, other: DistributedSparseMatOpIterator<'a, Item2, I2, C>) -> Self::Output {
-        assert!(self.domain_layout().is_same(other.domain_layout()));
-        assert!(self.range_layout().is_same(other.range_layout()));
-        DistributedSparseMatOpIterator::new(
-            BinaryAijOperator::new(self.iter, other.iter, |a, b| a / b),
             self.domain_layout.clone(),
             self.range_layout.clone(),
         )

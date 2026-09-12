@@ -11,8 +11,8 @@ use crate::dense::array::reference::ArrayRef;
 use crate::dense::array::{Array, Shape};
 use crate::dense::layout::{col_major_stride_from_shape, convert_1d_nd_from_shape, convert_nd_raw};
 use crate::traits::accessors::{
-    UnsafeRandom1DAccessByValue, UnsafeRandom1DAccessMut, UnsafeRandomAccessByValue,
-    UnsafeRandomAccessMut,
+    UnsafeDisjointRandom1DAccessMut, UnsafeRandom1DAccessByValue, UnsafeRandom1DAccessMut,
+    UnsafeRandomAccessByValue, UnsafeRandomAccessMut,
 };
 use crate::traits::{base_operations::BaseItem, iterators::AsMultiIndex};
 use crate::{IsSmallerThan, NumberType, UnsafeRandom1DAccessByRef, UnsafeRandomAccessByRef};
@@ -151,7 +151,7 @@ impl<'a, ArrayImpl: UnsafeRandom1DAccessByRef, const NDIM: usize> std::iter::Ite
 // See also: https://stackoverflow.com/questions/62361624/lifetime-parameter-problem-in-custom-iterator-over-mutable-references
 // And also: https://users.rust-lang.org/t/when-is-transmuting-lifetimes-useful/56140
 
-impl<'a, ArrayImpl: UnsafeRandom1DAccessMut, const NDIM: usize> std::iter::Iterator
+impl<'a, ArrayImpl: UnsafeDisjointRandom1DAccessMut, const NDIM: usize> std::iter::Iterator
     for ArrayDefaultIteratorMut<'a, ArrayImpl, NDIM>
 {
     type Item = &'a mut ArrayImpl::Item;
@@ -502,13 +502,14 @@ where
             tmp
         };
 
+        let nindices = axes_shape.iter().product::<usize>();
         Self {
             arr,
             axes,
             axes_shape,
-            nindices: axes_shape.iter().product::<usize>(),
+            nindices,
             indices: [0; SDIM],
-            is_finished: false,
+            is_finished: nindices == 0,
             _marker: PhantomData,
         }
     }
@@ -624,13 +625,14 @@ where
             tmp
         };
 
+        let nindices = axes_shape.iter().product::<usize>();
         Self {
             arr,
             axes,
             axes_shape,
-            nindices: axes_shape.iter().product::<usize>(),
+            nindices,
             indices: [0; SDIM],
-            is_finished: false,
+            is_finished: nindices == 0,
             _marker: PhantomData,
         }
     }

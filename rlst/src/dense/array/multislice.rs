@@ -4,9 +4,10 @@ use itertools::{Itertools, izip};
 
 use crate::{
     Array, BaseItem, ContainerType, IsSmallerThan, MemoryLayout, NumberDifference, NumberType,
-    RawAccess, RawAccessMut, Shape, Stride, SubtractEqual, Unknown, UnsafeRandom1DAccessByRef,
-    UnsafeRandom1DAccessByValue, UnsafeRandom1DAccessMut, UnsafeRandomAccessByRef,
-    UnsafeRandomAccessByValue, UnsafeRandomAccessMut, dense::layout::convert_1d_nd_from_shape,
+    RawAccess, RawAccessMut, Shape, Stride, SubtractEqual, Unknown,
+    UnsafeDisjointRandom1DAccessMut, UnsafeRandom1DAccessByRef, UnsafeRandom1DAccessByValue,
+    UnsafeRandom1DAccessMut, UnsafeRandomAccessByRef, UnsafeRandomAccessByValue,
+    UnsafeRandomAccessMut, dense::layout::convert_1d_nd_from_shape,
 };
 
 /// A multislice is an array implementation representing a slice across multiple dimensions
@@ -30,6 +31,23 @@ where
 {
     /// Create a new multislice instance
     pub fn new(arr: Array<ArrayImpl, ADIM>, axes: [usize; SDIM], indices: [usize; SDIM]) -> Self {
+        let orig_shape = arr.shape();
+        for (position, (&axis, &index)) in axes.iter().zip(indices.iter()).enumerate() {
+            assert!(
+                axis < ADIM,
+                "Axis {axis} out of bounds. Array has {ADIM} axes."
+            );
+            assert!(
+                !axes[..position].contains(&axis),
+                "Axis {axis} occurs more than once."
+            );
+            assert!(
+                index < orig_shape[axis],
+                "Index {index} in axis {axis} out of bounds. Dimension of axis is {}.",
+                orig_shape[axis]
+            );
+        }
+
         // We compute the mask.
         let mut offset = [0; ADIM];
         let mut mask = [0; NDIM];
@@ -46,7 +64,6 @@ where
         }
 
         // Now get the shape
-        let orig_shape = arr.shape();
         let mut shape = [0; NDIM];
         for (&mask_index, s) in izip!(mask.iter(), shape.iter_mut()) {
             *s = orig_shape[mask_index];
@@ -193,6 +210,17 @@ where
     unsafe fn get_1d_unchecked_mut(&mut self, index: usize) -> &mut Self::Item {
         unsafe { self.get_unchecked_mut(convert_1d_nd_from_shape(index, self.shape())) }
     }
+}
+
+// SAFETY: fixing axes and injectively mapping the remaining indices preserves
+// the source array's pairwise-disjoint index mapping.
+unsafe impl<ArrayImpl, const ADIM: usize, const SDIM: usize, const NDIM: usize>
+    UnsafeDisjointRandom1DAccessMut for Multislice<ArrayImpl, ADIM, SDIM, NDIM>
+where
+    NumberType<SDIM>: IsSmallerThan<ADIM>,
+    NumberDifference<ADIM, SDIM>: SubtractEqual<NDIM>,
+    ArrayImpl: UnsafeDisjointRandom1DAccessMut + UnsafeRandomAccessMut<ADIM> + Shape<ADIM>,
+{
 }
 
 impl<Item, ArrayImpl, const ADIM: usize, const SDIM: usize, const NDIM: usize> RawAccess
@@ -353,6 +381,48 @@ mod test {
         let expected_stride = [stride[0], stride[3]];
         let slice = arr.multislice::<2, 2>(axes, indices);
         assert_eq!(slice.stride(), expected_stride);
+    }
+
+    #[test]
+    #[should_panic(expected = "Axis 4 out of bounds")]
+    fn test_multislice_rejects_invalid_axis() {
+        let arr = DynArray::<f64, 4>::from_shape([2, 3, 4, 5]);
+        let _ = arr.multislice::<2, 2>([1, 4], [0, 0]);
+    }
+
+    #[test]
+    #[should_panic(expected = "occurs more than once")]
+    fn test_multislice_rejects_duplicate_axes() {
+        let arr = DynArray::<f64, 4>::from_shape([2, 3, 4, 5]);
+        let _ = arr.multislice::<2, 2>([1, 1], [0, 0]);
+    }
+
+    #[test]
+    #[should_panic(expected = "Index 3 in axis 1 out of bounds")]
+    fn test_multislice_rejects_invalid_index() {
+        let arr = DynArray::<f64, 4>::from_shape([2, 3, 4, 5]);
+        let _ = arr.multislice::<2, 2>([1, 2], [3, 0]);
+    }
+
+    #[test]
+    #[should_panic(expected = "Index 0 in axis 1 out of bounds")]
+    fn test_multislice_rejects_index_on_empty_axis() {
+        let arr = DynArray::<f64, 3>::from_shape([2, 0, 4]);
+        let _ = arr.multislice::<1, 2>([1], [0]);
+    }
+
+    #[test]
+    fn test_multislice_mutable_write_through() {
+        let mut arr = DynArray::<f64, 3>::from_shape([2, 3, 4]);
+        arr.r_mut().multislice::<1, 2>([1], [2])[[1, 3]] = 7.0;
+        assert_eq!(arr[[1, 2, 3]], 7.0);
+    }
+
+    #[test]
+    fn test_multislice_iter_empty_axis_is_empty() {
+        let mut arr = DynArray::<f64, 3>::from_shape([2, 0, 4]);
+        assert_eq!(arr.multislice_iter::<1, 2>([1]).count(), 0);
+        assert_eq!(arr.multislice_iter_mut::<1, 2>([1]).count(), 0);
     }
 
     #[test]

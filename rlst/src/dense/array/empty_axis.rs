@@ -237,3 +237,12 @@ where
 
     orig
 }
+
+// SAFETY: adding a unit axis does not change the one-dimensional index mapping.
+unsafe impl<ArrayImpl, const ADIM: usize, const NDIM: usize> crate::UnsafeDisjointRandom1DAccessMut
+    for ArrayAppendAxis<ArrayImpl, ADIM, NDIM>
+where
+    NumberType<ADIM>: IsSmallerByOne<NDIM>,
+    ArrayImpl: crate::UnsafeDisjointRandom1DAccessMut,
+{
+}

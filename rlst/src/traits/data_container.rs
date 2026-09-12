@@ -49,6 +49,14 @@ pub trait RefDataContainerMut: DataContainer {
     unsafe fn get_unchecked_mut(&mut self, index: usize) -> &mut Self::Item;
 }
 
+/// Mutable container whose distinct indices are stable, disjoint elements.
+///
+/// # Safety
+/// Every valid index must identify the same element for the duration of a mutable borrow,
+/// and distinct indices must identify non-overlapping storage. Implementations must permit
+/// references to several distinct indices to remain live simultaneously.
+pub unsafe trait DisjointRefDataContainerMut: RefDataContainerMut {}
+
 /// A data container that can modify data by value.
 pub trait ModifiableDataContainer: DataContainer {
     /// Set the value at a given index.
@@ -79,6 +87,13 @@ pub trait MutableRawAccessDataContainer: RawAccessDataContainer {
     /// Returns `None` if data is not available as contigous slice.
     fn data_mut(&mut self) -> Option<&mut [Self::Item]>;
 }
+
+/// Raw-access container with stable allocation and extent.
+///
+/// # Safety
+/// The slice exposed by raw access must retain its allocation and length for the lifetime of
+/// the container unless an operation requiring exclusive ownership explicitly resizes it.
+pub unsafe trait StableRawAccessDataContainer: MutableRawAccessDataContainer {}
 
 /// Stores the type of a container.
 pub trait ContainerType {

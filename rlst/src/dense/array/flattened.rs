@@ -120,3 +120,9 @@ impl<ArrayImpl, const NDIM: usize> Array<ArrayImpl, NDIM> {
         Array::new(ArrayFlatView::new(self))
     }
 }
+
+// SAFETY: the flat view forwards one-dimensional indices unchanged.
+unsafe impl<ArrayImpl: crate::UnsafeDisjointRandom1DAccessMut, const NDIM: usize>
+    crate::UnsafeDisjointRandom1DAccessMut for ArrayFlatView<ArrayImpl, NDIM>
+{
+}

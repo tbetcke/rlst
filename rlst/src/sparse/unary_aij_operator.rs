@@ -35,20 +35,12 @@ where
     type Item = ([usize; 2], Out);
 
     fn next(&mut self) -> Option<Self::Item> {
-        let candidate = self
-            .iter
-            .next()
-            .map(|(index, value)| (index, (self.func)(value)));
-
-        // Filter out zero values.
-        if let Some((index, value)) = candidate {
+        for (index, input) in self.iter.by_ref() {
+            let value = (self.func)(input);
             if value != Out::default() {
-                Some((index, value))
-            } else {
-                self.next()
+                return Some((index, value));
             }
-        } else {
-            None
         }
+        None
     }
 }

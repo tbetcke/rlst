@@ -1,6 +1,27 @@
 use proc_macro::TokenStream;
 use quote::quote;
-use syn::Lit;
+use syn::{
+    parse::{Parse, ParseStream},
+    punctuated::Punctuated,
+    Lit, LitInt, Token,
+};
+
+struct StaticTypeInput {
+    ty: syn::Type,
+    dimensions: Punctuated<LitInt, Token![,]>,
+}
+
+impl Parse for StaticTypeInput {
+    fn parse(input: ParseStream<'_>) -> syn::Result<Self> {
+        let ty = input.parse()?;
+        input.parse::<Token![,]>()?;
+        let dimensions = Punctuated::<LitInt, Token![,]>::parse_terminated(input)?;
+        if dimensions.is_empty() {
+            return Err(input.error("at least one array dimension is required"));
+        }
+        Ok(Self { ty, dimensions })
+    }
+}
 
 pub(crate) fn rlst_static_array_impl(items: TokenStream) -> TokenStream {
     let args = items.to_string();
@@ -92,24 +113,30 @@ pub(crate) fn rlst_dynamic_array_impl(items: TokenStream) -> TokenStream {
 }
 
 pub(crate) fn rlst_static_type_impl(items: TokenStream) -> TokenStream {
-    let args = items.to_string();
-    let args: Vec<&str> = args.split(',').map(|elem| elem.trim()).collect();
-    let ty = args[0];
-    let ty = if let Ok(syn::Type::Path(type_path)) = syn::parse_str(ty) {
-        type_path
-    } else {
-        panic!("Type expected as first argument.");
+    let StaticTypeInput { ty, dimensions } = match syn::parse(items) {
+        Ok(input) => input,
+        Err(error) => return error.into_compile_error().into(),
     };
-    let dims = args[1..]
+
+    let dims = match dimensions
         .iter()
-        .map(|elem| elem.parse::<usize>().unwrap())
-        .collect::<Vec<usize>>();
-
-    let nelem: usize = dims.iter().product();
-    let ndim = args[1..].len();
-
-    let output = quote! { rlst::dense::array::Array<#ty, rlst::dense::base_array::BaseArray<#ty, rlst::dense::data_container::ArrayContainer<#ty, #nelem>, #ndim>, #ndim>
+        .map(LitInt::base10_parse::<usize>)
+        .collect::<syn::Result<Vec<_>>>()
+    {
+        Ok(dims) => dims,
+        Err(error) => return error.into_compile_error().into(),
     };
+    let nelem: usize = dims.iter().product();
+    let ndim = dims.len();
 
-    output.into()
+    quote! {
+        rlst::dense::array::Array<
+            rlst::dense::base_array::BaseArray<
+                rlst::dense::data_container::ArrayContainer<#ty, #nelem>,
+                #ndim
+            >,
+            #ndim
+        >
+    }
+    .into()
 }

@@ -121,6 +121,8 @@
 //! Moving an array into this shared reference is why `into_fft` is necessary in the first place.
 //! Calling `borrow` or `borrow_mut` on `fft` creates a new read or write lock and allows the user
 //! to access the array data directly without other threads being able to write at the same time.
+//! Mutable access is intentionally limited to the stored elements: the array itself cannot be
+//! replaced while a plan retains pointers into its allocation.
 
 pub mod c2c_inplace;
 pub mod r2r_inplace;
@@ -131,12 +133,13 @@ pub use r2r_inplace::{R2RPlan, R2RPlanKind};
 use std::{
     ffi::c_void,
     marker::PhantomData,
-    sync::{LazyLock, LockResult, Mutex, RwLockReadGuard, RwLockWriteGuard},
+    ops::Deref,
+    sync::{LazyLock, LockResult, Mutex, PoisonError, RwLockReadGuard, RwLockWriteGuard},
 };
 
 use crate::{
-    Array, BaseItem, BorrowAtRuntime, BorrowAtRuntimeMut, RawAccessMut, RlstScalar, Shape, Stride,
-    c32, c64, dense::array::shared_array::ArrayAtomicSharedRef,
+    Array, BaseItem, BorrowAtRuntime, BorrowAtRuntimeMut, RawAccessMut, RlstScalar, Shape,
+    StableRawAccessMut, Stride, c32, c64, dense::array::shared_array::ArrayAtomicSharedRef,
 };
 use fftw_sys;
 use num::Complex;
@@ -445,12 +448,53 @@ pub struct Fft<ArrayImpl, const NDIM: usize> {
     shared_ref: ArrayAtomicSharedRef<ArrayImpl, NDIM>,
 }
 
+/// A mutable lock on the elements used by FFT plans.
+///
+/// Unlike [`RwLockWriteGuard`], this guard does not implement `DerefMut`. This prevents replacing
+/// the array (and therefore its allocation) while an FFTW plan stores pointers into that allocation.
+///
+/// ```compile_fail
+/// use rlst::{DynArray, fftw::FftMutGuard};
+///
+/// let fft = DynArray::<f64, 1>::from_shape([4]).into_fft();
+/// let mut guard = fft.borrow_mut().unwrap();
+/// // Replacing the planned array would invalidate FFTW's stored pointer.
+/// *guard = DynArray::<f64, 1>::from_shape([4]);
+/// ```
+pub struct FftMutGuard<'a, ArrayImpl, const NDIM: usize> {
+    guard: RwLockWriteGuard<'a, Array<ArrayImpl, NDIM>>,
+}
+
+impl<ArrayImpl, const NDIM: usize> Deref for FftMutGuard<'_, ArrayImpl, NDIM> {
+    type Target = Array<ArrayImpl, NDIM>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.guard
+    }
+}
+
+impl<ArrayImpl, const NDIM: usize> FftMutGuard<'_, ArrayImpl, NDIM>
+where
+    ArrayImpl: RawAccessMut,
+{
+    /// Return the mutable backing slice, when the array implementation exposes one.
+    ///
+    /// Mutating elements does not change the allocation or layout captured by existing plans.
+    pub fn data_mut(&mut self) -> Option<&mut [ArrayImpl::Item]> {
+        self.guard.data_mut()
+    }
+
+    pub(crate) fn array_mut(&mut self) -> &mut Array<ArrayImpl, NDIM> {
+        &mut self.guard
+    }
+}
+
 #[allow(private_bounds)]
 impl<Item, ArrayImpl, const NDIM: usize> Array<ArrayImpl, NDIM>
 where
     Item: RlstScalar + 'static,
     FftwPlanPtrType<Item::Real>: FftwPlanPtrTypeTrait,
-    ArrayImpl: RawAccessMut<Item = Item> + Shape<NDIM> + Stride<NDIM>,
+    ArrayImpl: StableRawAccessMut<Item = Item> + Shape<NDIM> + Stride<NDIM>,
 {
     /// Initialize a FFT computation.
     pub fn into_fft(self) -> Fft<ArrayImpl, NDIM> {
@@ -463,7 +507,7 @@ impl<Item, ArrayImpl, const NDIM: usize> Fft<ArrayImpl, NDIM>
 where
     Item: RlstScalar + 'static,
     FftwPlanPtrType<Item::Real>: FftwPlanPtrTypeTrait,
-    ArrayImpl: RawAccessMut<Item = Item> + Shape<NDIM> + Stride<NDIM>,
+    ArrayImpl: StableRawAccessMut<Item = Item> + Shape<NDIM> + Stride<NDIM>,
 {
     /// Create a new FFT struct from an existing array
     pub fn from_arr(arr: Array<ArrayImpl, NDIM>) -> Self {
@@ -477,8 +521,16 @@ where
         self.shared_ref.borrow()
     }
 
-    /// Borrow the array as read-write
-    pub fn borrow_mut(&self) -> LockResult<RwLockWriteGuard<'_, Array<ArrayImpl, NDIM>>> {
-        self.shared_ref.borrow_mut()
+    /// Borrow the stored elements as read-write.
+    ///
+    /// The returned guard permits element mutation through [`FftMutGuard::data_mut`] but prevents
+    /// replacing the array or changing its allocation and layout while plans exist.
+    pub fn borrow_mut(&self) -> LockResult<FftMutGuard<'_, ArrayImpl, NDIM>> {
+        match self.shared_ref.borrow_mut() {
+            Ok(guard) => Ok(FftMutGuard { guard }),
+            Err(error) => Err(PoisonError::new(FftMutGuard {
+                guard: error.into_inner(),
+            })),
+        }
     }
 }
