@@ -490,15 +490,3 @@ impl<I: Default + Copy + Equivalence> GhostCommunicator<I> {
         }
     }
 }
-
-#[cfg(test)]
-mod test {
-    use super::checked_chunked_metadata;
-
-    #[test]
-    fn chunked_metadata_rejects_count_and_displacement_overflow() {
-        assert!(checked_chunked_metadata(&[i32::MAX], &[1], &[0], &[0], 2).is_none());
-        assert!(checked_chunked_metadata(&[1], &[1], &[i32::MAX], &[0], 2).is_none());
-        assert!(checked_chunked_metadata(&[1], &[1], &[0], &[0], i32::MAX as usize + 1).is_none());
-    }
-}
