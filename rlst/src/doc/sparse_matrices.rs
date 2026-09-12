@@ -16,6 +16,10 @@
 //!   always identical to `nnz`.
 //! - `data`: The data entries of the sparse matrix.
 //!
+//! CSR matrices are canonical: column indices are sorted within each row,
+//! duplicate coordinates are summed, and explicit zeros are removed. Both raw
+//! [`CsrMatrix::new`](crate::sparse::csr_mat::CsrMatrix::new) construction and
+//! AIJ construction enforce this invariant.
 //!
 //! On a single node the [CsrMatrix](crate::sparse::csr_mat::CsrMatrix) defines this structure. To initialize a new sparse
 //! matrix the easiest is to use the [CsrMatrix::from_aij](crate::traits::FromAij::from_aij) method. It creates a sparse
@@ -69,12 +73,18 @@
 //!
 //! # Componentwise operations on sparse matrices
 //!
-//! Sparse matrices in RLST support a number of componentwise operations. This includes the standard operations such as addition
-//! and scalar multiplication, and also the following special componentwise operations:
-//! [Abs](crate::Abs), [Square](crate::Square), [AbsSquare](crate::AbsSquare), [Sqrt](crate::Sqrt), [Exp](crate::Exp),
-//! [Ln](crate::Ln), [Recip](crate::Recip), [Sin](crate::Sin), [Cos](crate::Cos), [Tan](crate::Tan), [Asin](crate::Asin),
-//! [Acos](crate::Acos), [Atan](crate::Atan), [Sinh](crate::Sinh), [Cosh](crate::Cosh), [Tanh](crate::Tanh), [Asinh](crate::Asinh),
-//! [Acosh](crate::Acosh), [Atanh](crate::Atanh).
+//! Sparse matrices support addition, subtraction, scalar multiplication,
+//! componentwise matrix multiplication, and zero-preserving unary operations
+//! such as [Abs](crate::Abs), [Square](crate::Square), [Sqrt](crate::Sqrt), and
+//! [Sin](crate::Sin). Binary matrix operations require equal shapes.
+//!
+//! Functions that do not preserve implicit zero (for example `exp`, `cos`, and
+//! `recip`) deliberately do not implement the ordinary numerical traits for
+//! sparse matrices. Use
+//! [`SparseMatOpIterator::map_stored`](crate::sparse::mat_operations::SparseMatOpIterator::map_stored)
+//! when applying such a function only to explicitly stored entries is intended.
+//! Sparse matrix/matrix division is also unsupported because division involving
+//! implicit zeros generally cannot be represented by a sparse result.
 //!
 //! To access componentwise operations each sparse matrix supports the [op](crate::sparse::csr_mat::CsrMatrix::op). This returns a
 //! [SparseMatOpIterator](crate::sparse::mat_operations::SparseMatOpIterator). Componentwise sparse matrix operations are defined
@@ -86,7 +96,6 @@
 //! # use rlst;
 //! # use rlst::sparse::csr_mat::CsrMatrix;
 //! use rlst::FromAij;
-//! use rlst::Cosh;
 //! use std::ops::Mul;
 //! let rows1: Vec<usize> = vec![1, 4, 4];
 //! let cols1: Vec<usize> = vec![2, 5, 6];
@@ -101,10 +110,10 @@
 //! let a = CsrMatrix::from_aij(shape, &rows1, &cols1, &data1);
 //! let b = CsrMatrix::from_aij(shape, &rows2, &cols2, &data2);
 //!
-//! let c = (5.0 * a.op().cosh() + b.op()).into_csr();
+//! let c = (5.0 * a.op().map_stored(f64::cosh) + b.op()).into_csr();
 //!
 //! ```
-//! In the above example we componentwise take the `cosh` of each element in `a`, multiply the result by `5.0` and add `b`.
+//! In the above example we apply `cosh` to each stored element in `a`, multiply the result by `5.0` and add `b`.
 //! The result is then turned back into a sparse matrix. The implementation uses lazy evalution. The operations are only executed
 //! when `into_csr` is called.
 //!

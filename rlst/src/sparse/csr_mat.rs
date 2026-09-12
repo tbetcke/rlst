@@ -37,46 +37,77 @@ pub struct CsrMatrix<Item> {
 }
 
 impl<Item> CsrMatrix<Item> {
-    /// Create a new CSR matrix
+    fn from_canonical_aij(
+        shape: [usize; 2],
+        rows: Vec<usize>,
+        cols: Vec<usize>,
+        data: Vec<Item>,
+    ) -> Self
+    where
+        Item: Copy + Default,
+    {
+        let nelems = data.len();
+        let mut indptr = Vec::<usize>::with_capacity(1 + shape[0]);
+        let mut count = 0;
+        for row in 0..shape[0] {
+            indptr.push(count);
+            while count < nelems && rows[count] == row {
+                count += 1;
+            }
+        }
+        indptr.push(count);
+
+        Self {
+            mat_type: SparseMatType::Csr,
+            shape,
+            indices: DynArray::from_shape_and_vec([nelems], cols),
+            indptr: DynArray::from_shape_and_vec([1 + shape[0]], indptr),
+            data: DynArray::from_shape_and_vec([nelems], data),
+        }
+    }
+
+    /// Create a new CSR matrix from raw CSR arrays.
+    ///
+    /// The input structure is validated. Entries are then put into canonical
+    /// row-major order, duplicate coordinates are summed, and entries equal to
+    /// `Item::default()` are removed. Consequently, every matrix constructed by
+    /// this function has sorted, unique column indices in each row and stores no
+    /// explicit zeros.
     pub fn new(
         shape: [usize; 2],
         indices: DynArray<usize, 1>,
         indptr: DynArray<usize, 1>,
         data: DynArray<Item, 1>,
-    ) -> Self {
-        // Check that the indices cannot be out of bounds.
-        // This is because `apply` uses unsafe access to the entries.
-
+    ) -> Self
+    where
+        Item: AddAssign + PartialEq + Copy + Default,
+    {
         assert_eq!(indptr.len(), 1 + shape[0]);
         assert_eq!(data.len(), indices.len());
+        assert_eq!(indptr.get_value([0]).unwrap(), 0);
         assert_eq!(*indptr.data().unwrap().last().unwrap(), data.len());
 
-        // Check that the indices in indptr are monotonically increasing and
-        // are smaller or equal to the overall length of `indices`. This
-        // guarantees that there cannot be a memory error in the unsafe
-        // access in `apply`.
         for (first, second) in indptr.iter_value().tuple_windows() {
             assert!(
                 first <= second,
                 "Elements of indptr not in increasing order {first} > {second}."
             );
         }
-        // Check that the last element in indptr is the length of the `indices` array.
-        assert_eq!(*indptr.data().unwrap().last().unwrap(), indices.len());
-
-        // Check that the column indices in `indices` are smaller than `shape[1]`.
-
         if let Some(&max_col_index) = indices.data().unwrap().iter().max() {
             assert!(max_col_index < shape[1]);
         }
 
-        Self {
-            mat_type: SparseMatType::Csr,
-            shape,
-            indices,
-            indptr,
-            data,
+        let mut rows = Vec::with_capacity(data.len());
+        for (row, (start, end)) in indptr.iter_value().tuple_windows().enumerate() {
+            rows.extend(std::iter::repeat_n(row, end - start));
         }
+        let (rows, cols, data) = normalize_aij(
+            &rows,
+            indices.data().unwrap(),
+            data.data().unwrap(),
+            SparseMatType::Csr,
+        );
+        Self::from_canonical_aij(shape, rows, cols, data)
     }
 
     /// Return the index pointer.
@@ -104,45 +135,22 @@ where
     fn from_aij(shape: [usize; 2], rows: &[usize], cols: &[usize], data: &[Item]) -> Self {
         let (rows, cols, data) = normalize_aij(rows, cols, data, SparseMatType::Csr);
 
-        let max_col = if let Some(col) = cols.iter().max() {
-            *col
-        } else {
-            0
-        };
-        let max_row = if let Some(row) = rows.last() { *row } else { 0 };
-
-        assert!(
-            max_col < shape[1],
-            "Maximum column {} must be smaller than `shape.1` {}",
-            max_col,
-            shape[1]
-        );
-
-        assert!(
-            max_row < shape[0],
-            "Maximum row {} must be smaller than `shape.0` {}",
-            max_row,
-            shape[0]
-        );
-
-        let nelems = data.len();
-
-        let mut indptr = Vec::<usize>::with_capacity(1 + shape[0]);
-
-        let mut count: usize = 0;
-        for row in 0..(shape[0]) {
-            indptr.push(count);
-            while count < nelems && row == rows[count] {
-                count += 1;
-            }
+        if let Some(&max_col) = cols.iter().max() {
+            assert!(
+                max_col < shape[1],
+                "Maximum column {max_col} must be smaller than `shape.1` {}",
+                shape[1]
+            );
         }
-        indptr.push(count);
+        if let Some(&max_row) = rows.last() {
+            assert!(
+                max_row < shape[0],
+                "Maximum row {max_row} must be smaller than `shape.0` {}",
+                shape[0]
+            );
+        }
 
-        let indptr = DynArray::from_shape_and_vec([1 + shape[0]], indptr);
-        let indices = DynArray::from_shape_and_vec([nelems], cols);
-        let data = DynArray::from_shape_and_vec([nelems], data);
-
-        Self::new(shape, indices, indptr, data)
+        Self::from_canonical_aij(shape, rows, cols, data)
     }
 }
 
@@ -317,6 +325,9 @@ where
         beta: Self::Item,
         y: &mut crate::Array<ArrayImplY, 2>,
     ) {
+        assert_eq!(x.shape()[0], self.shape()[1]);
+        assert_eq!(y.shape()[0], self.shape()[0]);
+        assert_eq!(x.shape()[1], y.shape()[1]);
         for (colx, mut coly) in izip!(x.col_iter(), y.col_iter_mut()) {
             self.apply(alpha, &colx, beta, &mut coly)
         }
@@ -345,5 +356,96 @@ mod test {
         let expected = crate::dot!(sparse_mat.todense(), x);
 
         crate::assert_array_relative_eq!(y, expected, 1E-10);
+    }
+
+    #[test]
+    fn raw_csr_is_canonicalized() {
+        let matrix = CsrMatrix::new(
+            [2, 3],
+            DynArray::from_shape_and_vec([5], vec![2, 0, 2, 1, 1]),
+            DynArray::from_shape_and_vec([3], vec![0, 3, 5]),
+            DynArray::from_shape_and_vec([5], vec![1_i32, 4, -1, 2, 3]),
+        );
+
+        assert_eq!(matrix.indptr().data().unwrap(), &[0, 1, 2]);
+        assert_eq!(matrix.indices().data().unwrap(), &[0, 1]);
+        assert_eq!(matrix.data().data().unwrap(), &[4, 5]);
+        assert_eq!(
+            matrix.iter_aij_value().collect_vec(),
+            vec![([0, 0], 4), ([1, 1], 5)]
+        );
+    }
+
+    #[test]
+    fn empty_aij_shapes_are_supported() {
+        for shape in [[0, 4], [3, 0], [0, 0]] {
+            let matrix = CsrMatrix::<f64>::from_aij(shape, &[], &[], &[]);
+            assert_eq!(matrix.shape(), shape);
+            assert_eq!(matrix.nnz(), 0);
+            assert_eq!(matrix.indptr().len(), shape[0] + 1);
+        }
+    }
+
+    #[test]
+    fn raw_and_aij_duplicate_application_agree() {
+        let raw = CsrMatrix::new(
+            [2, 3],
+            DynArray::from_shape_and_vec([4], vec![2, 0, 2, 1]),
+            DynArray::from_shape_and_vec([3], vec![0, 3, 4]),
+            DynArray::from_shape_and_vec([4], vec![1.0, 2.0, 3.0, 4.0]),
+        );
+        let aij = CsrMatrix::from_aij([2, 3], &[0, 0, 0, 1], &[2, 0, 2, 1], &[1.0, 2.0, 3.0, 4.0]);
+        let x = DynArray::from_shape_and_vec([3], vec![2.0, 3.0, 5.0]);
+        crate::assert_array_relative_eq!(raw.dot(&x), aij.dot(&x), 1E-14);
+    }
+
+    #[test]
+    fn matrix_rhs_apply_validates_before_mutating() {
+        let matrix = CsrMatrix::from_aij([2, 3], &[0, 0, 1], &[0, 2, 1], &[2.0, 1.0, 3.0]);
+        let x = DynArray::from_shape_and_vec([3, 2], vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+        let mut y = DynArray::from_shape_and_vec([2, 2], vec![10.0, 20.0, 30.0, 40.0]);
+        matrix.apply(2.0, &x, 0.5, &mut y);
+        assert_eq!(y.data().unwrap(), &[15.0, 22.0, 43.0, 50.0]);
+
+        let bad_x = DynArray::from_shape_and_vec([3, 2], vec![1.0; 6]);
+        let mut bad_y = DynArray::from_shape_and_vec([2, 1], vec![7.0, 8.0]);
+        let before = bad_y.data().unwrap().to_vec();
+        assert!(
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                matrix.apply(1.0, &bad_x, 1.0, &mut bad_y);
+            }))
+            .is_err()
+        );
+        assert_eq!(bad_y.data().unwrap(), before.as_slice());
+
+        let short_x = DynArray::from_shape_and_vec([3, 1], vec![1.0; 3]);
+        let mut wide_y = DynArray::from_shape_and_vec([2, 2], vec![9.0; 4]);
+        let before = wide_y.data().unwrap().to_vec();
+        assert!(
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                matrix.apply(1.0, &short_x, 1.0, &mut wide_y);
+            }))
+            .is_err()
+        );
+        assert_eq!(wide_y.data().unwrap(), before.as_slice());
+
+        let mut wrong_row_y = DynArray::from_shape_and_vec([1, 2], vec![6.0; 2]);
+        let before = wrong_row_y.data().unwrap().to_vec();
+        assert!(
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                matrix.apply(1.0, &bad_x, 1.0, &mut wrong_row_y);
+            }))
+            .is_err()
+        );
+        assert_eq!(wrong_row_y.data().unwrap(), before.as_slice());
+
+        let bad_rows = DynArray::<f64, 2>::from_shape([2, 0]);
+        let mut empty_y = DynArray::<f64, 2>::from_shape([2, 0]);
+        assert!(
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                matrix.apply(1.0, &bad_rows, 0.0, &mut empty_y);
+            }))
+            .is_err()
+        );
     }
 }

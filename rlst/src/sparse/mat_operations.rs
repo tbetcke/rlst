@@ -1,6 +1,6 @@
 //! Operations for sparse matrices
 
-use std::ops::{Add, AddAssign, Div, Mul, Sub};
+use std::ops::{Add, AddAssign, Mul, Sub};
 
 use crate::base_types::{c32, c64};
 use crate::{BaseItem, FromAij, Shape};
@@ -72,6 +72,24 @@ where
         &self.iter
     }
 
+    /// Apply a function to the explicitly stored entries.
+    ///
+    /// Implicit zeros are not visited. Mapped values equal to `Out::default()`
+    /// are omitted, preserving the canonical sparse representation. Use this
+    /// method when stored-entry semantics are intended for a function that does
+    /// not preserve zero (for example, `op.map_stored(f64::exp)`).
+    pub fn map_stored<Out, F>(
+        self,
+        func: F,
+    ) -> SparseMatOpIterator<Out, UnaryAijOperator<Item, I, Out, F>>
+    where
+        Out: Copy + Default + PartialEq,
+        F: Fn(Item) -> Out,
+    {
+        let shape = self.shape;
+        SparseMatOpIterator::new(UnaryAijOperator::new(self.iter, func), shape)
+    }
+
     /// Convert into a Csr matrix.
     pub fn into_csr(self) -> CsrMatrix<Item>
     where
@@ -134,20 +152,13 @@ impl_unary_op!(Abs, abs);
 impl_unary_op!(Square, square);
 impl_unary_op!(AbsSquare, abs_square);
 impl_unary_op!(Sqrt, sqrt);
-impl_unary_op!(Exp, exp);
-impl_unary_op!(Ln, ln);
-impl_unary_op!(Recip, recip);
 impl_unary_op!(Sin, sin);
-impl_unary_op!(Cos, cos);
 impl_unary_op!(Tan, tan);
 impl_unary_op!(Asin, asin);
-impl_unary_op!(Acos, acos);
 impl_unary_op!(Atan, atan);
 impl_unary_op!(Sinh, sinh);
-impl_unary_op!(Cosh, cosh);
 impl_unary_op!(Tanh, tanh);
 impl_unary_op!(Asinh, asinh);
-impl_unary_op!(Acosh, acosh);
 impl_unary_op!(Atanh, atanh);
 
 impl<Item1, Item2, Out, I1, I2> std::ops::Add<SparseMatOpIterator<Item2, I2>>
@@ -165,6 +176,7 @@ where
     >;
 
     fn add(self, other: SparseMatOpIterator<Item2, I2>) -> Self::Output {
+        assert_eq!(self.shape(), other.shape());
         let shape = self.shape();
         SparseMatOpIterator::new(
             BinaryAijOperator::new(self.iter, other.iter, |a, b| a + b),
@@ -188,6 +200,7 @@ where
     >;
 
     fn sub(self, other: SparseMatOpIterator<Item2, I2>) -> Self::Output {
+        assert_eq!(self.shape(), other.shape());
         let shape = self.shape();
         SparseMatOpIterator::new(
             BinaryAijOperator::new(self.iter, other.iter, |a, b| a - b),
@@ -256,6 +269,7 @@ where
     >;
 
     fn mul(self, other: SparseMatOpIterator<Item2, I2>) -> Self::Output {
+        assert_eq!(self.shape(), other.shape());
         let shape = self.shape();
         SparseMatOpIterator::new(
             BinaryAijOperator::new(self.iter, other.iter, |a, b| a * b),
@@ -264,25 +278,43 @@ where
     }
 }
 
-impl<Item1, Item2, Out, I1, I2> std::ops::Div<SparseMatOpIterator<Item2, I2>>
-    for SparseMatOpIterator<Item1, I1>
-where
-    Item1: Div<Item2, Output = Out> + Copy + Default,
-    Item2: Default + Copy,
-    Out: PartialEq + Default + Copy,
-    I1: Iterator<Item = ([usize; 2], Item1)>,
-    I2: Iterator<Item = ([usize; 2], Item2)>,
-{
-    type Output = SparseMatOpIterator<
-        Out,
-        BinaryAijOperator<Item1, Item2, I1, I2, Out, fn(Item1, Item2) -> Out>,
-    >;
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{AijIteratorByValue, FromAij, Nonzeros};
 
-    fn div(self, other: SparseMatOpIterator<Item2, I2>) -> Self::Output {
-        let shape = self.shape();
-        SparseMatOpIterator::new(
-            BinaryAijOperator::new(self.iter, other.iter, |a, b| a / b),
-            shape,
-        )
+    #[test]
+    fn binary_operations_require_equal_shapes_in_both_orders() {
+        let a = CsrMatrix::from_aij([0, 2], &[], &[], &[] as &[f64]);
+        let b = CsrMatrix::from_aij([1, 2], &[], &[], &[] as &[f64]);
+
+        assert!(std::panic::catch_unwind(|| a.op() + b.op()).is_err());
+        assert!(std::panic::catch_unwind(|| b.op() + a.op()).is_err());
+        assert!(std::panic::catch_unwind(|| a.op() - b.op()).is_err());
+        assert!(std::panic::catch_unwind(|| a.op() * b.op()).is_err());
+    }
+
+    #[test]
+    fn map_stored_ignores_implicit_and_elides_mapped_zeros() {
+        let matrix = CsrMatrix::from_aij([2, 2], &[0, 0, 1], &[0, 1, 1], &[0.0, 2.0, 3.0]);
+        assert_eq!(matrix.nnz(), 2);
+
+        let exponential = matrix.op().map_stored(f64::exp).into_csr();
+        assert_eq!(exponential.nnz(), 2);
+        assert_eq!(
+            exponential.iter_aij_value().collect::<Vec<_>>(),
+            vec![([0, 1], 2.0_f64.exp()), ([1, 1], 3.0_f64.exp())]
+        );
+        assert_eq!(exponential.todense().data().unwrap()[0], 0.0);
+
+        let elided = matrix
+            .op()
+            .map_stored(|value| if value == 2.0 { 0.0 } else { value })
+            .into_csr();
+        assert_eq!(elided.nnz(), 1);
+        assert_eq!(
+            elided.iter_aij_value().collect::<Vec<_>>(),
+            vec![([1, 1], 3.0)]
+        );
     }
 }

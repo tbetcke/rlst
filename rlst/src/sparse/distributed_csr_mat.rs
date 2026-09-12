@@ -69,7 +69,10 @@ where
         data: DynArray<Item, 1>,
         domain_layout: Rc<IndexLayout<'a, C>>,
         range_layout: Rc<IndexLayout<'a, C>>,
-    ) -> Self {
+    ) -> Self
+    where
+        Item: Default + AddAssign + PartialEq,
+    {
         // Both layouts must use the same MPI communicator. `from_aij` has
         // already agreed this condition collectively before reaching `new`.
         assert_eq!(
