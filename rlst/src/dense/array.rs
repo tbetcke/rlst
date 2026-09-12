@@ -1367,8 +1367,8 @@ where
     ///
     /// # Panics
     ///
-    /// Panics if an entry is out of range. The current implementation does not reject repeated
-    /// or omitted axes; such inputs do not describe an axis permutation and must not be used.
+    /// Panics if an entry is outside `0..NDIM` or if an axis occurs more than once.
+    /// Every source axis must occur exactly once.
     pub fn permute_axes(
         self,
         permutation: [usize; NDIM],
