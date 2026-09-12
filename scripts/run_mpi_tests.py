@@ -140,7 +140,13 @@ def build_executable() -> str:
 def run_bounded(executable: str, ranks: int, case: str) -> tuple[bool, str]:
     """Run one MPI case, terminating its entire process group on failure."""
     command = ["mpiexec", "--oversubscribe", "-n", str(ranks), executable]
-    environment = os.environ | {"RLST_MPI_EMPTY_CASE": case}
+    environment = os.environ | {
+        "RLST_MPI_EMPTY_CASE": case,
+        # The containerized CI runner executes as root. Open MPI requires both
+        # variables as an explicit acknowledgement before launching ranks.
+        "OMPI_ALLOW_RUN_AS_ROOT": "1",
+        "OMPI_ALLOW_RUN_AS_ROOT_CONFIRM": "1",
+    }
     process = subprocess.Popen(
         command,
         cwd=ROOT,
