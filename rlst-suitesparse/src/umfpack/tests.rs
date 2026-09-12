@@ -47,6 +47,39 @@ fn combines_duplicate_csr_entries() {
 }
 
 #[test]
+fn rejects_empty_matrix() {
+    let matrix: CsrMatrix<f64> = CsrMatrix::new(
+        [0, 0],
+        DynArray::from_shape_and_vec([0], vec![]),
+        DynArray::from_shape_and_vec([1], vec![0]),
+        DynArray::from_shape_and_vec([0], vec![]),
+    );
+
+    assert!(matches!(matrix.factorize(), Err(UmfpackError::EmptyMatrix)));
+}
+
+#[test]
+fn rejects_nonsquare_matrix() {
+    let matrix = CsrMatrix::from_aij([1, 2], &[0], &[1], &[1.0]);
+
+    assert!(matches!(
+        matrix.factorize(),
+        Err(UmfpackError::NonSquareMatrix {
+            rows: 1,
+            columns: 2,
+        })
+    ));
+}
+
+#[test]
+fn reports_singular_factorization_warning() {
+    let matrix = CsrMatrix::from_aij([2, 2], &[0, 1], &[0, 0], &[1.0, 2.0]);
+    let numeric = matrix.factorize().unwrap();
+
+    assert_eq!(numeric.status(), UmfpackFactorizationStatus::SingularMatrix);
+}
+
+#[test]
 fn solves_a_real_system() {
     let numeric = test_matrix().factorize().unwrap();
     let mut rhs = rlst_dynamic_array!(f64, [2]);

@@ -2163,6 +2163,7 @@ mod test {
         x.fill_from_equally_distributed(&mut rng);
 
         let mut y = DynArray::<f64, 1>::from_shape([3]);
+        y.fill_from_equally_distributed(&mut rng);
         let y2 = y.eval();
 
         a.apply(alpha, &x, beta, &mut y);
@@ -2179,6 +2180,7 @@ mod test {
         x.fill_from_equally_distributed(&mut rng);
 
         let mut y = DynArray::<f64, 2>::from_shape([3, 5]);
+        y.fill_from_equally_distributed(&mut rng);
         let y2 = y.eval();
 
         a.apply(alpha, &x, beta, &mut y);

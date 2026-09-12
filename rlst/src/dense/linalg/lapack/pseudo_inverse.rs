@@ -45,6 +45,10 @@ impl<Item: Lapack + Gemm> PInv<Item> {
 
     /// Return the matrix form of the pseudo-inverse
     pub fn as_matrix(&self) -> DynArray<Item, 2> {
+        if self.s.is_empty() {
+            return DynArray::from_shape([self.v.shape()[0], self.ut.shape()[1]]);
+        }
+
         let sinv = self
             .s
             .r()
@@ -61,6 +65,15 @@ impl<Item: Lapack + Gemm> PInv<Item> {
     where
         ArrayImpl: UnsafeRandom1DAccessByValue<Item = Item> + Shape<NDIM>,
     {
+        if NDIM != 1 && NDIM != 2 {
+            panic!("`PInv::apply` is only implemented for 1D and 2D arrays.");
+        }
+        if self.s.is_empty() {
+            let mut shape = arr.shape();
+            shape[0] = self.v.shape()[0];
+            return DynArray::from_shape(shape);
+        }
+
         let sinv = self
             .s
             .r()
@@ -166,4 +179,59 @@ mod test {
     implement_pinv_tests!(f64, 1E-10);
     implement_pinv_tests!(c32, 1E-4);
     implement_pinv_tests!(c64, 1E-10);
+
+    #[test]
+    fn test_pseudo_inverse_rank_deficient() {
+        let mut a = DynArray::<f64, 2>::from_shape([3, 2]);
+        a[[0, 0]] = 2.0;
+        a[[1, 1]] = 4.0;
+
+        let pinv = a.pseudo_inverse(None, None).unwrap();
+        assert_eq!(pinv.s().len(), 2);
+
+        let pinv_mat = pinv.as_matrix();
+        let reconstructed = dot!(a.r(), pinv_mat.r(), a.r());
+        crate::assert_array_abs_diff_eq!(reconstructed, a, 1E-12);
+    }
+
+    #[test]
+    fn test_pseudo_inverse_cutoff_excludes_boundary() {
+        let mut a = DynArray::<f64, 2>::from_shape([2, 2]);
+        a[[0, 0]] = 4.0;
+        a[[1, 1]] = 2.0;
+
+        let pinv = a.pseudo_inverse(None, Some(0.5)).unwrap();
+        assert_eq!(pinv.s().len(), 1);
+
+        let pinv_mat = pinv.as_matrix();
+        assert!((pinv_mat[[0, 0]] - 0.25).abs() < 1E-12);
+        assert!(pinv_mat[[1, 1]].abs() < 1E-12);
+    }
+
+    #[test]
+    fn test_pseudo_inverse_rank_zero() {
+        let mut a = DynArray::<f64, 2>::from_shape([2, 2]);
+        a.set_identity();
+
+        let pinv = a.pseudo_inverse(Some(0), None).unwrap();
+        assert_eq!(pinv.s().len(), 0);
+        crate::assert_array_abs_diff_eq!(
+            pinv.as_matrix(),
+            DynArray::<f64, 2>::from_shape([2, 2]),
+            1E-12
+        );
+    }
+
+    #[test]
+    fn test_pseudo_inverse_all_zero() {
+        let a = DynArray::<f64, 2>::from_shape([3, 2]);
+
+        let pinv = a.pseudo_inverse(None, None).unwrap();
+        assert_eq!(pinv.s().len(), 0);
+        crate::assert_array_abs_diff_eq!(
+            pinv.as_matrix(),
+            DynArray::<f64, 2>::from_shape([2, 3]),
+            1E-12
+        );
+    }
 }
