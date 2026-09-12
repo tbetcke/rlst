@@ -82,6 +82,15 @@ pub trait UnsafeRandom1DAccessMut: BaseItem {
     unsafe fn get_1d_unchecked_mut(&mut self, index: usize) -> &mut Self::Item;
 }
 
+/// Marker for one-dimensional mutable access that is stable and pairwise disjoint.
+///
+/// # Safety
+/// Implementors must guarantee that, while the array is mutably borrowed, every valid
+/// one-dimensional index always identifies the same element and distinct indices identify
+/// non-overlapping elements. This permits an iterator to keep several returned mutable
+/// references alive simultaneously.
+pub unsafe trait UnsafeDisjointRandom1DAccessMut: UnsafeRandom1DAccessMut {}
+
 /// This trait provides bounds checked access to the underlying data by value.
 pub trait RandomAccessByValue<const NDIM: usize>: BaseItem {
     /// Return the element at position determined by `multi_index`.

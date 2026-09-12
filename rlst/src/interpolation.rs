@@ -73,7 +73,7 @@ use itertools::izip;
 
 use crate::{
     Array, DynArray, MutableArrayImpl, RlstScalar, ScalarAsArray, Shape,
-    UnsafeRandom1DAccessByValue, UnsafeRandom1DAccessMut, UnsafeRandomAccessByValue,
+    UnsafeDisjointRandom1DAccessMut, UnsafeRandom1DAccessByValue, UnsafeRandomAccessByValue,
     UnsafeRandomAccessMut, ValueArrayImpl,
 };
 
@@ -216,8 +216,9 @@ pub fn barycentric_evaluate_1d<
         + UnsafeRandom1DAccessByValue<Item = Item>
         + Shape<1>,
     ArrayImplInterpWeights: UnsafeRandom1DAccessByValue<Item = Item::Real> + Shape<1>,
-    ArrayImplResult:
-        UnsafeRandomAccessMut<1, Item = Item> + UnsafeRandom1DAccessMut<Item = Item> + Shape<1>,
+    ArrayImplResult: UnsafeRandomAccessMut<1, Item = Item>
+        + UnsafeDisjointRandom1DAccessMut<Item = Item>
+        + Shape<1>,
     Item: RlstScalar,
 {
     let npoints = eval_points.len();

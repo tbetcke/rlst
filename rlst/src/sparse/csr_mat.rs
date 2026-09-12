@@ -15,7 +15,7 @@ use crate::sparse::tools::normalize_aij;
 use crate::{AijIteratorByValue, BaseItem, Shape, dense::array::DynArray, sparse::SparseMatType};
 use crate::{
     AijIteratorMut, Array, AsMatrixApply, FromAij, Nonzeros, SparseMatrixType,
-    UnsafeRandom1DAccessMut, UnsafeRandomAccessByValue, UnsafeRandomAccessMut, empty_array,
+    UnsafeDisjointRandom1DAccessMut, UnsafeRandomAccessByValue, UnsafeRandomAccessMut, empty_array,
 };
 use itertools::{Itertools, izip};
 use num::One;
@@ -268,7 +268,7 @@ impl<Item, ArrayImplX, ArrayImplY> AsMatrixApply<Array<ArrayImplX, 1>, Array<Arr
 where
     Item: Default + Mul<Output = Item> + AddAssign<Item> + Add<Output = Item> + Copy + One,
     ArrayImplX: UnsafeRandomAccessByValue<1, Item = Item> + Shape<1>,
-    ArrayImplY: UnsafeRandom1DAccessMut<Item = Item> + Shape<1>,
+    ArrayImplY: UnsafeDisjointRandom1DAccessMut<Item = Item> + Shape<1>,
 {
     fn apply(
         &self,

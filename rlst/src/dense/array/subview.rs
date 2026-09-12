@@ -4,8 +4,9 @@ use crate::dense::array::Array;
 use crate::dense::layout::{check_multi_index_in_bounds, convert_1d_nd_from_shape};
 use crate::traits::{
     accessors::{
-        UnsafeRandom1DAccessByRef, UnsafeRandom1DAccessByValue, UnsafeRandom1DAccessMut,
-        UnsafeRandomAccessByRef, UnsafeRandomAccessByValue, UnsafeRandomAccessMut,
+        UnsafeDisjointRandom1DAccessMut, UnsafeRandom1DAccessByRef, UnsafeRandom1DAccessByValue,
+        UnsafeRandom1DAccessMut, UnsafeRandomAccessByRef, UnsafeRandomAccessByValue,
+        UnsafeRandomAccessMut,
     },
     base_operations::{BaseItem, Shape, Stride},
 };
@@ -116,6 +117,15 @@ impl<ArrayImpl: UnsafeRandomAccessMut<NDIM>, const NDIM: usize> UnsafeRandom1DAc
     unsafe fn get_1d_unchecked_mut(&mut self, index: usize) -> &mut Self::Item {
         unsafe { self.get_unchecked_mut(convert_1d_nd_from_shape(index, self.shape)) }
     }
+}
+
+// SAFETY: adding a fixed offset is injective, so the source array's disjoint
+// mapping is preserved by this view.
+unsafe impl<ArrayImpl, const NDIM: usize> UnsafeDisjointRandom1DAccessMut
+    for ArraySubView<ArrayImpl, NDIM>
+where
+    ArrayImpl: UnsafeDisjointRandom1DAccessMut + UnsafeRandomAccessMut<NDIM>,
+{
 }
 
 impl<ArrayImpl: UnsafeRandomAccessMut<NDIM>, const NDIM: usize> UnsafeRandomAccessMut<NDIM>

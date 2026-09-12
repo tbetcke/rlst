@@ -143,3 +143,11 @@ fn inverse_permute_multi_index<const NDIM: usize>(
 
     result
 }
+
+// SAFETY: transposition is an injective permutation of source indices.
+unsafe impl<ArrayImpl, const NDIM: usize> crate::UnsafeDisjointRandom1DAccessMut
+    for ArrayTranspose<ArrayImpl, NDIM>
+where
+    ArrayImpl: crate::UnsafeDisjointRandom1DAccessMut + UnsafeRandomAccessMut<NDIM> + Shape<NDIM>,
+{
+}

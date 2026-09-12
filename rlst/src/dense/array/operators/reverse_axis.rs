@@ -137,3 +137,11 @@ fn reverse_multi_index<const NDIM: usize>(
     multi_index[axis] = shape[axis] - 1 - multi_index[axis];
     multi_index
 }
+
+// SAFETY: reversing an axis is an injective permutation of source indices.
+unsafe impl<ArrayImpl, const NDIM: usize> crate::UnsafeDisjointRandom1DAccessMut
+    for ReverseAxis<ArrayImpl, NDIM>
+where
+    ArrayImpl: crate::UnsafeDisjointRandom1DAccessMut + UnsafeRandomAccessMut<NDIM> + Shape<NDIM>,
+{
+}

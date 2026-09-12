@@ -7,9 +7,9 @@ use crate::{
     dense::layout::{check_multi_index_in_bounds, col_major_stride_from_shape},
     traits::{
         accessors::{
-            RawAccess, RawAccessMut, UnsafeRandom1DAccessByRef, UnsafeRandom1DAccessByValue,
-            UnsafeRandom1DAccessMut, UnsafeRandomAccessByRef, UnsafeRandomAccessByValue,
-            UnsafeRandomAccessMut,
+            RawAccess, RawAccessMut, UnsafeDisjointRandom1DAccessMut, UnsafeRandom1DAccessByRef,
+            UnsafeRandom1DAccessByValue, UnsafeRandom1DAccessMut, UnsafeRandomAccessByRef,
+            UnsafeRandomAccessByValue, UnsafeRandomAccessMut,
         },
         base_operations::{BaseItem, ResizeInPlace, Shape, Stride},
         data_container::{
@@ -94,6 +94,13 @@ impl<Data: RefDataContainerMut, const NDIM: usize> UnsafeRandom1DAccessMut
     unsafe fn get_1d_unchecked_mut(&mut self, index: usize) -> &mut Self::Item {
         unsafe { self.data.get_unchecked_mut(index) }
     }
+}
+
+// SAFETY: column-major linear indices map one-to-one to container elements and
+// the shape does not change while mutable references are outstanding.
+unsafe impl<Data: RefDataContainerMut, const NDIM: usize> UnsafeDisjointRandom1DAccessMut
+    for BaseArray<Data, NDIM>
+{
 }
 
 impl<Data: ValueDataContainer, const NDIM: usize> UnsafeRandomAccessByValue<NDIM>

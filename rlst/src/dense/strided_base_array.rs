@@ -3,13 +3,15 @@
 //! A [StridedBaseArray] is a simple container for array data. It is mainly a convient interface
 //! to a data container and adds a `shape`, `stride`, and n-dimensional accessor methods.
 
+use std::collections::HashSet;
+
 use crate::{
     dense::layout::{check_multi_index_in_bounds, convert_1d_nd_from_shape, convert_nd_raw},
     traits::{
         accessors::{
-            RawAccess, RawAccessMut, UnsafeRandom1DAccessByRef, UnsafeRandom1DAccessByValue,
-            UnsafeRandom1DAccessMut, UnsafeRandomAccessByRef, UnsafeRandomAccessByValue,
-            UnsafeRandomAccessMut,
+            RawAccess, RawAccessMut, UnsafeDisjointRandom1DAccessMut, UnsafeRandom1DAccessByRef,
+            UnsafeRandom1DAccessByValue, UnsafeRandom1DAccessMut, UnsafeRandomAccessByRef,
+            UnsafeRandomAccessByValue, UnsafeRandomAccessMut,
         },
         base_operations::{BaseItem, Shape, Stride},
         data_container::{
@@ -31,16 +33,41 @@ impl<Data: ContainerType, const NDIM: usize> ContainerType for StridedBaseArray<
     type Type = Data::Type;
 }
 
+/// Return the storage span required by a shape and stride.
+pub(crate) fn required_storage_len<const NDIM: usize>(
+    shape: [usize; NDIM],
+    stride: [usize; NDIM],
+) -> usize {
+    if shape.iter().product::<usize>() == 0 {
+        0
+    } else {
+        1 + shape
+            .iter()
+            .zip(stride)
+            .map(|(&extent, step)| (extent - 1) * step)
+            .sum::<usize>()
+    }
+}
+
 impl<Data: DataContainer, const NDIM: usize> StridedBaseArray<Data, NDIM> {
     /// Create new
     pub fn new(data: Data, shape: [usize; NDIM], stride: [usize; NDIM]) -> Self {
-        assert_eq!(
-            data.number_of_elements(),
-            shape.iter().product::<usize>(),
-            "Expected {} elements but `data` has {} elements",
-            shape.iter().product::<usize>(),
+        let number_of_elements = shape.iter().product::<usize>();
+        let required_span = required_storage_len(shape, stride);
+        assert!(
+            data.number_of_elements() >= required_span,
+            "Strided layout requires {required_span} storage elements but `data` has {} elements",
             data.number_of_elements()
         );
+
+        let mut offsets = HashSet::with_capacity(number_of_elements);
+        for index in 0..number_of_elements {
+            let offset = convert_nd_raw(convert_1d_nd_from_shape(index, shape), stride);
+            assert!(
+                offsets.insert(offset),
+                "Strided layout maps multiple logical elements to storage offset {offset}"
+            );
+        }
 
         Self {
             data,
@@ -114,6 +141,13 @@ impl<Data: RefDataContainerMut, const NDIM: usize> UnsafeRandom1DAccessMut
     }
 }
 
+// SAFETY: `new` rejects layouts that alias logical indices, and the shape and stride
+// remain immutable for the lifetime of this value.
+unsafe impl<Data: RefDataContainerMut, const NDIM: usize> UnsafeDisjointRandom1DAccessMut
+    for StridedBaseArray<Data, NDIM>
+{
+}
+
 impl<Data: RefDataContainerMut, const NDIM: usize> UnsafeRandomAccessMut<NDIM>
     for StridedBaseArray<Data, NDIM>
 {
@@ -144,5 +178,42 @@ impl<Data: MutableRawAccessDataContainer, const NDIM: usize> RawAccessMut
 impl<Data, const NDIM: usize> Stride<NDIM> for StridedBaseArray<Data, NDIM> {
     fn stride(&self) -> [usize; NDIM] {
         self.stride
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::{StridedDynArray, dense::array::StridedSliceArrayMut};
+
+    #[test]
+    fn padded_dynamic_layout_allocates_required_span() {
+        let array = StridedDynArray::<f64, 2>::from_shape_and_stride([2, 3], [1, 4]);
+        assert_eq!(array.data().unwrap().len(), 10);
+    }
+
+    #[test]
+    fn mutable_iteration_yields_simultaneously_live_disjoint_references() {
+        let mut array = StridedDynArray::<i32, 2>::from_shape_and_stride([2, 2], [1, 3]);
+        let mut references = array.iter_mut().collect::<Vec<_>>();
+        *references[0] = 1;
+        *references[1] = 2;
+        *references[2] = 3;
+        *references[3] = 4;
+        drop(references);
+        assert_eq!(array.iter_value().collect::<Vec<_>>(), vec![1, 2, 3, 4]);
+    }
+
+    #[test]
+    #[should_panic(expected = "requires 10 storage elements")]
+    fn rejects_insufficient_storage_span() {
+        let mut data = [0.0; 9];
+        let _ = StridedSliceArrayMut::from_shape_and_stride(&mut data, [2, 3], [1, 4]);
+    }
+
+    #[test]
+    #[should_panic(expected = "maps multiple logical elements")]
+    fn rejects_overlapping_layout() {
+        let mut data = [0.0; 4];
+        let _ = StridedSliceArrayMut::from_shape_and_stride(&mut data, [2, 2], [1, 1]);
     }
 }
