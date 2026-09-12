@@ -1,9 +1,9 @@
-//! Matrix market reader/writer
+//! Matrix Market reader and writer.
 //!
-//! The functions [read_array_mm] and [read_coordinate_mm] can read the Matrix Market array and coordinate
-//! file formats. Currently, matrices with special symmetry properties are not supported. Input
-//! files must use the `general` property. To write out matrices the functions [write_array_mm] and
-//! [write_coordinate_mm] are provided.
+//! [`read_array_mm`] and [`read_coordinate_mm`] support general real and
+//! complex matrices. Array records are interpreted in the column-major order
+//! mandated by the Matrix Market format. Malformed headers, dimensions,
+//! records, counts, and coordinate indices are returned as [`RlstError`]s.
 
 use std::fmt::Display;
 use std::fs::File;
@@ -18,16 +18,12 @@ use crate::dense::array::DynArray;
 use crate::sparse::csr_mat::CsrMatrix;
 use crate::{Array, FromAij, MmIdentifier, RlstError, RlstResult, UnsafeRandom1DAccessByValue};
 
-/// Definition of Matrix format types
+/// Definition of Matrix format types.
 #[derive(PartialEq, Clone, Copy)]
 pub enum MatrixFormat {
-    /// Matrices in coordinate format.
-    /// Entries are described as `(i, j, data)` triplets with row `i`,
-    /// column `j` and corresponding `data`. This is mainly used for
-    /// sparse matrices.
+    /// Coordinate format.
     Coordinate,
-    /// Matrices in array format. All entries are provided in column-major
-    /// format. This format is mainly used for dense matrices.
+    /// Dense array format.
     Array,
 }
 
@@ -42,7 +38,7 @@ pub enum DataType {
     Complex,
 }
 
-/// Matrix market symmetry type.
+/// Matrix Market symmetry type.
 #[derive(PartialEq, Clone, Copy)]
 pub enum SymmetryType {
     /// General matrices without symmetry.
@@ -55,7 +51,7 @@ pub enum SymmetryType {
     Hermitian,
 }
 
-/// A simple container to store the information section of a matrix market file.
+/// Information declared by a Matrix Market header.
 pub struct MatrixMarketInfo {
     format: MatrixFormat,
     data_type: DataType,
@@ -63,10 +59,6 @@ pub struct MatrixMarketInfo {
 }
 
 /// Export a matrix in coordinate format.
-///
-/// This function requires objects to implement the [AijIteratorByValue](crate::traits::AijIteratorByValue) and
-/// [Shape](crate::traits::Shape) traits. Any object satisfying these traits can be written
-/// out with this function.
 pub fn write_coordinate_mm<
     T: MmIdentifier + Display,
     Mat: crate::traits::iterators::AijIteratorByValue<Item = T> + crate::traits::Shape<2>,
@@ -74,35 +66,32 @@ pub fn write_coordinate_mm<
     mat: &Mat,
     fname: &str,
 ) -> RlstResult<()> {
-    let output = File::create(fname);
-
-    let count = mat.len();
-
-    if let Ok(mut output) = output {
+    let mut output = File::create(fname)
+        .map_err(|error| RlstError::IoError(format!("could not create {fname}: {error}")))?;
+    writeln!(
+        output,
+        "%%MatrixMarket matrix coordinate {} general",
+        T::MMTYPE
+    )
+    .and_then(|_| writeln!(output, "%"))
+    .and_then(|_| {
         writeln!(
             output,
-            "%%MatrixMarket matrix coordinate {} general",
-            T::MMTYPE
+            "{} {} {}",
+            mat.shape()[0],
+            mat.shape()[1],
+            mat.len()
         )
-        .unwrap();
-        writeln!(output, "%").unwrap();
-        writeln!(output, "{} {} {}", mat.shape()[0], mat.shape()[1], count).unwrap();
-        for ([row, col], data) in mat.iter_aij_value() {
-            writeln!(output, "{} {} {} ", 1 + row, 1 + col, data).unwrap();
-        }
-
-        Ok(())
-    } else {
-        Err(RlstError::IoError(format!("Could not open file {fname}")))
+    })
+    .map_err(|error| RlstError::IoError(format!("could not write {fname}: {error}")))?;
+    for ([row, col], data) in mat.iter_aij_value() {
+        writeln!(output, "{} {} {} ", 1 + row, 1 + col, data)
+            .map_err(|error| RlstError::IoError(format!("could not write {fname}: {error}")))?;
     }
+    Ok(())
 }
 
 /// Export a matrix in array format.
-///
-/// This function requires objects to implement the
-/// [UnsafeRandom1DAccessByValue] and
-/// [Shape](crate::traits::Shape) traits. Any object satisfying these traits can be written
-/// out with this function.
 pub fn write_array_mm<
     T: MmIdentifier + Display,
     ArrayImpl: UnsafeRandom1DAccessByValue<Item = T> + crate::traits::Shape<2>,
@@ -110,335 +99,339 @@ pub fn write_array_mm<
     mat: &Array<ArrayImpl, 2>,
     fname: &str,
 ) -> RlstResult<()> {
-    let output = File::create(fname);
-
-    if let Ok(mut output) = output {
-        writeln!(output, "%%MatrixMarket matrix array {} general", T::MMTYPE).unwrap();
-        writeln!(output, "%").unwrap();
-        writeln!(output, "{} {}", mat.shape()[0], mat.shape()[1]).unwrap();
-        for value in mat.iter_value() {
-            writeln!(output, "{value}").unwrap();
-        }
-
-        Ok(())
-    } else {
-        Err(RlstError::IoError(format!("Could not open file {fname}")))
+    let mut output = File::create(fname)
+        .map_err(|error| RlstError::IoError(format!("could not create {fname}: {error}")))?;
+    writeln!(output, "%%MatrixMarket matrix array {} general", T::MMTYPE)
+        .and_then(|_| writeln!(output, "%"))
+        .and_then(|_| writeln!(output, "{} {}", mat.shape()[0], mat.shape()[1]))
+        .map_err(|error| RlstError::IoError(format!("could not write {fname}: {error}")))?;
+    for value in mat.iter_value() {
+        writeln!(output, "{value}")
+            .map_err(|error| RlstError::IoError(format!("could not write {fname}: {error}")))?;
     }
+    Ok(())
 }
 
-/// Read an array in matrix market format.
+/// Read a general dense Matrix Market array.
 ///
-/// The function returns a [DynArray] object representing the data in the file.
-/// Currently only `general` matrices are supported without special symmetry.
-pub fn read_array_mm<T: Copy + Default + Num>(fname: &str) -> RlstResult<DynArray<T, 2>> {
-    let mut reader = open_file(fname).unwrap();
-    let mm_info = parse_header(&mut reader).unwrap();
-
-    if mm_info.format != MatrixFormat::Array {
-        return Err(RlstError::IoError(
-            "Matrix not in array format.".to_string(),
+/// The header field must match `T` (`real` for `f32`/`f64`, `complex` for
+/// `c32`/`c64`). Complex records contain separate real and imaginary fields.
+pub fn read_array_mm<T: Copy + Default + MmIdentifier>(fname: &str) -> RlstResult<DynArray<T, 2>> {
+    let mut reader = open_file(fname)
+        .map_err(|error| RlstError::IoError(format!("could not open {fname}: {error}")))?;
+    let info = parse_header(&mut reader)?;
+    validate_info::<T>(&info, MatrixFormat::Array)?;
+    let dimensions = next_record(&mut reader, "array dimensions")?;
+    let fields: Vec<_> = dimensions.split_whitespace().collect();
+    if fields.len() != 2 {
+        return io_error(format!(
+            "array dimension line must contain 2 fields: {dimensions}"
         ));
     }
-
-    if mm_info.data_type == DataType::Integer {
-        return Err(RlstError::IoError(
-            "Integer matrices not supported.".to_string(),
-        ));
-    }
-
-    if mm_info.symmetry != SymmetryType::General {
-        return Err(RlstError::IoError(
-            "Only matrices with Symmetry type `general` currently supported.".to_string(),
-        ));
-    }
-
-    let mut nrows = 0;
-    let mut ncols = 0;
-
-    for line in reader.by_ref() {
-        //while let Some(line) = reader.next() {
-        let current_str = line.unwrap().to_string();
-        if !current_str.starts_with('%') {
-            let items = current_str
-                .split_whitespace()
-                .map(|elem| elem.to_string())
-                .collect::<Vec<String>>();
-
-            if items.len() != 2 {
-                return Err(RlstError::IoError(
-                    "Dimension line has unknown format.".to_string(),
-                ));
-            }
-
-            nrows = items[0].parse().unwrap();
-            ncols = items[1].parse().unwrap();
-
-            break;
-        }
-    }
-
-    let mut mat = DynArray::<T, 2>::from_shape([nrows, ncols]);
-    let res = parse_array(&mut reader, mat.data_mut().unwrap(), nrows * ncols);
-
-    if let Err(e) = res { Err(e) } else { Ok(mat) }
+    let nrows = parse_usize(fields[0], "row dimension")?;
+    let ncols = parse_usize(fields[1], "column dimension")?;
+    let nelems = nrows * ncols;
+    let mut matrix = DynArray::<T, 2>::from_shape([nrows, ncols]);
+    parse_array(
+        &mut reader,
+        matrix.data_mut().ok_or_else(|| {
+            RlstError::IoError("dense Matrix Market destination has no mutable storage".to_string())
+        })?,
+        nelems,
+    )?;
+    Ok(matrix)
 }
 
-/// Read a coordinate matrix in Matrix Market format.
+/// Read a general sparse Matrix Market coordinate matrix.
 ///
-/// Returns a [CsrMatrix] sparse matrix object representing
-/// the data in the file.
-/// Currently only `general` matrices are supported without special symmetry.
-pub fn read_coordinate_mm<T: Default + Copy + Num + AddAssign>(
+/// Record counts and one-based coordinate bounds are validated before the CSR
+/// matrix is constructed. Complex records contain separate real and imaginary
+/// fields.
+pub fn read_coordinate_mm<T: Default + Copy + Num + AddAssign + MmIdentifier>(
     fname: &str,
 ) -> RlstResult<CsrMatrix<T>> {
-    let mut reader = open_file(fname).unwrap();
-    let mm_info = parse_header(&mut reader).unwrap();
-
-    if mm_info.format != MatrixFormat::Coordinate {
-        return Err(RlstError::IoError(
-            "Matrix not in coordinate format.".to_string(),
+    let mut reader = open_file(fname)
+        .map_err(|error| RlstError::IoError(format!("could not open {fname}: {error}")))?;
+    let info = parse_header(&mut reader)?;
+    validate_info::<T>(&info, MatrixFormat::Coordinate)?;
+    let dimensions = next_record(&mut reader, "coordinate dimensions")?;
+    let fields: Vec<_> = dimensions.split_whitespace().collect();
+    if fields.len() != 3 {
+        return io_error(format!(
+            "coordinate dimension line must contain 3 fields: {dimensions}"
         ));
     }
+    let nrows = parse_usize(fields[0], "row dimension")?;
+    let ncols = parse_usize(fields[1], "column dimension")?;
+    let nelems = parse_usize(fields[2], "entry count")?;
+    let (rows, cols, data) = parse_coordinate(&mut reader, nrows, ncols, nelems)?;
+    Ok(CsrMatrix::from_aij([nrows, ncols], &rows, &cols, &data))
+}
 
-    if mm_info.data_type == DataType::Integer {
-        return Err(RlstError::IoError(
-            "Integer matrices not supported.".to_string(),
-        ));
-    }
+fn io_error<T>(message: String) -> RlstResult<T> {
+    Err(RlstError::IoError(message))
+}
 
-    if mm_info.symmetry != SymmetryType::General {
-        return Err(RlstError::IoError(
-            "Only matrices with Symetry type `general` currently supported.".to_string(),
-        ));
-    }
+fn parse_usize(field: &str, description: &str) -> RlstResult<usize> {
+    field
+        .parse()
+        .map_err(|_| RlstError::IoError(format!("invalid {description} {field:?}")))
+}
 
-    let mut nrows = 0;
-    let mut ncols = 0;
-    let mut nelems = 0;
+fn open_file<P: AsRef<Path>>(fname: P) -> io::Result<io::Lines<io::BufReader<File>>> {
+    Ok(io::BufReader::new(File::open(fname)?).lines())
+}
 
-    for line in reader.by_ref() {
-        let current_str = line.unwrap().to_string();
-        if !current_str.starts_with('%') {
-            let items = current_str
-                .split_whitespace()
-                .map(|elem| elem.to_string())
-                .collect::<Vec<String>>();
+fn read_line(
+    reader: &mut io::Lines<io::BufReader<File>>,
+    context: &str,
+) -> RlstResult<Option<String>> {
+    reader
+        .next()
+        .transpose()
+        .map_err(|error| RlstError::IoError(format!("failed while reading {context}: {error}")))
+}
 
-            if items.len() != 3 {
-                return Err(RlstError::IoError(
-                    "Dimension line has unknown format.".to_string(),
-                ));
-            }
-
-            nrows = items[0].parse().unwrap();
-            ncols = items[1].parse().unwrap();
-            nelems = items[2].parse().unwrap();
-
-            break;
+fn next_record(reader: &mut io::Lines<io::BufReader<File>>, context: &str) -> RlstResult<String> {
+    while let Some(line) = read_line(reader, context)? {
+        let trimmed = line.trim();
+        if !trimmed.is_empty() && !trimmed.starts_with('%') {
+            return Ok(trimmed.to_string());
         }
     }
-
-    let mut rows = vec![0; nelems];
-    let mut cols = vec![0; nelems];
-    let mut data = vec![T::zero(); nelems];
-
-    let res = parse_coordinate(&mut reader, &mut rows, &mut cols, &mut data, nelems);
-
-    if let Err(e) = res {
-        Err(e)
-    } else {
-        rows.iter_mut().for_each(|elem| *elem -= 1);
-        cols.iter_mut().for_each(|elem| *elem -= 1);
-        Ok(CsrMatrix::from_aij([nrows, ncols], &rows, &cols, &data))
-    }
+    io_error(format!("missing {context}"))
 }
 
-/// Open a file and return the file handler.
-fn open_file<P>(fname: P) -> io::Result<io::Lines<io::BufReader<File>>>
-where
-    P: AsRef<Path>,
-{
-    let file = File::open(fname)?;
-    Ok(io::BufReader::new(file).lines())
-}
-
-/// Parse the header information.
 fn parse_header(reader: &mut io::Lines<io::BufReader<File>>) -> RlstResult<MatrixMarketInfo> {
-    if let Some(line) = reader.next() {
-        let items = line
-            .unwrap()
-            .split_whitespace()
-            .map(|elem| elem.to_string())
-            .collect::<Vec<String>>();
-        if items.len() != 5 || items[0] != "%%MatrixMarket" || items[1] != "matrix" {
-            return Err(RlstError::IoError(
-                "Header line has unknown format.".to_string(),
-            ));
-        }
-
-        let format = if items[2] == "coordinate" {
-            MatrixFormat::Coordinate
-        } else if items[2] == "array" {
-            MatrixFormat::Array
-        } else {
-            return Err(RlstError::IoError(
-                "Header line has unknown format.".to_string(),
-            ));
-        };
-
-        let data_type = if items[3] == "real" {
-            DataType::Real
-        } else if items[3] == "complex" {
-            DataType::Complex
-        } else if items[3] == "integer" {
-            DataType::Integer
-        } else {
-            return Err(RlstError::IoError(
-                "Header line has unknown format.".to_string(),
-            ));
-        };
-
-        let symmetry: SymmetryType = if items[4] == "general" {
-            SymmetryType::General
-        } else if items[4] == "symmetric" {
-            SymmetryType::Symmetric
-        } else if items[4] == "skew-symmetric" {
-            SymmetryType::Skew
-        } else {
-            return Err(RlstError::IoError(
-                "Header line has unknown format.".to_string(),
-            ));
-        };
-
-        return Ok(MatrixMarketInfo {
-            format,
-            data_type,
-            symmetry,
-        });
+    let line = read_line(reader, "Matrix Market header")?
+        .ok_or_else(|| RlstError::IoError("missing Matrix Market header".to_string()))?;
+    let fields: Vec<_> = line.split_whitespace().collect();
+    if fields.len() != 5
+        || fields[0] != "%%MatrixMarket"
+        || !fields[1].eq_ignore_ascii_case("matrix")
+    {
+        return io_error(format!("invalid Matrix Market header: {line}"));
     }
-    Err(RlstError::IoError(
-        "Failed to read header line.".to_string(),
-    ))
+    let format = if fields[2].eq_ignore_ascii_case("coordinate") {
+        MatrixFormat::Coordinate
+    } else if fields[2].eq_ignore_ascii_case("array") {
+        MatrixFormat::Array
+    } else {
+        return io_error(format!("unsupported Matrix Market format {:?}", fields[2]));
+    };
+    let data_type = if fields[3].eq_ignore_ascii_case("real") {
+        DataType::Real
+    } else if fields[3].eq_ignore_ascii_case("complex") {
+        DataType::Complex
+    } else if fields[3].eq_ignore_ascii_case("integer") {
+        DataType::Integer
+    } else {
+        return io_error(format!("unsupported Matrix Market field {:?}", fields[3]));
+    };
+    let symmetry = if fields[4].eq_ignore_ascii_case("general") {
+        SymmetryType::General
+    } else if fields[4].eq_ignore_ascii_case("symmetric") {
+        SymmetryType::Symmetric
+    } else if fields[4].eq_ignore_ascii_case("skew-symmetric") {
+        SymmetryType::Skew
+    } else if fields[4].eq_ignore_ascii_case("hermitian") {
+        SymmetryType::Hermitian
+    } else {
+        return io_error(format!(
+            "unsupported Matrix Market symmetry {:?}",
+            fields[4]
+        ));
+    };
+    Ok(MatrixMarketInfo {
+        format,
+        data_type,
+        symmetry,
+    })
 }
 
-/// Parse array information.
-fn parse_array<T: Num>(
-    reader: &mut io::Lines<io::BufReader<File>>,
-    buf: &mut [T],
-    nelems: usize,
+fn validate_info<T: MmIdentifier>(
+    info: &MatrixMarketInfo,
+    expected: MatrixFormat,
 ) -> RlstResult<()> {
-    let mut count = 0;
-
-    for line in reader {
-        let current_str = line.unwrap();
-        let items = &current_str
-            .split_whitespace()
-            .map(|elem| elem.to_string())
-            .collect::<Vec<String>>();
-
-        if items.len() != 1 {
-            return Err(RlstError::IoError(format!(
-                "Failed to read data line: {current_str}.",
-            )));
-        }
-
-        let value = T::from_str_radix(&items[0], 10);
-
-        match value {
-            Ok(value) => {
-                buf[count] = value;
-                count += 1
-            }
-            Err(_) => {
-                return Err(RlstError::IoError(format!(
-                    "Failed to read data line: {current_str}.",
-                )));
-            }
-        };
-        if count == nelems {
-            break;
-        }
+    if info.format != expected {
+        return io_error(
+            "Matrix Market storage format does not match the requested reader".to_string(),
+        );
     }
-
-    if count != nelems {
-        return Err(RlstError::IoError(format!(
-            "There were only {count} data lines, expected {nelems}"
-        )));
+    if info.symmetry != SymmetryType::General {
+        return io_error("only general Matrix Market matrices are supported".to_string());
     }
-
+    let declared = match info.data_type {
+        DataType::Real => "real",
+        DataType::Complex => "complex",
+        DataType::Integer => "integer",
+    };
+    if declared != T::MMTYPE {
+        return io_error(format!(
+            "Matrix Market field {declared:?} is incompatible with requested scalar field {:?}",
+            T::MMTYPE
+        ));
+    }
     Ok(())
 }
 
-/// Parse coordinate information.
-fn parse_coordinate<T: Num>(
+fn ensure_no_records(reader: &mut io::Lines<io::BufReader<File>>) -> RlstResult<()> {
+    while let Some(line) = read_line(reader, "trailing Matrix Market data")? {
+        let trimmed = line.trim();
+        if !trimmed.is_empty() && !trimmed.starts_with('%') {
+            return io_error(format!("unexpected excess data record: {trimmed}"));
+        }
+    }
+    Ok(())
+}
+
+fn parse_array<T: MmIdentifier>(
     reader: &mut io::Lines<io::BufReader<File>>,
-    rows: &mut [usize],
-    cols: &mut [usize],
-    data: &mut [T],
+    buffer: &mut [T],
     nelems: usize,
 ) -> RlstResult<()> {
-    let mut count = 0;
+    for (index, destination) in buffer.iter_mut().take(nelems).enumerate() {
+        let line = next_record(reader, &format!("array record {}", index + 1))?;
+        let fields: Vec<_> = line.split_whitespace().collect();
+        *destination = T::from_mm_fields(&fields).map_err(|error| {
+            RlstError::IoError(format!(
+                "invalid array record {} ({line}): {error}",
+                index + 1
+            ))
+        })?;
+    }
+    ensure_no_records(reader)
+}
 
-    for line in reader {
-        let current_str = line.unwrap();
-        let items = &current_str
-            .split_whitespace()
-            .map(|elem| elem.to_string())
-            .collect::<Vec<String>>();
-
-        if items.len() != 3 {
-            return Err(RlstError::IoError(format!(
-                "Failed to read data line: {current_str}.",
-            )));
+fn parse_coordinate<T: MmIdentifier>(
+    reader: &mut io::Lines<io::BufReader<File>>,
+    nrows: usize,
+    ncols: usize,
+    nelems: usize,
+) -> RlstResult<(Vec<usize>, Vec<usize>, Vec<T>)> {
+    let mut rows = Vec::with_capacity(nelems);
+    let mut cols = Vec::with_capacity(nelems);
+    let mut data = Vec::with_capacity(nelems);
+    for index in 0..nelems {
+        let line = next_record(reader, &format!("coordinate record {}", index + 1))?;
+        let fields: Vec<_> = line.split_whitespace().collect();
+        if fields.len() != 2 + T::MM_NFIELDS {
+            return io_error(format!(
+                "coordinate record {} has {} fields, expected {}: {line}",
+                index + 1,
+                fields.len(),
+                2 + T::MM_NFIELDS
+            ));
         }
+        let row = parse_usize(fields[0], "coordinate row")?;
+        let col = parse_usize(fields[1], "coordinate column")?;
+        if row == 0 || row > nrows || col == 0 || col > ncols {
+            return io_error(format!(
+                "coordinate ({row}, {col}) is outside one-based matrix bounds {nrows}x{ncols}"
+            ));
+        }
+        let value = T::from_mm_fields(&fields[2..]).map_err(|error| {
+            RlstError::IoError(format!(
+                "invalid coordinate record {} ({line}): {error}",
+                index + 1
+            ))
+        })?;
+        rows.push(row - 1);
+        cols.push(col - 1);
+        data.push(value);
+    }
+    ensure_no_records(reader)?;
+    Ok((rows, cols, data))
+}
 
-        let row = items[0].parse();
-        let col = items[1].parse();
-        let val = T::from_str_radix(&items[2], 10);
+#[cfg(test)]
+mod tests {
+    use super::{read_array_mm, read_coordinate_mm};
+    use crate::c64;
+    use crate::traits::iterators::AijIteratorByValue;
+    use std::fs;
+    use std::path::PathBuf;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
-        match row {
-            Ok(row) => {
-                rows[count] = row;
-            }
-            Err(_) => {
-                return Err(RlstError::IoError(format!(
-                    "Failed to read data line: {current_str}.",
-                )));
-            }
-        };
+    static NEXT_FILE: AtomicUsize = AtomicUsize::new(0);
 
-        match col {
-            Ok(col) => {
-                cols[count] = col;
-            }
-            Err(_) => {
-                return Err(RlstError::IoError(format!(
-                    "Failed to read data line: {current_str}.",
-                )));
-            }
-        };
+    fn fixture(contents: &str) -> PathBuf {
+        let id = NEXT_FILE.fetch_add(1, Ordering::Relaxed);
+        let path = std::env::temp_dir().join(format!("rlst-mm-{}-{id}.mtx", std::process::id()));
+        fs::write(&path, contents).unwrap();
+        path
+    }
 
-        match val {
-            Ok(val) => {
-                data[count] = val;
-            }
-            Err(_) => {
-                return Err(RlstError::IoError(format!(
-                    "Failed to read data line: {current_str}.",
-                )));
-            }
-        };
-        count += 1;
-        if count == nelems {
-            break;
+    #[test]
+    fn reads_rectangular_real_array_in_column_major_order() {
+        let path = fixture("%%MatrixMarket matrix array real general\n2 3\n1\n2\n3\n4\n5\n6\n");
+        let matrix = read_array_mm::<f64>(path.to_str().unwrap()).unwrap();
+        assert_eq!(matrix[[0, 0]], 1.0);
+        assert_eq!(matrix[[1, 0]], 2.0);
+        assert_eq!(matrix[[0, 1]], 3.0);
+        assert_eq!(matrix[[1, 2]], 6.0);
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn reads_complex_array_and_coordinate_records() {
+        let array_path =
+            fixture("%%MatrixMarket matrix array complex general\n1 2\n1.5 -2\n3 4.5\n");
+        let matrix = read_array_mm::<c64>(array_path.to_str().unwrap()).unwrap();
+        assert_eq!(matrix[[0, 0]], c64::new(1.5, -2.0));
+        assert_eq!(matrix[[0, 1]], c64::new(3.0, 4.5));
+
+        let coordinate_path = fixture(
+            "%%MatrixMarket matrix coordinate complex general\n2 3 2\n2 3 1 -1\n1 1 2.5 0.5\n",
+        );
+        let matrix = read_coordinate_mm::<c64>(coordinate_path.to_str().unwrap()).unwrap();
+        let mut entries: Vec<_> = matrix.iter_aij_value().collect();
+        entries.sort_by_key(|entry| entry.0);
+        assert_eq!(
+            entries,
+            vec![([0, 0], c64::new(2.5, 0.5)), ([1, 2], c64::new(1.0, -1.0))]
+        );
+        fs::remove_file(array_path).unwrap();
+        fs::remove_file(coordinate_path).unwrap();
+    }
+
+    #[test]
+    fn rejects_missing_malformed_truncated_and_excess_data() {
+        let cases = [
+            "",
+            "not a header\n",
+            "%%MatrixMarket matrix array real general\n2 x\n",
+            "%%MatrixMarket matrix array real general\n1 2\n1\n",
+            "%%MatrixMarket matrix array real general\n1 1\n1\n2\n",
+            "%%MatrixMarket matrix array complex general\n1 1\n1\n",
+            "%%MatrixMarket matrix array real general\n1 1\nnot-a-number\n",
+        ];
+        for contents in cases {
+            let path = fixture(contents);
+            assert!(
+                read_array_mm::<f64>(path.to_str().unwrap()).is_err(),
+                "accepted {contents:?}"
+            );
+            fs::remove_file(path).unwrap();
         }
     }
 
-    if count != nelems {
-        return Err(RlstError::IoError(format!(
-            "There were only {count} data lines, expected {nelems}"
-        )));
-    }
+    #[test]
+    fn rejects_incompatible_fields_and_invalid_coordinates() {
+        let array_path = fixture("%%MatrixMarket matrix array complex general\n1 1\n1 2\n");
+        assert!(read_array_mm::<f64>(array_path.to_str().unwrap()).is_err());
+        fs::remove_file(array_path).unwrap();
 
-    Ok(())
+        for record in ["0 1 2", "1 0 2", "3 1 2", "1 4 2"] {
+            let path = fixture(&format!(
+                "%%MatrixMarket matrix coordinate real general\n2 3 1\n{record}\n"
+            ));
+            assert!(read_coordinate_mm::<f64>(path.to_str().unwrap()).is_err());
+            fs::remove_file(path).unwrap();
+        }
+
+        let path = fixture("%%MatrixMarket matrix coordinate real general\n2 2 1\n1 1 2\n2 2 3\n");
+        assert!(read_coordinate_mm::<f64>(path.to_str().unwrap()).is_err());
+        fs::remove_file(path).unwrap();
+    }
 }
