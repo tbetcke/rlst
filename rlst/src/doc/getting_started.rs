@@ -1,44 +1,65 @@
-//! Getting started.
+//! Getting started with RLST.
 //!
-//! ## Selecting a BLAS library
+//! ## Creating and evaluating an array
 //!
-//! RLST depends on a correctly configured BLAS/Lapack environment. On Mac OS the following should
-//! be added to `Cargo.toml` for a project that uses RLST.
-//! ```json
-//! blas-src = { version = "0.3", features = ["accelerate"]}
-//! lapack-src = { version = "0.11", features = ["accelerate"]}
-//! ```
-//! This links the library with Apple's Accelerate. On Linux it depends
-//! what the environment provides. Many distributions by default use OpenBLAS,
-//! which can be linked with
-//! ```json
-//! blas-src = { version = "0.3", features = ["openblas"]}
-//! ```
-//! OpenBlas is frequently already linked with Lapack. If not, a suitable `lapack-src`
-//! call similar to Mac OS is also required.
+//! The dynamic-array macro allocates a column-major array whose number of axes is
+//! inferred from the shape expression:
 //!
-//! Within the code that uses RLST then place within your  source files the lines
-//! ```no_run
-//! extern crate blas_src;
 //! ```
-//! and if necessary also
-//! ```no_run
-//! extern crate lapack_src;
-//! ```
-//! This ensures that the compiler links your code with the provided Blas/Lapack libraries.
+//! use rlst::EvaluateArray;
 //!
+//! let mut a = rlst::rlst_dynamic_array!(f64, [2, 3]);
+//! a.fill_from_iter([1.0, 2.0, 3.0, 4.0, 5.0, 6.0].into_iter());
+//!
+//! assert_eq!(a.shape(), [2, 3]);
+//! assert_eq!(a.stride(), [1, 2]);
+//! assert_eq!(a[[1, 2]], 6.0);
+//!
+//! // Arithmetic creates a lazy expression. `r()` lets the expression borrow `a`
+//! // rather than consume it; `eval()` allocates and evaluates its result.
+//! let doubled = (2.0_f64 * a.r()).eval();
+//! assert_eq!(doubled[[1, 2]], 12.0);
+//! assert_eq!(a[[1, 2]], 6.0);
+//! ```
+//!
+//! See the [dense-array tutorial](crate::doc::dense_linear_algebra) for storage layouts,
+//! slice-backed and static arrays, views, iteration, and matrix multiplication.
+//!
+//! ## Selecting a BLAS/LAPACK library
+//!
+//! RLST calls BLAS and LAPACK but does not select a provider for downstream binaries. A
+//! binary crate must arrange for compatible native libraries to be linked. For example,
+//! a macOS application can add the following dependencies to its `Cargo.toml`:
+//!
+//! The APIs described here target the in-development `0.7.0-dev` tree. Until a stable 0.7
+//! release is published, select that source explicitly; the registry requirement `"0.7"` does
+//! not select a prerelease:
+//!
+//! ```toml
+//! [dependencies]
+//! rlst = { git = "https://codeberg.org/linalg-rs/rlst", branch = "main" }
+//! blas-src = { version = "0.14", features = ["accelerate"] }
+//! lapack-src = { version = "0.13", features = ["accelerate"] }
+//! ```
+//!
+//! For reproducible builds, replace `branch` with a tested `rev`. Users of the latest published
+//! stable release can instead select its `0.6` registry series, but APIs added during 0.7
+//! development will not be available there.
+//!
+//! On Linux, use the provider appropriate for the installation (commonly system OpenBLAS).
+//! Provider crate versions and features change independently, so consult their current
+//! documentation. Importing a provider crate (for example `use blas_src as _;`) may be required
+//! by that provider to force native linkage; this is provider-specific rather than an RLST API
+//! requirement.
 //!
 //! ## Using the FFT interface
 //!
-//! RLST optionally links with FFTW to provide FFT for one, two, and three dimensional arrays.
-//! Note that **FFTW is GPL licensed.**. This means that any binary linked against FFTW must be
-//! distributed under the GPL license as well. To enable the FFT use the feature flag `fftw`.
-//! The actual `fftw` linkage can be done through one of the following options:
-//! - Use the `fftw_system` feature flag to link against a system installation of FFTW.
-//!   The library must be in a standard search path of the Rust compiler.
-//! - Use the `fftw_source` flag to build FFTW and statically link it.
-//! - Use the `fftw_mkl` flag to link against Intel MKL, which provides an FFTW compatible interface.
-//!   For this option the license conditions of Intel MKL rather than FFTW apply.
+//! RLST optionally uses FFTW for one-, two-, and three-dimensional transforms. **FFTW is GPL
+//! licensed**, so distributing a binary linked to FFTW can impose GPL obligations. Enable the
+//! `fftw` feature together with exactly one linkage feature:
 //!
-//! Instructions on how to use the FFT can be found in the documentation of `rlst::fftw` when
-//! the `fftw` feature flag is activated.
+//! - `fftw_system` links to a system installation of both single- and double-precision FFTW;
+//! - `fftw_source` builds and statically links FFTW;
+//! - `fftw_mkl` uses Intel MKL's FFTW-compatible interface, subject to MKL's license.
+//!
+//! With the feature enabled, see the `rlst::fftw` module for transform examples.

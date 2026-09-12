@@ -9,7 +9,10 @@ use std::{
 
 use crate::{Array, BorrowAtRuntime, BorrowAtRuntimeMut};
 
-/// A shared runtime non-thread safe reference to an array.
+/// Cloneable, single-threaded owner with runtime-checked borrowing.
+///
+/// Clones refer to the same array through `Rc<RefCell<_>>`. [`BorrowAtRuntime::borrow`] and
+/// [`BorrowAtRuntimeMut::borrow_mut`] panic if the `RefCell` borrow rules are violated.
 pub struct ArraySharedRef<ArrayImpl, const NDIM: usize>(Rc<RefCell<Array<ArrayImpl, NDIM>>>);
 
 impl<ArrayImpl, const NDIM: usize> Clone for ArraySharedRef<ArrayImpl, NDIM> {
@@ -19,13 +22,16 @@ impl<ArrayImpl, const NDIM: usize> Clone for ArraySharedRef<ArrayImpl, NDIM> {
 }
 
 impl<ArrayImpl, const NDIM: usize> ArraySharedRef<ArrayImpl, NDIM> {
-    /// Crate a new shared reference
+    /// Move an array into a new single-threaded shared owner.
     pub fn new(arr: Array<ArrayImpl, NDIM>) -> Self {
         ArraySharedRef(Rc::new(RefCell::new(arr)))
     }
 }
 
-/// A shared runtime thread-safe reference to an array.
+/// Cloneable, thread-safe owner protected by a reader-writer lock.
+///
+/// Clones refer to the same array through `Arc<RwLock<_>>`. Borrow methods return a `LockResult`,
+/// which reports poisoning if a writer panicked while holding the lock.
 pub struct ArrayAtomicSharedRef<ArrayImpl, const NDIM: usize>(Arc<RwLock<Array<ArrayImpl, NDIM>>>);
 
 impl<ArrayImpl, const NDIM: usize> Clone for ArrayAtomicSharedRef<ArrayImpl, NDIM> {
@@ -35,7 +41,7 @@ impl<ArrayImpl, const NDIM: usize> Clone for ArrayAtomicSharedRef<ArrayImpl, NDI
 }
 
 impl<ArrayImpl, const NDIM: usize> ArrayAtomicSharedRef<ArrayImpl, NDIM> {
-    /// Crate a new thread-safe shared reference
+    /// Move an array into a new thread-safe shared owner.
     pub fn new(arr: Array<ArrayImpl, NDIM>) -> Self {
         ArrayAtomicSharedRef(Arc::new(RwLock::new(arr)))
     }
@@ -86,7 +92,7 @@ impl<ArrayImpl, const NDIM: usize> BorrowAtRuntimeMut for ArrayAtomicSharedRef<A
 }
 
 impl<ArrayImpl, const NDIM: usize> Array<ArrayImpl, NDIM> {
-    /// Create a non thread-safe runtime shared reference from the array
+    /// Move the array into a cloneable, single-threaded shared owner.
     ///
     /// Use [borrow](BorrowAtRuntime::borrow) and [borrow_mut](BorrowAtRuntimeMut::borrow_mut)
     /// to access the underlying array.
@@ -100,7 +106,7 @@ impl<ArrayImpl, const NDIM: usize> Array<ArrayImpl, NDIM> {
         ArraySharedRef(Rc::new(RefCell::new(self)))
     }
 
-    /// Create an atomic thread-safe runtime shared reference from the array
+    /// Move the array into a cloneable, thread-safe shared owner.
     /// Use [borrow](BorrowAtRuntime::borrow) and [borrow_mut](BorrowAtRuntimeMut::borrow_mut)
     /// to access the underlying array.
     ///

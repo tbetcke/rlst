@@ -13,13 +13,14 @@ use crate::{
     },
 };
 
-/// A flattened view onto an array.
+/// One-dimensional view using the source's logical column-major enumeration.
 ///
-/// Use the funtion [arr.into_flat](crate::Array::into_flat) instead.
+/// Use [`Array::into_flat`](crate::Array::into_flat) instead. This is a lazy view and does not
+/// require physically contiguous storage.
 pub struct ArrayFlatView<ArrayImpl, const NDIM: usize>(Array<ArrayImpl, NDIM>);
 
 impl<ArrayImpl, const NDIM: usize> ArrayFlatView<ArrayImpl, NDIM> {
-    /// Instantiate a new flatted view.
+    /// Instantiate a new flattened logical view.
     pub fn new(arr: Array<ArrayImpl, NDIM>) -> Self {
         Self(arr)
     }

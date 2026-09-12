@@ -16,7 +16,10 @@ pub struct ReverseAxis<ArrayImpl, const NDIM: usize> {
 }
 
 impl<ArrayImpl, const NDIM: usize> ReverseAxis<ArrayImpl, NDIM> {
-    /// Create a new reverse axis array
+    /// Create a lazy view that reverses `axis`.
+    ///
+    /// `axis` must be less than `NDIM`; prefer [`Array::reverse_axis`], which checks this
+    /// requirement immediately.
     pub fn new(arr: Array<ArrayImpl, NDIM>, axis: usize) -> Self {
         Self { arr, axis }
     }

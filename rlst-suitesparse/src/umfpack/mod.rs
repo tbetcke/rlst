@@ -24,6 +24,9 @@ pub enum UmfpackFactorizationStatus {
     /// UMFPACK completed factorization without warnings.
     Success,
     /// UMFPACK produced a factorization for a singular matrix.
+    ///
+    /// This is a warning rather than a Rust error; a subsequent solve can still
+    /// return [`UmfpackError::NativeFailure`].
     SingularMatrix,
     /// UMFPACK produced an implementation-defined warning status.
     Warning(i32),
@@ -40,6 +43,10 @@ pub trait UmfpackFactorize {
 
     /// Convert this matrix from CSR to UMFPACK's CSC representation, perform
     /// symbolic analysis, and create a numeric factorization.
+    ///
+    /// The matrix must be nonempty and square. Dimensions and indices must fit
+    /// UMFPACK's 64-bit index type. A singular factorization is returned
+    /// successfully and reported by the numeric object's `status` method.
     fn factorize(&self) -> UmfpackResult<Self::Numeric>;
 }
 

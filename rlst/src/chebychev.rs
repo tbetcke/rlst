@@ -21,7 +21,10 @@ use crate::{Array, fftw::R2RPlan};
 use crate::{DynArray, MutableArrayImpl, RlstScalar, ValueArrayImpl};
 use crate::{c32, c64};
 
-/// Conversion of data at chebychev points to series coefficients and back
+/// Convert between tensor-grid data and Chebychev coefficients.
+///
+/// Implemented for one-, two-, and three-dimensional arrays. Every axis uses
+/// second-kind points and its array extent determines the number of points.
 pub trait ChebychevCoefficientsToData<Item, const NDIM: usize> {
     /// Compute Chebychev coefficients from values at Chebychev points
     ///
@@ -61,7 +64,7 @@ where
 {
     /// Evaluate a 2d Chebychev expansion at an array of points
     ///
-    /// The points are stored in the `(3, npts)` dimensional array `eval_points`.
+    /// The points are stored as columns of the `(2, npts)` array `eval_points`.
     /// The output array is a one-dimensional array of length `npts`.
     fn evaluate_chebychev_series_second_kind<ArrayImplPoints, ArrayImplResult>(
         &self,
@@ -97,7 +100,7 @@ where
 {
     /// Evaluate a 3d Chebychev expansion at an array of points
     ///
-    /// The points are stored in the `(3, npts)` dimensional array `eval_points`.
+    /// The points are stored as columns of the `(3, npts)` array `eval_points`.
     /// The output array is a one-dimensional array of length `npts`.
     fn evaluate_chebychev_series_second_kind<ArrayImplPoints, ArrayImplResult>(
         &self,
@@ -132,9 +135,10 @@ where
 pub trait DerivativeOfChebychevSeries1d<Item> {
     /// Compute the series coefficients of the derivative of a chebychev series of the second kind.
     ///
-    /// The coefficients of the derivative overwrite the original array.
-    /// The parameter `order` determines how many derivatives are taken. `order=1` corresponds
-    /// to the first derivative and `order=0` just copies the series coefficients into `result`.
+    /// The coefficients of the derivative overwrite the original array without changing its shape.
+    /// Coefficients above the differentiated polynomial's degree become zero.
+    /// The parameter `order` determines how many derivatives are taken. `order=1` computes
+    /// the first derivative and `order=0` leaves the coefficients unchanged.
     fn chebychev_derivative_second_kind(&mut self, order: usize);
 }
 

@@ -1,7 +1,7 @@
 //! Definition of [BaseArray], a container for array data.
 //!
-//! A [BaseArray] is a simple container for array data. It is mainly a convient interface
-//! to a data container and adds a `shape`, `stride`, and n-dimensional accessor methods.
+//! A [BaseArray] combines a contiguous data container with a shape and column-major
+//! n-dimensional indexing.
 
 use crate::{
     dense::layout::{check_multi_index_in_bounds, col_major_stride_from_shape},
@@ -21,8 +21,10 @@ use crate::{
     },
 };
 
-/// Definition of a [BaseArray]. The `data` stores the actual array data, `shape` stores
-/// the shape of the array, and `stride` contains the `stride` of the underlying data.
+/// Contiguous column-major array implementation backed by `Data`.
+///
+/// The container length is exactly the product of `shape`; indexing uses the stride derived from
+/// that shape.
 pub struct BaseArray<Data, const NDIM: usize> {
     data: Data,
     shape: [usize; NDIM],
@@ -33,7 +35,11 @@ impl<Data: ContainerType, const NDIM: usize> ContainerType for BaseArray<Data, N
 }
 
 impl<Data: DataContainer, const NDIM: usize> BaseArray<Data, NDIM> {
-    /// Create new
+    /// Combine a data container and shape.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the container length is not exactly the product of `shape`.
     pub fn new(data: Data, shape: [usize; NDIM]) -> Self {
         assert_eq!(
             data.number_of_elements(),

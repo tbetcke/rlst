@@ -10,7 +10,9 @@ use crate::{
     UnsafeRandomAccessMut, dense::layout::convert_1d_nd_from_shape,
 };
 
-/// A multislice is an array implementation representing a slice across multiple dimensions
+/// Rank-reducing view obtained by fixing several source axes.
+///
+/// `axes[i]` is fixed at `indices[i]`; axes not listed remain in their original order.
 pub struct Multislice<ArrayImpl, const ADIM: usize, const SDIM: usize, const NDIM: usize>
 where
     NumberType<SDIM>: IsSmallerThan<ADIM>,
@@ -29,7 +31,12 @@ where
     NumberDifference<ADIM, SDIM>: SubtractEqual<NDIM>,
     ArrayImpl: Shape<ADIM>,
 {
-    /// Create a new multislice instance
+    /// Create a view fixing each entry of `axes` at the corresponding entry of `indices`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if an axis is repeated or out of bounds, or if an index is out of bounds on its
+    /// corresponding axis.
     pub fn new(arr: Array<ArrayImpl, ADIM>, axes: [usize; SDIM], indices: [usize; SDIM]) -> Self {
         let orig_shape = arr.shape();
         for (position, (&axis, &index)) in axes.iter().zip(indices.iter()).enumerate() {

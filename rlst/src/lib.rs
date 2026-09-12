@@ -5,11 +5,12 @@
 //! of partial differential equations and other problems.
 //! RLST has the following feature set.
 //! - n-dimensional array structures that can be allocated on the stack or heap.
-//! - Support for BLAS matrix-matrix multiplication and a subset of Lapack operations (incl. LU, SVD, QR).
-//! - CSR sparse matrices on a single node or via MPI on multiple nodes.
-//! - Import and export into Matrix-Market format.
-//! - A general `operator` interface that can abstract linear operators, and iterative solvers
-//!   acting on linear operators.
+//! - BLAS matrix multiplication and LAPACK decompositions, eigenproblems, and matrix equations.
+//! - CSR sparse matrices on one node or distributed with MPI, plus optional UMFPACK solves through
+//!   the companion `rlst-suitesparse` crate.
+//! - Matrix Market import and export.
+//! - Abstract linear operators and iterative solvers.
+//! - Optional FFTW transforms and Burn tensor conversion.
 //!
 //! To learn about the features of RLST please have a look at the following documents.
 //! - [Getting started with RLST](crate::doc::getting_started)
@@ -18,6 +19,8 @@
 //! - [Sparse matrix operations](crate::doc::sparse_matrices)
 //! - [Abstract linear algebra and iterative solvers](crate::doc::abstract_linear_algebra)
 //! - [MPI distributed computations](crate::doc::distributed_computations)
+//! - [Optional FFTW and Burn integrations](crate::doc::optional_integrations)
+//! - [Interpolation utilities](crate::interpolation)
 
 #![cfg_attr(feature = "strict", deny(warnings), deny(unused_crate_dependencies))]
 #![warn(missing_docs)]

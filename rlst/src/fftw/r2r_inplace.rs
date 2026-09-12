@@ -16,7 +16,7 @@ use super::{FFTW_PLAN_INTERFACE, Fft, FftwPlanPtr, PlanInterfaceTrait};
 
 pub use fftw_sys::fftw_r2r_kind as R2RPlanKind;
 
-/// Create a C2C FFT Plan
+/// Create an in-place real-to-real FFTW plan.
 #[allow(private_bounds)]
 pub trait R2RPlan<Item, ArrayImpl, const NDIM: usize>
 where
@@ -24,8 +24,15 @@ where
     Item: RlstScalar + 'static,
     FftwPlanPtrType<Item::Real>: FftwPlanPtrTypeTrait,
 {
-    /// Create a new r2r plan.
+    /// Create a real-to-real plan with one transform kind per axis.
     ///
+    /// Returns `None` for empty or noncontiguous arrays, ranks above three, or
+    /// when FFTW cannot construct the requested plan. Planning flags other than
+    /// [`FftwPlanFlags::Estimate`] may overwrite the array while benchmarking.
+    ///
+    /// # Panics
+    ///
+    /// Panics unless `kind.len() == NDIM`.
     /// For details see the [FFTW module description](crate::fftw).
     fn r2r_fft(
         &self,

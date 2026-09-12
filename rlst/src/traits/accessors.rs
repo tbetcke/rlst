@@ -55,7 +55,10 @@ pub trait UnsafeRandomAccessByRef<const NDIM: usize>: BaseItem {
     unsafe fn get_unchecked(&self, multi_index: [usize; NDIM]) -> &Self::Item;
 }
 
-/// This trait provides unsafe access by reference to the underlying data using a 1d index.
+/// Provides unchecked reference access by logical one-dimensional index.
+///
+/// The index is the column-major enumeration of the logical shape, not necessarily a physical
+/// offset into backing storage.
 pub trait UnsafeRandom1DAccessByRef: BaseItem {
     /// Return a reference to the element at position determined by `index`.
     ///
@@ -73,7 +76,10 @@ pub trait UnsafeRandomAccessMut<const NDIM: usize>: BaseItem {
     unsafe fn get_unchecked_mut(&mut self, multi_index: [usize; NDIM]) -> &mut Self::Item;
 }
 
-/// This trait provides unsafe mutable access to the underlying data using a 1D index.
+/// Provides unchecked mutable access by logical one-dimensional index.
+///
+/// Implementing this trait alone does not promise that references returned for distinct indices
+/// can coexist; that stronger contract is [`UnsafeDisjointRandom1DAccessMut`].
 pub trait UnsafeRandom1DAccessMut: BaseItem {
     /// Return a mutable reference to the element at position determined by `index`.
     ///
@@ -117,9 +123,10 @@ pub trait RandomAccessMut<const NDIM: usize>: BaseItem {
 
 /// Get raw access to the underlying data.
 pub trait RawAccess: BaseItem {
-    /// Get a slice of the data.
+    /// Get a slice of the complete backing storage.
     ///
-    /// Returns `None` if data is not available as contigous slice.
+    /// Returns `None` when the implementation cannot expose its storage as one contiguous slice.
+    /// The slice follows physical storage order, not logical column-major iteration order.
     fn data(&self) -> Option<&[Self::Item]>;
 }
 
@@ -127,7 +134,8 @@ pub trait RawAccess: BaseItem {
 pub trait RawAccessMut: RawAccess {
     /// Get a mutable slice of the whole data.
     ///
-    /// Returns `None` if data is not available as contigous slice.
+    /// Returns `None` when the implementation cannot expose its complete backing storage as one
+    /// mutable contiguous slice. The slice is in physical storage order.
     fn data_mut(&mut self) -> Option<&mut [Self::Item]>;
 }
 

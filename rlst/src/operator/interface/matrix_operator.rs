@@ -21,7 +21,10 @@ use crate::{
 
 use super::array_vector_space::ArrayVectorSpace;
 
-/// An [ArrayOperator] is defined by a two-dimensional array representing a matrix.
+/// Borrowed dense matrix viewed as an abstract operator.
+///
+/// For an `m x n` matrix, the domain contains length-n vectors and the range
+/// length-m vectors. The operator cannot outlive the matrix.
 pub struct ArrayOperator<'a, ArrayImpl>
 where
     ArrayImpl: BaseItem,
@@ -32,7 +35,7 @@ where
 }
 
 impl<'a, ArrayImpl: BaseItem> ArrayOperator<'a, ArrayImpl> {
-    /// Create a new `ArrayOperator` from a given 2-dimensional array.
+    /// Borrow a matrix and construct matching domain and range spaces.
     pub fn new(op: &'a Array<ArrayImpl, 2>) -> Self
     where
         ArrayImpl: Shape<2>,
@@ -88,7 +91,10 @@ where
     }
 }
 
-/// A [CsrOperator] is defined by a sparse CSR matrix.
+/// Borrowed CSR matrix viewed as an abstract operator.
+///
+/// For an `m x n` matrix, the domain contains length-n vectors and the range
+/// length-m vectors.
 pub struct CsrOperator<'a, Item> {
     arr: &'a CsrMatrix<Item>,
     domain: ArrayVectorSpace<Item>,
@@ -96,7 +102,7 @@ pub struct CsrOperator<'a, Item> {
 }
 
 impl<'a, Item> CsrOperator<'a, Item> {
-    /// Create a new `CsrOperator` from a given CsrMatrix.
+    /// Borrow a CSR matrix and construct matching domain and range spaces.
     pub fn new(arr: &'a CsrMatrix<Item>) -> Self {
         let shape = arr.shape();
         Self {
@@ -146,7 +152,10 @@ where
 }
 
 #[cfg(feature = "mpi")]
-/// A [DistributedCsrOperator] is defined by a distributed sparse CSR matrix.
+/// Borrowed distributed CSR matrix viewed as an abstract operator.
+///
+/// Domain and range reuse the matrix's distributed index layouts; application
+/// is collective whenever the underlying distributed matrix operation is.
 pub struct DistributedCsrOperator<'a, Item: Equivalence, C: Communicator> {
     op: &'a DistributedCsrMatrix<'a, Item, C>,
     domain: DistributedArrayVectorSpace<'a, C, Item>,
@@ -155,7 +164,7 @@ pub struct DistributedCsrOperator<'a, Item: Equivalence, C: Communicator> {
 
 #[cfg(feature = "mpi")]
 impl<'a, Item: Copy + Equivalence, C: Communicator> DistributedCsrOperator<'a, Item, C> {
-    /// Create a new `DistributedCsrOperator` from a given CsrMatrix.
+    /// Borrow a distributed matrix and clone its domain/range layout handles.
     pub fn new(op: &'a DistributedCsrMatrix<'a, Item, C>) -> Self {
         Self {
             op,

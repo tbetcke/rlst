@@ -1,4 +1,4 @@
-//! Container representing multiplication with a scalar
+//! Lazy axis-permutation array view.
 
 use crate::{
     ContainerType,
@@ -12,7 +12,7 @@ use crate::{
     },
 };
 
-/// Transpose array
+/// Array implementation that presents source axes in a new order.
 pub struct ArrayTranspose<ArrayImpl, const NDIM: usize> {
     arr: Array<ArrayImpl, NDIM>,
     permutation: [usize; NDIM],
@@ -23,7 +23,14 @@ impl<ArrayImpl, const NDIM: usize> ArrayTranspose<ArrayImpl, NDIM>
 where
     ArrayImpl: Shape<NDIM>,
 {
-    /// Create new transpose array
+    /// Create an axis-permuted view.
+    ///
+    /// For a valid permutation, `permutation[output_axis]` names the corresponding source axis.
+    ///
+    /// # Panics
+    ///
+    /// Panics if an entry is out of range. The current implementation does not reject repeated
+    /// or omitted axes; such inputs do not describe an axis permutation and must not be used.
     pub fn new(arr: Array<ArrayImpl, NDIM>, permutation: [usize; NDIM]) -> Self {
         let mut shape = [0; NDIM];
         let operator_shape = arr.shape();

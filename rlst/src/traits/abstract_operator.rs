@@ -16,8 +16,13 @@ use num::{One, Zero};
 
 use crate::{LinearSpace, operator::element::Element};
 
-/// This trait provides the interface between an abstract operator and its implementation.
-/// To use the abstract operator functionality implement this trait for a concrete type.
+/// Interface between an abstract linear operator and its implementation.
+///
+/// `Domain` and `Range` identify the spaces whose elements are accepted by
+/// [`Self::apply`]. Implementations must preserve the BLAS-like algebraic contract
+/// `y <- alpha A x + beta y`. Implementations may still evaluate the prior value of `y`
+/// when `beta` is zero, so initialize `y` to finite values unless the concrete operator
+/// documents otherwise.
 pub trait OperatorBase {
     /// The domain space of the operator.
     type Domain: LinearSpace;
@@ -29,7 +34,12 @@ pub trait OperatorBase {
     /// Return a reference to the concrete range space.
     fn range(&self) -> &Self::Range;
 
-    /// Apply the operator `A` as `y -> alpha * Ax + beta y`.
+    /// Apply A in place as `y <- alpha A x + beta y`.
+    ///
+    /// `x` must belong to this operator's domain and `y` to its range; their
+    /// space types enforce this, while implementations may additionally rely
+    /// on both values having been created by the returned concrete space
+    /// instances.
     fn apply(
         &self,
         alpha: <Self::Range as LinearSpace>::F,

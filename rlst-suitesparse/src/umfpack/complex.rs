@@ -118,7 +118,9 @@ impl UmfpackComplexNumeric {
         self.status
     }
 
-    /// Solve `Ax = rhs` and return the solution in a new dynamic array.
+    /// Solve `Ax = rhs` and return the solution in a new contiguous dynamic array.
+    ///
+    /// `rhs` must expose contiguous storage and have length equal to the matrix order.
     pub fn solve<ArrayImpl>(&self, rhs: &Array<ArrayImpl, 1>) -> UmfpackResult<DynArray<c64, 1>>
     where
         ArrayImpl: RawAccessArrayImpl<c64, 1>,
@@ -129,6 +131,11 @@ impl UmfpackComplexNumeric {
     }
 
     /// Solve `Ax = rhs`, writing the result into `solution`.
+    ///
+    /// Both arrays must expose contiguous storage and have length equal to the
+    /// matrix order. Complex values are passed to UMFPACK as separate real and
+    /// imaginary buffers. Native warnings and failures are returned as
+    /// [`UmfpackError::NativeFailure`].
     pub fn solve_into<RhsArrayImpl, SolutionArrayImpl>(
         &self,
         rhs: &Array<RhsArrayImpl, 1>,

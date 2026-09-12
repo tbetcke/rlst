@@ -85,12 +85,12 @@ pub enum RlstError {
 /// Alias for an Rlst Result type.
 pub type RlstResult<T> = std::result::Result<T, RlstError>;
 
-/// Transposition Mode.
+/// Matrix transformation mode used by BLAS/LAPACK-style operations.
 #[derive(Clone, Copy, PartialEq)]
 pub enum TransMode {
     /// No modification of matrix.
     NoTrans,
-    /// Complex conjugate of matrix.
+    /// Conjugate entries without transposing axes.
     ConjNoTrans,
     /// Transposition of matrix.
     Trans,
@@ -119,14 +119,14 @@ mod sealed {
     }
 }
 
-/// Memory layout of an object.
+/// Recognized contiguous memory layout of an array.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MemoryLayout {
     /// Column major.
     ColumnMajor,
     /// Row major.
     RowMajor,
-    /// Unknown.
+    /// The stride is neither canonical column-major nor canonical row-major.
     Unknown,
 }
 
@@ -141,10 +141,10 @@ pub enum LapackError {
 /// Alias for a Lapack Result type.
 pub type LapackResult<T> = std::result::Result<T, LapackError>;
 
-/// Empty type for number relations.
+/// Type-level witness for relations involving the const integer `N`.
 pub struct NumberType<const N: usize>;
 
-/// Empty type for difference M - N of numbers;
+/// Type-level witness used to prove that `M - N` equals another const integer.
 pub struct NumberDifference<const M: usize, const N: usize>;
 
 // the condition that M = 1 + N.
@@ -209,10 +209,10 @@ pub enum UpLo {
 
 // Container types.
 
-/// An unknown container type.
+/// Evaluation-container marker for dynamically sized heap storage.
 pub struct Unknown;
 
-/// A static container with fixed size N.
+/// Evaluation-container marker for stack storage with exactly `N` elements.
 pub struct Stack<const N: usize>;
 
 impl ContainerTypeRepr for Unknown {

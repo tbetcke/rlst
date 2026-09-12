@@ -36,7 +36,10 @@ where
     }
 }
 
-/// Store the result of an LDL decomposition.
+/// Packed pivoted LDL factors of a square symmetric/Hermitian matrix.
+///
+/// The factors and LAPACK pivot vector are intentionally not exposed; use
+/// [`Self::solve`] to solve systems with the original matrix.
 pub struct LdlDecomposition<Item> {
     ldl: DynArray<Item, 2>,
     ipiv: Vec<i32>,
@@ -47,7 +50,12 @@ impl<Item> LdlDecomposition<Item>
 where
     Item: Lapack,
 {
-    /// Solve the linear system `Ax = b`.
+    /// Solve `A x = b` from the stored factors without modifying `b`.
+    ///
+    /// A vector right-hand side must have length `n`; a matrix right-hand side must have `n`
+    /// rows. The underlying LAPACK wrapper checks the resulting flat storage length, but this
+    /// does not independently reject every incompatible shape when the number of right-hand
+    /// sides is zero. Singular pivots are reported when constructing the factorization.
     pub fn solve<ArrayImpl, const NDIM: usize>(
         &self,
         b: &Array<ArrayImpl, NDIM>,

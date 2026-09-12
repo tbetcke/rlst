@@ -23,8 +23,9 @@
 //!
 //! RLST provides a [DistributedArray](crate::sparse::distributed_array::DistributedArray) type.
 //! This consists of an [IndexLayout](crate::distributed_tools::IndexLayout) and a local [Array](crate::dense::array::Array) type.
-//! Data is always distributed along the first dimension, meaning that for e.g. distributed matrices each process owns a number of consecutive rows of the matrix. Within a distributed array the `IndexLayout` is always stored as `RefCell`. The reason is that one frequently wishes to have mutable
-//! access to the data of the distributed array while at the same time having non-mutable access to the index layout. The standard access model of Rust does not allow to have a mutable reference to one member of a struct while having non-mutable references to other members. With a `RefCell` this can be circumvented by simply cloning the `RefCell` of the index layout.
+//! Data is always distributed along the first dimension, meaning that for distributed matrices
+//! each process owns consecutive rows. A distributed array stores its layout in an `Rc`, so callers
+//! can cheaply clone the shared layout handle and use it independently while mutating local data.
 //!
 //! Distributed arrays support most operations from standard arrays whereas the result always refers to the global array, e.g. the method `inner` performs an inner product across all processes, or `shape` returns the global shape of the distributed array.
 //!
@@ -32,16 +33,18 @@
 //!
 //! - [DistributedArray::gather_to_all](crate::sparse::distributed_array::DistributedArray::gather_to_all):
 //!   Gather the global array into local arrays on each process.
-//! - [DistributedArray::gather_to_one](crate::sparse::distributed_array::DistributedArray::gather_to_one):
-//!   Gather a global array to a single process `root`. Call this on non-root ranks.
-//! - [DistributedArray::gather_to_one_root](crate::sparse::distributed_array::DistributedArray::gather_to_one):
-//!   Gather a global array to a single process `root`. Call this on the root rank.
-//! - [Array::scatter_from_one](crate::dense::array::Array::scatter_from_one):
-//!   Create a distributed array by scattering out an array from a single process onto all processes,
-//!   distributing the first dimension as determined by `IndexLayout`. Call from the non-root ranks.
-//! - [Array::scatter_from_one_root](crate::dense::array::Array::scatter_from_one_root):
-//!   Create a distributed array by scattering out an array from a single process onto all processes,
-//!   distributing the first dimension as determined by `IndexLayout`. Call from the root rank.
+//! - [`DistributedArray::gather_to_one`](crate::sparse::distributed_array::DistributedArray::gather_to_one):
+//!   non-root side of a gather to `root`.
+//! - [`DistributedArray::gather_to_one_root`](crate::sparse::distributed_array::DistributedArray::gather_to_one_root):
+//!   root side of the same gather.
+//! - [`ScatterFromOne::scatter_from_one`](crate::traits::distributed::ScatterFromOne::scatter_from_one):
+//!   non-root side of scattering an array along its first dimension.
+//! - [`ScatterFromOne::scatter_from_one_root`](crate::traits::distributed::ScatterFromOne::scatter_from_one_root):
+//!   root side of the same scatter.
+//!
+//! These paired methods still form one collective operation: every rank must call the appropriate
+//! side with the same root and compatible layout. On the root, the source first dimension must
+//! equal the layout's global size; all trailing dimensions are preserved.
 //!
 //! ## Empty partitions and migration
 //!
@@ -77,7 +80,9 @@
 //! [DistributedCsrMatrix::from_aij](crate::traits::sparse::FromAijDistributed::from_aij)
 //! from the [FromAijDistributed](crate::traits::sparse::FromAijDistributed) trait. Each process can contribute arbitrary global elements, also for rows that
 //! are not associated with the current rank. The constructor routines ensures that elements are communicated to the correct process. Multiple elements associated
-//! with the same global row and column are summed up on creation.
+//! with the same global row and column are summed up on creation. All ranks must participate,
+//! including ranks contributing empty slices. The three local AIJ slices must have equal lengths;
+//! global row indices are bounded by the range layout and columns by the domain layout.
 //!
 //! # Distributed communication patterns
 //!

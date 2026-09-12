@@ -41,6 +41,10 @@
 //! Using [imp_mut](crate::operator::element::Element::imp_mut) we get a mutable reference to the implementation and assign the first
 //! component of the vector the value `1.0`. We then copy this element using [Space::copy](crate::traits::LinearSpace::copy_from) and
 //! create a new element `elem3` as a linear combination of `elem1` and `elem2`.
+//! An element borrows its space; its implementation must have the dimension
+//! promised by that particular space instance. The low-level `Element::new`
+//! constructor does not check this invariant, so prefer space constructors such
+//! as `zero_element` and `copy_from`.
 //!
 //! As opposed to the `Array` type in RLST, elements of vector spaces do not use lazy compile-time arithmetic. Hence, the operation `5.0 * &elem1`
 //! creates a new element that is then added to `&elem2`.
@@ -97,7 +101,11 @@
 //! To solve abstract operator equations of the form `Ax = y`, where `A` is an operator, `y` is an object in the range space and `x` is an unnknown
 //! object in the domain space, we can use iterative solvers. RLST currently only supports Conjugate Gradients with more solvers to be added.
 //! The following provides a complete worked out example of how to solve operator equations with `CG`. Note that `CG` requires that the operator
-//! is self-adjoint with positive eigenvalues or it may not converge.
+//! is self-adjoint and positive definite; using it for other operators can
+//! break down or fail to converge. `run` mutates `x` and returns
+//! `||b-Ax|| / ||b||`, except that it returns the absolute residual when b is
+//! zero. Reaching the iteration limit is not a separate error, so compare the
+//! returned value with the requested tolerance.
 //!
 //!
 //! ```
@@ -133,3 +141,10 @@
 //! let res = cg.run();
 //! assert!(res < tol);
 //! ```
+//!
+//! The callback receives the updated approximation and the corresponding
+//! unnormalized residual after each successful CG update, before convergence
+//! is checked. It is not called when the initial guess already solves the
+//! system or when a zero/non-finite search-direction denominator causes
+//! pre-update termination. An exact zero right-hand side and zero initial guess
+//! therefore return `0` immediately.

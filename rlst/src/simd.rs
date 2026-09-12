@@ -6,8 +6,11 @@ use num::Zero;
 use pulp::Simd;
 use std::fmt::Debug;
 use std::marker::PhantomData;
-/// A simplified wrapper to call into Simd operations in a type
-/// and architecture independent way.
+/// Thin wrapper over a `pulp` SIMD backend for an RLST scalar type.
+///
+/// The active backend `S` determines lane width and instruction availability. Transcendental and
+/// approximate reciprocal operations inherit the accuracy guarantees of the scalar/backend
+/// implementation; `approx_recip` and `approx_recip_sqrt` must not be treated as exact division.
 #[derive(Copy, Clone, Debug)]
 pub struct SimdFor<T, S> {
     /// Architecture specific Simd information.
@@ -147,7 +150,11 @@ impl<T: RlstSimd, S: Simd> SimdFor<T, S> {
         T::simd_reduce_add(self.simd, value)
     }
 
-    /// Deinterleave N Simd vectors.
+    /// Deinterleave two, three, or four SIMD vectors.
+    ///
+    /// # Panics
+    ///
+    /// Panics unless `N` is 2, 3, or 4.
     #[inline(always)]
     pub fn deinterleave<const N: usize>(self, value: [T::Scalars<S>; N]) -> [T::Scalars<S>; N] {
         use coe::coerce_static as to;
@@ -159,7 +166,11 @@ impl<T: RlstSimd, S: Simd> SimdFor<T, S> {
         }
     }
 
-    /// Interleave N Simd vectors.
+    /// Interleave two, three, or four SIMD vectors.
+    ///
+    /// # Panics
+    ///
+    /// Panics unless `N` is 2, 3, or 4.
     #[allow(clippy::type_complexity)]
     #[inline(always)]
     pub fn interleave<const N: usize>(self, value: [T::Scalars<S>; N]) -> [T::Scalars<S>; N] {

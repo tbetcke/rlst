@@ -12,14 +12,18 @@ use crate::{
     operator::element::Element,
 };
 
-/// Array vector space
+/// Finite-dimensional vector space backed by dynamic one-dimensional arrays.
+///
+/// Elements created by this space have the configured dimension. Arithmetic
+/// assumes both operands came from a compatible space instance; mismatched
+/// array lengths are rejected by the underlying array operations.
 pub struct ArrayVectorSpace<Item> {
     dimension: usize,
     _marker: PhantomData<Item>,
 }
 
 impl<Item> ArrayVectorSpace<Item> {
-    /// Create a new array vector space with the given dimension.
+    /// Create a vector space whose elements contain `dimension` scalars.
     pub fn new(dimension: usize) -> Self {
         Self {
             dimension,

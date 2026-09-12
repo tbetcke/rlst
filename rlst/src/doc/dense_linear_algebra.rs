@@ -25,8 +25,8 @@
 //! ```
 //! let shape = [3, 5, 2];
 //! let arr = rlst::DynArray::<f64, 3>::from_shape(shape);
-//! ````
-//! Note that the macro `rlst_dynamic_array` relies on the compiler to automatically infer the
+//! ```
+//! Note that the macro [`rlst_dynamic_array`](crate::rlst_dynamic_array) relies on the compiler to automatically infer the
 //! number of dimensions from the type of the provided shape. To provide the dimension explicitly
 //! use [DynArray::from_shape](crate::DynArray::from_shape) directly.
 //!
@@ -78,20 +78,18 @@
 //! use rlst::EvaluateArray;
 //! let output = res.eval();
 //! ```
-//! The required trait is [EvaluateArray](crate::EvaluateArray). Their is a quirk
-//! in the type inference from Rust. Without explicitly annotating the constants `3.0`
+//! The required trait is [EvaluateArray](crate::EvaluateArray). There is a quirk
+//! in Rust's type inference. Without explicitly annotating the constants `3.0`
 //! and `5.0` as being [f64] Rust will not compile the statement as it cannot infer the
 //! correct item type for the new array.
 //!
 //! There is an important principle behind this. Algebraic operations on arrays do not allocate new memory on
 //!  the heap without the user explicitly saying so. New memory is first allocated when
-//! the expression `3.0_f64 * arr1 + 5.0_f64 * arr2` is evaluated. In the background the evaluation
-//! instantiate a single new array of the correct size and then goes through the expression in a single for-loop
-//! to evaluate it componentwise.
-//
-//! The operation `3.0 * arr1 + 5.0 * arr2` takes ownership of `arr1` and `arr2`. If this is not desired
-//! whe can create reference object to these arrays which behave like the original array but internally
-//! store a reference to the original array. This is done with `arr1.r()` for non-mutable reference
+//! the expression `3.0_f64 * arr1 + 5.0_f64 * arr2` is evaluated. In the background, evaluation
+//! instantiates one output array of the correct size and fills it componentwise.
+//!
+//! The operation `3.0 * arr1 + 5.0 * arr2` takes ownership of `arr1` and `arr2`. If this is not desired,
+//! create array wrappers that behave like the original arrays but internally borrow them. This is done with `arr1.r()` for non-mutable reference
 //! objects and with `arr1.r_mut()` for mutable reference objects.
 //! ```
 //! # let mut rng = rand::thread_rng();
@@ -99,7 +97,8 @@
 //! # arr1.fill_from_equally_distributed(&mut rng);
 //! # let mut arr2 = rlst::rlst_dynamic_array!(f64, [3, 5, 2]);
 //! # arr2.fill_from_equally_distributed(&mut rng);
-//! let output = (3.0_f64 * arr1.r() + 5.0_f64 * arr2.r());
+//! let output = 3.0_f64 * arr1.r() + 5.0_f64 * arr2.r();
+//! assert_eq!(output.shape(), arr1.shape());
 //! ```
 //!
 //! # Element access
@@ -143,6 +142,15 @@
 //! arr2.fill_from_equally_distributed(&mut rng);
 //! let output = (arr1 + arr2).eval();
 //! ```
+//! The associated static type can also be named by listing literal dimensions without brackets:
+//! ```
+//! type Matrix = rlst::rlst_static_type!(f64, 2, 3);
+//! let matrix: Matrix = rlst::rlst_static_array!(f64, [2, 3]);
+//! assert_eq!(matrix.shape(), [2, 3]);
+//! ```
+//! Both static macros require literal dimensions because the storage length is computed during
+//! macro expansion.
+//!
 //! What is interesting about this code is that all the required memory is allocated at compile time, including
 //! the array `output`. The `eval` method sees that all arrays of the expression are stack allocated and
 //! hence uses a compile time allocation on the stack for the output array. The decision about whether a
@@ -166,7 +174,16 @@
 //! let myvec = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0];
 //! let arr = rlst::SliceArray::<f64, 2>::from_shape(myvec.as_slice(), [2, 3]);
 //! ```
-//! For mutable slices the method [SliceArrayMut::from_shape](crate::SliceArrayMut::from_shape) exists.
+//! For mutable slices the method [SliceArrayMut::from_shape](crate::SliceArrayMut::from_shape)
+//! updates the caller's storage without allocating:
+//! ```
+//! let mut storage = [1, 2, 3, 4];
+//! {
+//!     let mut arr = rlst::SliceArrayMut::<i32, 2>::from_shape(&mut storage, [2, 2]);
+//!     arr[[1, 0]] = 20;
+//! }
+//! assert_eq!(storage, [1, 20, 3, 4]);
+//! ```
 //!
 //! # Strides
 //!
@@ -174,14 +191,32 @@
 //! This holds for memory storage order and also iterators over arrays. Any newly allocated array is automatically
 //! using column-major order. However, other strides are possible. An array with a different stride can be initialized
 //! with  [StridedDynArray::from_shape_and_stride](crate::StridedDynArray::from_shape_and_stride) or [StridedDynArray::row_major](crate::StridedDynArray::row_major).
-//! to specifically crate an array in row-major format. Sometimes one needs to convert an array from colum-major to row-major format.
+//! to specifically create an array in row-major format. Sometimes one needs to convert an array from column-major to row-major format.
 //! This can be done with [EvaluateRowMajorArray::eval_row_major](crate::EvaluateRowMajorArray::eval_row_major), which is implemented for all array types.
 //!
 //! All arrays with custom strides still iterate through in column-major order. This is to ensure that componentwise binary operations on two arrays are
-//! possible for arbitrary stride arrays. The consequence is that iteration is a bit slower if an array has a custom stride. Also, the memory index calculation
-//! is more involved, creating additional overhead. Where performance is crucial column-major arrays should always be preferred.
+//! possible for arbitrary stride arrays. The consequence is that iteration can be slower if an array has a custom stride.
 //!
+//! The following example contrasts logical iteration with physical storage order:
+//! ```
+//! use rlst::{MemoryLayout, StridedDynArray};
 //!
+//! let mut row_major = StridedDynArray::<i32, 2>::row_major([2, 3]);
+//! row_major.fill_from_iter(0..6); // logical column-major order
+//! assert_eq!(row_major.stride(), [3, 1]);
+//! assert_eq!(row_major.memory_layout(), MemoryLayout::RowMajor);
+//! assert!(row_major.is_contiguous());
+//! assert_eq!(row_major.iter_value().collect::<Vec<_>>(), vec![0, 1, 2, 3, 4, 5]);
+//! assert_eq!(row_major.data().unwrap(), &[0, 2, 4, 1, 3, 5]);
+//!
+//! let custom = StridedDynArray::<i32, 2>::from_shape_and_stride([2, 3], [1, 3]);
+//! assert_eq!(custom.stride(), [1, 3]);
+//! assert_eq!(custom.memory_layout(), MemoryLayout::Unknown);
+//! assert!(!custom.is_contiguous());
+//! ```
+//!
+//! Explicit strides must map each logical element to a distinct storage location. Constructors
+//! panic for overlapping layouts such as a zero stride on an axis with extent greater than one.
 //!
 //!
 //! # References and ownership
@@ -191,8 +226,8 @@
 //! returns an array that is implemented through an [ArrayRef](crate::dense::array::reference::ArrayRef) struct. An `ArrayRef` is a simple container
 //! that holds a Rust reference to an actual array. This allows us to hand over references to arrays to functions that expect to take ownership.
 //! For mutable arrays a corresponding function exists in the form of [r_mut](crate::dense::array::Array::r_mut). These reference
-//! arrays behave exactly like the original arrays and implement the same traits. They can be transparantly used instead of
-//! the original arrays.
+//! arrays forward the capabilities of the borrowed array and can be used transparently in expressions and views.
+//! The borrow remains active for the lifetime of the wrapper.
 //!
 //! # Array slicing
 //!
@@ -200,7 +235,8 @@
 //! ```
 //! let arr = rlst::rlst_dynamic_array!(f64, [5, 3, 2]);
 //! ```
-//! we can slice at the first index of the second dimension as follows.
+//! we can remove axis `1` and fix its coordinate at index `0` as follows. The arguments to
+//! `slice` are `(axis, index_on_that_axis)`.
 //! ```
 //! # let arr = rlst::rlst_dynamic_array!(f64, [5, 3, 2]);
 //! let slice = arr.r().slice::<2>(1, 0);
@@ -218,6 +254,29 @@
 //! The annotation with the dimension parameter is necessary if the compiler cannot automatically infer from
 //! subsequent operations what the correct number of dimensions after slicing is.
 //!
+//! [`Array::multislice`](crate::Array::multislice) fixes several axes at once, while
+//! [`Array::into_subview`](crate::Array::into_subview) keeps every axis and selects a rectangular
+//! region. Views consume their array operand, so use `r()` or `r_mut()` to retain ownership:
+//! ```
+//! let mut arr = rlst::rlst_dynamic_array!(i32, [3, 4, 2]);
+//! arr.fill_from_iter(0..24);
+//!
+//! {
+//!     // Fix axes 0 and 2, leaving axis 1 as a one-dimensional view.
+//!     let mut line = arr.r_mut().multislice::<2, 1>([0, 2], [1, 0]);
+//!     assert_eq!(line.shape(), [4]);
+//!     line[[2]] = 99;
+//! }
+//! assert_eq!(arr[[1, 2, 0]], 99);
+//!
+//! let view = arr.r().into_subview([1, 1, 0], [2, 2, 2]);
+//! assert_eq!(view.shape(), [2, 2, 2]);
+//! ```
+//!
+//! `transpose()` reverses axis order, while `permute_axes(permutation)` applies an explicit
+//! permutation. `reverse_axis(axis)` presents indices on one axis in reverse order; these are
+//! lazy views and do not rearrange the backing storage.
+//!
 //! # Array iterators
 //!
 //! The default iterator returns elements of an array in column-major order independent of the underlying stride.
@@ -229,10 +288,10 @@
 //! }
 //!
 //! ```
-//! The possible iterators are `iter_value` for an iterator that returns array values, `iter_ref` for an iterator
-//! that returns references, and `iter_mut` for a mutable iterator. For example, the array `out = a + b` as the result
-//! of the sum of the arrays `a` and `b` only supports `iter_value` with the componentwise addition of the elements
-//! of `a` and `b` are performed as part of the iteration.
+//! The possible iterators are `iter_value` for copied values, `iter_ref` for shared references,
+//! and `iter_mut` for disjoint mutable references. Lazy expressions such as `a + b` support
+//! `iter_value`; reference iterators require actual reference-backed storage. In every case the
+//! logical order is column-major, independent of physical stride.
 //!
 //! It is possible to obtain the multi-index together with the iterator as is shown in the following example.
 //! ```
@@ -244,7 +303,8 @@
 //!     assert_eq!(elem, arr[multi_index]);
 //! }
 //! ```
-//! In addition to the above iterators the following special iterators are defined.
+//! Diagonal iteration visits `[i, i, ...]` for `i` up to the smallest axis extent. Row and
+//! column iterators are available for matrices. In addition to the above iterators:
 //! - [col_iter](crate::dense::array::Array::col_iter) - for 2-dimensional arrays to iterate through the columns.
 //! - [row_iter](crate::dense::array::Array::row_iter) - for 2-dimensional arrays to iterate through the rows.
 //! - [diag_iter_value](crate::dense::array::Array::diag_iter_value) - for n-dimensional arrays to iterate through the diagonal by value.
@@ -262,10 +322,10 @@
 //! let res = 5.0 * arr.r();
 //! ```
 //! The array `res` is not connected with a memory region. It internally takes ownership
-//! of a reference into `arr`. The scalar multiplication with `5.0` is performed whenever an element if `res` is requested,
+//! of a reference into `arr`. The scalar multiplication with `5.0` is performed whenever an element of `res` is requested,
 //! either by an iterator or by direct random access. Hence, the operation `let res = 5.0 * arr.r()` has no cost itself.
 //! But calling `res.get_value([0, 0])` would multiply the first element of `arr` by `5.0` and return the result of that
-//! operation. To get a new array in which every element was multiplied by `5.0` simply call `let out = res.eval()`.
+//! operation. Calling `let out = res.eval()` allocates an output container and evaluates every element.
 //!
 //! RLST supports all the usual algebraic unary and binary operations on arrays. Results are stored as expressions and only evaluated
 //! on element access or evaluation into a new array. In addition to standard algebraic operations the following special functions are

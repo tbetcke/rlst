@@ -67,6 +67,11 @@ impl_char!(c64, b'C');
 /// `a` and `b` must be in real Schur form for real values and triangular for complex values.
 pub trait Trsyl: RlstScalar {
     /// Solve the triangular Sylvester equation and report scaling and perturbation.
+    ///
+    /// A is `m x m`, B is `n x n`, and C is `m x n`, all column-major. A and B
+    /// are unchanged; C is overwritten by X. For real scalars A and B may have
+    /// 2-by-2 diagonal Schur blocks. Invalid storage dimensions panic. LAPACK
+    /// status 1 is returned as [`TrsylStatus::Perturbed`], not as an error.
     #[allow(clippy::too_many_arguments)]
     fn trsyl(
         trana: TrsylTranspose,

@@ -32,7 +32,10 @@ pub trait Inverse {
     /// The item type of the inverse.
     type Output;
 
-    /// Compute the inverse of a matrix.
+    /// Compute the inverse of a square matrix.
+    ///
+    /// The implementation works on a copy. A nonsquare input panics; a
+    /// singular matrix is reported as a LAPACK error.
     fn inverse(&self) -> RlstResult<Self::Output>;
 }
 
@@ -48,24 +51,36 @@ pub trait Inverse {
 pub trait Lu {
     /// Item type of the LU decomposition.
     type Item: Lapack;
-    /// Compute the LU decomposition of a matrix.
+    /// Compute the pivoted LU decomposition of a matrix.
+    ///
+    /// The input is copied. LAPACK failures, including a zero factor pivot,
+    /// are returned as errors.
     fn lu(&self) -> RlstResult<LuDecomposition<Self::Item>>;
 }
 
-/// Compute the LDL decomposition of a symmetric or Hermitian matrix.
+/// Compute a pivoted LDL factorization of a symmetric or Hermitian matrix.
+///
+/// The matrix must be square. Only the triangle selected by [`UpLo`] is read;
+/// the packed factors and pivots are retained for solving indefinite systems.
 pub trait Ldl {
     /// Item type of the LDL decomposition.
     type Item: Lapack;
-    /// Compute the LDL decomposition of a matrix.
+    /// Factor a copied matrix, using the selected triangle.
+    ///
+    /// # Panics
+    /// Panics when the matrix is not square.
     fn ldl(&self, uplo: UpLo) -> RlstResult<LdlDecomposition<Self::Item>>;
 }
 
-/// Compute the QR decomposition of a matrix.
+/// Compute a QR decomposition, optionally with column pivoting.
+///
+/// For `k = min(m, n)`, the factors satisfy `A P = Q R`, with compact Q of
+/// shape `m x k`, R of shape `k x n`, and P of shape `n x n`.
 pub trait Qr {
     /// Item type of the QR decomposition.
     type Item: Lapack;
 
-    /// Compute the QR decomposition of a matrix.
+    /// Factor a copy of the matrix with the requested pivoting strategy.
     fn qr(&self, pivoting: EnablePivoting) -> RlstResult<QrDecomposition<Self::Item>>;
 }
 
@@ -86,12 +101,16 @@ pub trait SymmEig {
     /// Item type of the symmetric eigenvalue decomposition.
     type Item: Lapack;
 
-    /// Compute the eigenvalues of a real symmetric or complex Hermitian matrix.
+    /// Compute ascending eigenvalues of a square real symmetric or complex
+    /// Hermitian matrix, reading its upper triangle.
     fn eigenvaluesh(&self) -> RlstResult<DynArray<<Self::Item as RlstScalar>::Real, 1>> {
         Ok(self.eigh(UpLo::Upper, SymmEigMode::EigenvaluesOnly)?.0)
     }
 
-    /// Compute the symmetric eigenvalue decomposition of a matrix.
+    /// Compute ascending eigenvalues and, when requested, eigenvectors.
+    ///
+    /// The matrix must be square and only the triangle selected by `uplo` is
+    /// read. The input is copied. LAPACK failures are returned as errors.
     #[allow(clippy::type_complexity)]
     fn eigh(
         &self,
@@ -106,11 +125,11 @@ pub trait SymmEig {
 /// Generalized symmetric eigenvalue decomposition type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GeneralizedSymmEigType {
-    /// Ax = lambda Bx
+    /// Solve `A x = lambda B x`.
     AxEqualLambdaBx = 1,
-    /// ABx = lambda x
+    /// Solve `A B x = lambda x`.
     ABxEqualLambdaX = 2,
-    /// BAx = lambda x
+    /// Solve `B A x = lambda x`.
     BAxEqualLambdaX = 3,
 }
 
@@ -128,7 +147,8 @@ pub trait GeneralizedSymmEig<B> {
     /// Item type of the generalized symmetric eigenvalue decomposition.
     type Item: Lapack;
 
-    /// Compute the eigenvalues of a generalized symmetric eigenvalue problem.
+    /// Compute the ascending real eigenvalues of a definite generalized
+    /// symmetric/Hermitian eigenproblem.
     fn eigenvaluesh_generalized(
         &self,
         b: &B,
@@ -140,7 +160,12 @@ pub trait GeneralizedSymmEig<B> {
             .0)
     }
 
-    /// Compute the generalized symmetric eigenvalue decomposition of a matrix.
+    /// Compute generalized eigenvalues and, when requested, eigenvectors.
+    ///
+    /// A and B must be equally sized square matrices; A must be
+    /// symmetric/Hermitian and B Hermitian positive definite. Only `uplo` is
+    /// read from each input. Both inputs are copied. Failure to factor B or to
+    /// converge is returned as a LAPACK error.
     #[allow(clippy::too_many_arguments)]
     #[allow(clippy::type_complexity)]
     fn eigh_generalized(
@@ -160,7 +185,7 @@ pub trait EigenvalueDecomposition {
     /// The item type of the matrix.
     type Item: Lapack;
 
-    /// Return the eigenvalues of the matrix.
+    /// Return the complex eigenvalues of a square matrix in unspecified order.
     fn eigenvalues(&self) -> RlstResult<DynArray<<Self::Item as RlstScalar>::Complex, 1>>;
 
     /// Compute the Schur decomposition of the matrix.
@@ -194,7 +219,10 @@ pub trait GeneralizedEigenvalueDecomposition<B> {
     /// The item type of the matrix.
     type Item: Lapack;
 
-    /// Return the eigenvalues of the matrix.
+    /// Return eigenvalues of the square pencil `(A, B)` in unspecified order.
+    ///
+    /// This divides homogeneous LAPACK eigenvalues by their beta values; a
+    /// singular B can therefore produce infinities or NaNs.
     fn eigenvalues_generalized(
         &self,
         b: &B,
@@ -203,11 +231,13 @@ pub trait GeneralizedEigenvalueDecomposition<B> {
         Ok(lam)
     }
 
-    /// Compute the eigenvalues and eigenvectors of the matrix.
-    /// Returns a tuple `(lam, vl, vr)` containing:
-    /// - `lam`: The eigenvalues.
-    /// - `v`: The right eigenvectors (optional).
-    /// - `w`: The left eigenvectors (optional).
+    /// Compute eigenvalues and selected eigenvectors of `(A, B)`.
+    ///
+    /// Returns `(lam, vr, vl)`. Columns of `vr` satisfy `A vr = B vr lam`;
+    /// columns of `vl` satisfy `vl^H A = lam vl^H B`. A and B must be equally
+    /// sized square matrices and are copied. Values and vectors are complex
+    /// even for real inputs, and their order is unspecified. Since homogeneous
+    /// alpha/beta pairs are divided, singular B can yield infinities or NaNs.
     #[allow(clippy::type_complexity)]
     fn eig_generalized(
         &self,
@@ -258,7 +288,7 @@ pub trait SingularValueDecomposition {
     /// The item type of the matrix.
     type Item: Lapack + Gemm;
 
-    /// Compute the singular values of a matrix.
+    /// Compute singular values in descending order.
     fn singular_values(&self) -> RlstResult<DynArray<<Self::Item as RlstScalar>::Real, 1>>;
 
     /// Compute the singular value decomposition of a matrix.
@@ -331,7 +361,7 @@ pub trait SingularValueDecomposition {
         Ok((s, u, vh))
     }
 
-    /// Compute the pseudo-inverse of a matrix.
+    /// Compute an SVD-based, optionally truncated pseudo-inverse.
     ///
     /// If an integer for `max_singular_values` is provided no more than that number of
     /// singular values is contained in the pseudo-inverse. The optional parameter `tol` specifies a relative
@@ -361,8 +391,11 @@ pub trait Solve<Rhs> {
     /// The output type of the solver.
     type Output;
 
-    /// Solve the linear system `Ax = b` for `x`.
-    // If `A` is not square, the system is solved in the least-squares sense.
+    /// Solve `A x = b`, or a rectangular system in the least-squares sense.
+    ///
+    /// Dense implementations accept vector and matrix right-hand sides whose
+    /// first dimension equals the row count of A. Shape mismatches panic;
+    /// factorization or rank failures are returned as errors.
     fn solve(&self, rhs: &Rhs) -> RlstResult<Self::Output>;
 }
 
@@ -371,10 +404,12 @@ pub trait Cholesky {
     /// Item type of the array.
     type Item;
 
-    /// Compute the Cholesky decomposition of a positive definite matrix.
+    /// Compute the Cholesky factor of a square Hermitian positive-definite matrix.
     ///
     /// **Arguments:**
-    /// - `uplo`: Specifies whether the upper or lower triangular part of the matrix is stored.
+    /// - `uplo`: Selects the triangle to read and the triangular factor to return.
+    ///
+    /// A nonsquare input panics; a non-positive pivot is returned as an error.
     fn cholesky(&self, uplo: UpLo) -> RlstResult<DynArray<Self::Item, 2>>;
 }
 
@@ -383,10 +418,11 @@ pub trait CholeskySolve<Rhs> {
     /// The output type of the Cholesky solver.
     type Output;
 
-    /// Solve a positive definite system of linear equations using Cholesky factorization.
+    /// Solve a Hermitian positive-definite system by Cholesky factorization.
     ///
-    /// **Arguments:**
-    /// - `uplo`: Specifies whether the upper or lower triangular part of the matrix is stored.
+    /// `uplo` selects the triangle read from the coefficient matrix. The right
+    /// hand side must have a matching first dimension. Shape mismatches panic;
+    /// a non-positive pivot is returned as an error.
     fn cholesky_solve(&self, uplo: UpLo, rhs: &Rhs) -> RlstResult<Self::Output>;
 }
 
@@ -395,9 +431,10 @@ pub trait SolveTriangular<Rhs> {
     /// The output type of the triangular solver.
     type Output;
 
-    /// Solve a triangular system of linear equations.
+    /// Solve a triangular system using only the triangle selected by `uplo`.
     ///
-    /// **Arguments:**
-    /// - `uplo`: Specifies whether the upper or lower triangular part of the matrix is stored.
+    /// The coefficient matrix must be square. Dense implementations accept a
+    /// vector or matrix right-hand side with matching first dimension; shape
+    /// mismatches panic.
     fn solve_triangular(&self, uplo: UpLo, rhs: &Rhs) -> RlstResult<Self::Output>;
 }

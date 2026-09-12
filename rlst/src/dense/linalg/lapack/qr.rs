@@ -11,7 +11,10 @@ use super::interface::geqp3::Geqp3;
 use super::interface::geqrf::Geqrf;
 use super::interface::orgqr::Orgqr;
 
-/// Stores the result of a QR decomposition of a matrix.
+/// Packed QR factors satisfying `A P = Q R`.
+///
+/// For `k = min(m, n)`, compact Q is `m x k`, R is `k x n`, and the
+/// column-permutation matrix P is `n x n`.
 pub struct QrDecomposition<Item> {
     a: DynArray<Item, 2>,
     jpvt: Vec<i32>,
@@ -72,10 +75,10 @@ impl<Item> QrDecomposition<Item>
 where
     Item: Lapack,
 {
-    /// Compute the Q matrix from the QR decomposition.
-    /// /// The `mode` parameter determines whether to compute the full or compact Q matrix.
-    /// - `QMode::Full`: Computes the full Q matrix with shape (m, m).
-    /// - `QMode::Compact`: Computes the compact Q matrix with shape (m, min(m, n)).
+    /// Form Q explicitly.
+    ///
+    /// [`QMode::Full`] returns shape `m x m`; [`QMode::Compact`] returns
+    /// `m x min(m, n)`. Columns are orthonormal (unitary for complex values).
     pub fn q_mat(&self, mode: QMode) -> RlstResult<DynArray<Item, 2>> {
         let [m, n] = self.a.shape();
         let k = std::cmp::min(m, n);
@@ -100,8 +103,7 @@ where
         Ok(q)
     }
 
-    /// Return the R matrix of the QR decomposition.
-    /// The R matrix is of dimension (min(m, n), n).
+    /// Return the `min(m, n) x n` upper-trapezoidal R factor.
     pub fn r_mat(&self) -> RlstResult<DynArray<Item, 2>> {
         let [m, n] = self.a.shape();
         let k = std::cmp::min(m, n);
@@ -119,7 +121,7 @@ where
         Ok(r)
     }
 
-    /// Return the permutation matrix P such at `A * P = Q * R`.
+    /// Return the `n x n` permutation matrix P such that `A P = Q R`.
     pub fn p_mat(&self) -> RlstResult<DynArray<Item, 2>> {
         let [_, n] = self.a.shape();
         let mut p_mat = DynArray::<Item, 2>::from_shape([n, n]);
@@ -133,10 +135,10 @@ where
         Ok(p_mat)
     }
 
-    /// Return the pivot indices of the QR decomposition.
-    /// If `jpvt[i] = j`, then the `i`-th column of the QR decomposition corresponds to the `j`-th
-    /// column of the original matrix.
-    /// The indices are returned in zero-based indexing.
+    /// Return the zero-based column permutation.
+    ///
+    /// If `perm[i] = j`, column `i` of `A P` is column `j` of A in the identity
+    /// `Q R = A P`. With pivoting disabled this is `0..n`.
     pub fn perm(&self) -> Vec<usize> {
         self.jpvt
             .iter()

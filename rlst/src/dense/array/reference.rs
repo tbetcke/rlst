@@ -16,7 +16,7 @@ use crate::{
     },
 };
 
-/// Basic structure for a `View`
+/// Array implementation forwarding operations through a shared borrow.
 pub struct ArrayRef<'a, ArrayImpl, const NDIM: usize>(&'a Array<ArrayImpl, NDIM>);
 
 impl<'a, ArrayImpl, const NDIM: usize> ContainerType for ArrayRef<'a, ArrayImpl, NDIM>
@@ -34,7 +34,7 @@ where
 }
 
 impl<'a, ArrayImpl, const NDIM: usize> ArrayRef<'a, ArrayImpl, NDIM> {
-    /// Create new view
+    /// Wrap a shared borrow without copying array data.
     pub fn new(arr: &'a Array<ArrayImpl, NDIM>) -> Self {
         Self(arr)
     }
@@ -99,7 +99,7 @@ impl<ArrayImpl: UnsafeRandomAccessByRef<NDIM>, const NDIM: usize> UnsafeRandomAc
 
 /////////// ArrayRefMut
 
-/// Mutable array view
+/// Array implementation forwarding operations through an exclusive borrow.
 pub struct ArrayRefMut<'a, ArrayImpl, const NDIM: usize>(&'a mut Array<ArrayImpl, NDIM>);
 
 impl<'a, ArrayImpl, const NDIM: usize> BaseItem for ArrayRefMut<'a, ArrayImpl, NDIM>
@@ -110,7 +110,7 @@ where
 }
 
 impl<'a, ArrayImpl, const NDIM: usize> ArrayRefMut<'a, ArrayImpl, NDIM> {
-    /// Create new mutable view
+    /// Wrap an exclusive borrow without copying array data.
     pub fn new(arr: &'a mut Array<ArrayImpl, NDIM>) -> Self {
         Self(arr)
     }

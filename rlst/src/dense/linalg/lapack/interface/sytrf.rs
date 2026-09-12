@@ -19,7 +19,12 @@ pub enum SytrfUplo {
 
 /// ?sytrf/?hetrf - Factorization of a symmetric/Hermitian matrix.
 pub trait Sytrf: RlstScalar {
-    /// Perform the factorization of a symmetric/Hermitian matrix.
+    /// Factor a symmetric/Hermitian `n x n` matrix in place with pivoting.
+    ///
+    /// `a` is column-major; only `uplo` is read and its selected triangle is
+    /// overwritten with packed block-diagonal and triangular factors. `ipiv`
+    /// receives LAPACK's one-based pivot encoding. Invalid storage dimensions
+    /// panic; singular pivots and other LAPACK failures are returned as errors.
     fn sytrf(
         uplo: SytrfUplo,
         n: usize,

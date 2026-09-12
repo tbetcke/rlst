@@ -37,6 +37,12 @@ pub trait Sygv: RlstScalar {
     /// 1: Ax = λBx
     /// 2: ABx = λx
     /// 3: BAx = λx
+    ///
+    /// A and B are column-major `n x n` arrays and are overwritten; only the
+    /// triangle selected by `uplo` is read. B must be positive definite.
+    /// Eigenvalues are written to `w` in ascending order and, when requested,
+    /// eigenvectors overwrite A. Invalid storage dimensions panic; LAPACK
+    /// failures (including failure to factor B) are returned as errors.
     #[allow(clippy::too_many_arguments)]
     fn sygv(
         itype: i32,

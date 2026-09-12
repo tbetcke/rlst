@@ -98,9 +98,9 @@ fn checked_scatter_counts<const NDIM: usize>(
 pub struct DistributedArray<'a, C: Communicator, ArrayImpl, const NDIM: usize> {
     /// The index layout of the vector.
     ///
-    /// The index layout is stored via an [Rc] since we often need to a reference to the MPI Communicator
-    /// in the [IndexLayout] at the same time as a mutable reference to the `local` data. But this would
-    /// be disallowed by Rust's static borrow checker. Hence, runtime borrow checking through an [Rc].
+    /// The layout is stored in an [`Rc`] so its shared handle can be cloned cheaply and used
+    /// independently while local array data is mutated. `Rc` provides shared ownership, not runtime
+    /// borrow checking.
     pub index_layout: Rc<IndexLayout<'a, C>>,
     /// The local data of the vector
     pub local: Array<ArrayImpl, NDIM>,

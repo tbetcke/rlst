@@ -74,17 +74,17 @@ pub trait ResizeableDataContainer: DataContainer {
 
 /// A data container that provides raw access to the data slice.
 pub trait RawAccessDataContainer: DataContainer {
-    /// Return the data slice for the data container.
+    /// Return the complete container storage as a slice.
     ///
-    /// Returns `None` if data is not available as contigous slice.
+    /// Returns `None` if storage is not available as one contiguous slice.
     fn data(&self) -> Option<&[Self::Item]>;
 }
 
 /// A data container that provides mutable raw access to the data slice.
 pub trait MutableRawAccessDataContainer: RawAccessDataContainer {
-    /// Return the mutable data slice for the data container.
+    /// Return the complete container storage as a mutable slice.
     ///
-    /// Returns `None` if data is not available as contigous slice.
+    /// Returns `None` if storage is not available as one contiguous slice.
     fn data_mut(&mut self) -> Option<&mut [Self::Item]>;
 }
 
@@ -138,7 +138,7 @@ pub trait RowMajorArrayFromContainerType {
     where
         Item: Copy + Default;
 
-    /// Given the shape, create a new column-major array
+    /// Given the shape, create a new row-major array.
     fn new_row_major_arr<Item, const NDIM: usize>(
         shape: [usize; NDIM],
     ) -> Array<Self::OutputImpl<Item, NDIM>, NDIM>

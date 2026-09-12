@@ -12,7 +12,9 @@ use crate::traits::{
 };
 use crate::{ContainerType, Unknown};
 
-/// Subview of an array
+/// Rectangular, same-rank view into an array.
+///
+/// The view starts at `offset`, has its own `shape`, and preserves the source strides.
 pub struct ArraySubView<ArrayImpl, const NDIM: usize> {
     arr: Array<ArrayImpl, NDIM>,
     offset: [usize; NDIM],
@@ -20,7 +22,13 @@ pub struct ArraySubView<ArrayImpl, const NDIM: usize> {
 }
 
 impl<ArrayImpl: Shape<NDIM>, const NDIM: usize> ArraySubView<ArrayImpl, NDIM> {
-    /// Create new array sub-view
+    /// Create a rectangular view with the given origin and shape.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the computed end of the view exceeds the source extent on any axis.
+    /// Bounds arithmetic uses ordinary `usize` addition, so callers must provide offsets and
+    /// extents whose sums are representable.
     pub fn new(arr: Array<ArrayImpl, NDIM>, offset: [usize; NDIM], shape: [usize; NDIM]) -> Self {
         let arr_shape = arr.shape();
         for index in 0..NDIM {
