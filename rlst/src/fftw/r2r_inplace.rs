@@ -46,7 +46,8 @@ macro_rules! impl_r2r_inplace {
                 flags: FftwPlanFlags,
                 kind: &[R2RPlanKind],
             ) -> Option<PlanInplace<$ty, ArrayImpl, NDIM>> {
-                let mut arr = self.borrow_mut().unwrap();
+                let mut guard = self.borrow_mut().unwrap();
+                let arr = guard.array_mut();
                 assert_eq!(
                     kind.len(),
                     NDIM,
@@ -121,6 +122,8 @@ impl_r2r_inplace!(f32, fftw_single);
 #[cfg(test)]
 mod test {
 
+    use std::f64::consts::PI;
+
     use crate::{
         DynArray, EvaluateArray,
         fftw::{
@@ -128,6 +131,34 @@ mod test {
             r2r_inplace::{R2RPlan, R2RPlanKind},
         },
     };
+
+    #[test]
+    fn test_dct_ii_against_direct_reference() {
+        let input = [1.0, -2.0, 0.5, 3.0, -0.25];
+        let fft = DynArray::<f64, _>::from_shape([input.len()]).into_fft();
+        let mut plan = fft
+            .r2r_fft(FftwPlanFlags::Estimate, &[R2RPlanKind::FFTW_REDFT10])
+            .unwrap();
+        fft.borrow_mut()
+            .unwrap()
+            .data_mut()
+            .unwrap()
+            .copy_from_slice(&input);
+        plan.execute();
+
+        let actual = fft.borrow().unwrap().eval();
+        for k in 0..input.len() {
+            let expected = 2.0
+                * input
+                    .iter()
+                    .enumerate()
+                    .map(|(j, value)| {
+                        value * (PI * (j as f64 + 0.5) * k as f64 / input.len() as f64).cos()
+                    })
+                    .sum::<f64>();
+            approx::assert_relative_eq!(actual[[k]], expected, epsilon = 1E-10);
+        }
+    }
 
     #[test]
     fn test_r2r_1d_f64() {
