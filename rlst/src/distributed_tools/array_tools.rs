@@ -96,7 +96,7 @@ fn checked_counts_for_data(
         .map(|&count| i32::try_from(count))
         .collect::<Result<Vec<_>, _>>()
         .ok()?;
-    (counts.len() == process_count && counts.iter().map(|&count| count).sum::<usize>() == data_len)
+    (counts.len() == process_count && counts.iter().copied().sum::<usize>() == data_len)
         .then_some(converted)
 }
 
@@ -139,7 +139,6 @@ pub fn all_to_allv<T: Equivalence + Default + Clone, C: CommunicatorCollectives>
         .map(|&count| usize::try_from(count).expect("validated nonnegative count"))
         .sum::<usize>();
     collective_valid(comm, true, "received count total is valid");
-    let receive_len = receive_len;
     let mut receive_data = vec![T::default(); receive_len];
     let send_displacements = checked_displacements(&counts).expect("validated displacements");
     let receive_displacements =
@@ -172,7 +171,7 @@ pub fn scatterv_root<T: Equivalence + Default + Clone, C: CommunicatorCollective
         comm.rank() as usize,
         "scatter root must agree on every rank",
     );
-    let counts_total = counts.iter().map(|&count| count).sum::<usize>();
+    let counts_total = counts.iter().copied().sum::<usize>();
     let mut valid = counts.len() == comm.size() as usize
         && counts.iter().all(|&count| i32::try_from(count).is_ok())
         && counts_total == out_data.len();
