@@ -56,5 +56,8 @@ jobs:
       - name: Run unit tests
         run: RUST_MIN_STACK=8388608 cargo test --features "mpi,fftw,fftw_system,strict"
 
+      - name: Run bounded empty-rank MPI regressions (1, 2, and 4 ranks)
+        run: python3 scripts/run_mpi_tests.py
+
       - name: Build docs
         run: cargo doc --no-deps --features "mpi,fftw,fftw_system,strict"

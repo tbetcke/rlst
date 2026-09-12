@@ -6,7 +6,7 @@
 use std::{collections::HashMap, rc::Rc};
 
 use itertools::izip;
-use mpi::traits::Communicator;
+use mpi::traits::{Communicator, CommunicatorCollectives};
 
 use super::IndexLayout;
 
@@ -26,7 +26,30 @@ impl<'a, C: Communicator> IndexEmbedding<'a, C> {
         global_layout: Rc<IndexLayout<'a, C>>,
         embedded_index_subset: &[usize],
         comm: &'a C,
-    ) -> Self {
+    ) -> Self
+    where
+        C: CommunicatorCollectives,
+    {
+        let local_valid = embedded_index_subset
+            .iter()
+            .all(|&index| index < global_layout.number_of_local_indices())
+            && {
+                let mut unique_subset = embedded_index_subset.to_vec();
+                unique_subset.sort_unstable();
+                unique_subset.dedup();
+                unique_subset.len() == embedded_index_subset.len()
+            };
+        let mut valid = false;
+        comm.all_reduce_into(
+            &local_valid,
+            &mut valid,
+            mpi::collective::SystemOperation::logical_and(),
+        );
+        assert!(
+            valid,
+            "embedded indices must be unique and within the local layout"
+        );
+
         // Let us setup an index layout for the subset.
 
         let embedded_layout = Rc::new(IndexLayout::from_local_counts(
@@ -101,13 +124,18 @@ impl<'a, C: Communicator> IndexEmbedding<'a, C> {
         out_vector: &mut [T],
         chunk_size: usize,
     ) {
-        for (local_index, chunk) in
+        assert!(chunk_size > 0, "embedding chunk size must be positive");
+        assert_eq!(data.len(), self.embedded_index_subset.len() * chunk_size);
+        assert_eq!(
+            out_vector.len(),
+            self.global_layout.number_of_local_indices() * chunk_size
+        );
+        out_vector.fill(T::default());
+        for (&local_index, chunk) in
             izip!(self.embedded_index_subset.iter(), data.chunks(chunk_size))
         {
-            let local_index = self.local_index_to_embedded_index(*local_index).unwrap();
-            let local_start_index = local_index * chunk_size;
-            let local_end_index = local_start_index + chunk_size;
-            out_vector[local_start_index..local_end_index].copy_from_slice(chunk);
+            out_vector[local_index * chunk_size..(local_index + 1) * chunk_size]
+                .copy_from_slice(chunk);
         }
     }
 
@@ -121,6 +149,11 @@ impl<'a, C: Communicator> IndexEmbedding<'a, C> {
         data: &[T],
         chunk_size: usize,
     ) -> Vec<T> {
+        assert!(chunk_size > 0, "embedding chunk size must be positive");
+        assert_eq!(
+            data.len(),
+            self.global_layout.number_of_local_indices() * chunk_size
+        );
         let mut extracted_data =
             vec![T::default(); self.embedded_layout.number_of_local_indices() * chunk_size];
 

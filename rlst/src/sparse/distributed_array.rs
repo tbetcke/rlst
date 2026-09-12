@@ -21,19 +21,74 @@ use crate::dense::array::slice::ArraySlice;
 use crate::dense::base_array::BaseArray;
 use crate::dense::data_container::VectorContainer;
 use crate::dense::layout::row_major_stride_from_shape;
-use crate::distributed_tools::{IndexLayout, scatterv, scatterv_root};
+use crate::distributed_tools::{
+    IndexLayout,
+    array_tools::{gather_to_all as gather_values_to_all, gather_to_rank},
+    scatterv, scatterv_root,
+};
 use num::traits::MulAdd;
 
 use crate::dense::array::{DynArray, StridedDynArray, StridedSliceArray};
 use crate::{
-    Array, BaseItem, Conj, EvaluateArray, Max, RlstResult, Shape, UnsafeRandom1DAccessByValue,
-    UnsafeRandom1DAccessMut, UnsafeRandomAccessMut,
+    Array, BaseItem, Conj, EvaluateArray, Inner, Max, RlstResult, Shape,
+    UnsafeRandom1DAccessByValue, UnsafeRandom1DAccessMut, UnsafeRandomAccessMut,
 };
 use crate::{EvaluateRowMajorArray, UnsafeRandomAccessByValue};
 
 use mpi::Rank;
-use mpi::datatype::PartitionMut;
 use mpi::traits::{Communicator, CommunicatorCollectives, Equivalence, Root};
+
+fn collective_root_agreement<C: CommunicatorCollectives>(comm: &C, root: usize) {
+    let mut roots = vec![0_usize; comm.size() as usize];
+    comm.all_gather_into(&root, &mut roots);
+    let valid = root < comm.size() as usize && roots.iter().all(|&candidate| candidate == root);
+    let mut all_valid = false;
+    comm.all_reduce_into(
+        &valid,
+        &mut all_valid,
+        mpi::collective::SystemOperation::logical_and(),
+    );
+    assert!(
+        all_valid,
+        "distributed-array root must agree and be in range"
+    );
+}
+
+fn collective_nonleading_shape_agreement<C: CommunicatorCollectives, const NDIM: usize>(
+    comm: &C,
+    shape: [usize; NDIM],
+) {
+    let mut shapes = vec![0_usize; comm.size() as usize * NDIM];
+    comm.all_gather_into(shape.as_slice(), &mut shapes);
+    let (candidates, remainder) = shapes.as_chunks::<NDIM>();
+    let valid = remainder.is_empty()
+        && candidates
+            .iter()
+            .all(|candidate| candidate.iter().skip(1).eq(shape.iter().skip(1)));
+    let mut all_valid = false;
+    comm.all_reduce_into(
+        &valid,
+        &mut all_valid,
+        mpi::collective::SystemOperation::logical_and(),
+    );
+    assert!(
+        all_valid,
+        "distributed-array nonleading dimensions must agree"
+    );
+}
+
+fn checked_scatter_counts<const NDIM: usize>(
+    shape: [usize; NDIM],
+    local_counts: &[usize],
+    data_len: usize,
+) -> Option<Vec<usize>> {
+    let trailing_elements = shape.iter().skip(1).product::<usize>();
+    let counts = local_counts
+        .iter()
+        .map(|&count| count * trailing_elements)
+        .collect::<Vec<_>>();
+    (counts.iter().sum::<usize>() == data_len).then_some(counts)
+}
 
 /// Distributed Array.
 ///
@@ -113,19 +168,17 @@ where
     ///
     /// This method collects the distributed array into local arrays on all processes.
     /// The output is a local array on each process that has all the data of the original distributed array.
-    pub fn gather_to_all(&self) -> DynArray<Item, NDIM> {
+    pub fn gather_to_all(&self) -> DynArray<Item, NDIM>
+    where
+        C: CommunicatorCollectives,
+    {
         let comm = self.index_layout.comm();
-        let this_process = comm.this_process();
 
         // We evaluate into a new array to ensure that we are row-major contiguous.
         let send_arr = StridedDynArray::row_major_from(&self.local);
 
         // The local shape of the array.
         let local_shape = self.local.shape();
-        // This is the number of elements from the second dimension onwards.
-        // This is the same on every process as only the first dmension is distributed.
-        // Since an empty iterator returns a one value this line works also if we have a 1D array.
-        let other_dims_count = local_shape.iter().skip(1).product::<usize>();
         // This is going to be the new global shape. All dimensions except the first one are the
         // same as the local shape. The first dimension is the number of global indices.
         let global_shape = {
@@ -133,23 +186,10 @@ where
             tmp[0] = self.index_layout.number_of_global_indices();
             tmp
         };
-        // We create a new row-major array to send data into.
-        // This is necessary as we are sending row slices
+        collective_nonleading_shape_agreement(comm, local_shape);
+        let data = gather_values_to_all(send_arr.data().unwrap(), comm);
         let mut recv_arr = StridedDynArray::<Item, NDIM>::row_major(global_shape);
-
-        // Take the first comm.size elements of the counts. (counts is 1 + comm.size long)
-        // We also have to multiply the counts by the number of elements in the second dimension
-        // onwards. This is the same on every process as only the first dimension is distributed.
-        let counts = self
-            .index_layout
-            .local_counts()
-            .iter()
-            .map(|&x| (other_dims_count * x) as i32)
-            .collect::<Vec<i32>>();
-        let displacements: Vec<i32> = crate::distributed_tools::displacements(&counts);
-        let mut partition = PartitionMut::new(recv_arr.data_mut().unwrap(), counts, displacements);
-        this_process.all_gather_varcount_into(send_arr.data().unwrap(), &mut partition);
-        // Finally, we convert the data back to a standard column-major array
+        recv_arr.data_mut().unwrap().copy_from_slice(&data);
         recv_arr.eval()
     }
 }
@@ -163,30 +203,36 @@ where
     /// Gather the array to rank `root`.
     ///
     /// This method needs to be called on all ranks that are not root. On root call [DistributedArray::gather_to_one_root].
-    pub fn gather_to_one(&self, root: usize) {
+    pub fn gather_to_one(&self, root: usize)
+    where
+        C: CommunicatorCollectives,
+    {
         let comm = self.index_layout.comm();
+        collective_root_agreement(comm, root);
+        collective_nonleading_shape_agreement(comm, self.local.shape());
         let send_arr = StridedDynArray::row_major_from(&self.local);
-        let target_process = comm.process_at_rank(root as Rank);
-
-        target_process.gather_varcount_into(send_arr.data().unwrap());
+        assert!(
+            gather_to_rank(send_arr.data().unwrap(), root, comm).is_none(),
+            "only the gather root receives data"
+        );
     }
 
     /// Gather the array to a single rank.
     ///
     /// Call this on the `root` to which the array is sent. On other ranks call [DistributedArray::gather_to_one].
-    pub fn gather_to_one_root(&self) -> DynArray<Item, NDIM> {
+    pub fn gather_to_one_root(&self) -> DynArray<Item, NDIM>
+    where
+        C: CommunicatorCollectives,
+    {
         let comm = self.index_layout.comm();
-        let this_process = comm.this_process();
+        collective_root_agreement(comm, comm.rank() as usize);
+        collective_nonleading_shape_agreement(comm, self.local.shape());
 
         // We evaluate into a new array to ensure that we are row-major contiguous.
         let send_arr = StridedDynArray::row_major_from(&self.local);
 
         // The local shape of the array.
         let local_shape = self.local.shape();
-        // This is the number of elements from the second dimension onwards.
-        // This is the same on every process as only the first dmension is distributed.
-        // Since an empty iterator returns a one value this line works also if we have a 1D array.
-        let other_dims_count = local_shape.iter().skip(1).product::<usize>();
         // This is going to be the new global shape. All dimensions except the first one are the
         // same as the local shape. The first dimension is the number of global indices.
         let global_shape = {
@@ -194,24 +240,10 @@ where
             tmp[0] = self.index_layout.number_of_global_indices();
             tmp
         };
-        // We create a new row-major array to send data into.
-        // This is necessary as we are sending row slices
+        let data = gather_to_rank(send_arr.data().unwrap(), comm.rank() as usize, comm)
+            .expect("the gather root receives data after collective validation");
         let mut recv_arr = StridedDynArray::<Item, NDIM>::row_major(global_shape);
-
-        // Take the first comm.size elements of the counts. (counts is 1 + comm.size long)
-        // We also have to multiply the counts by the number of elements in the second dimension
-        // onwards. This is the same on every process as only the first dimension is distributed.
-        let counts = self
-            .index_layout
-            .local_counts()
-            .iter()
-            .map(|&x| (other_dims_count * x) as i32)
-            .collect::<Vec<i32>>();
-
-        let displacements: Vec<i32> = crate::distributed_tools::displacements(&counts);
-        let mut partition = PartitionMut::new(recv_arr.data_mut().unwrap(), counts, displacements);
-        this_process.gather_varcount_into_root(send_arr.data().unwrap(), &mut partition);
-        // Finally, we convert the data back to a standard column-major array
+        recv_arr.data_mut().unwrap().copy_from_slice(&data);
         recv_arr.eval()
     }
 }
@@ -225,37 +257,37 @@ where
     ///
     /// The data is always scattered out along the first axis of the array.
     /// Call this method on root. On other ranks call [Array::scatter_from_one].
-    pub fn scatter_from_one_root<'a, C: Communicator>(
+    pub fn scatter_from_one_root<'a, C: CommunicatorCollectives>(
         &self,
         index_layout: Rc<IndexLayout<'a, C>>,
     ) -> DistributedArray<'a, C, BaseArray<VectorContainer<Item>, NDIM>, NDIM> {
         let comm = index_layout.comm();
+        collective_root_agreement(comm, comm.rank() as usize);
         let this_process = comm.this_process();
 
-        // We first need to send around the dimension of the array to all processes.
+        // Validate root-owned shape/count metadata before broadcasting either it or
+        // the scatter payload. Non-root callers receive this result in the matching
+        // helper before entering their shape broadcast.
+        let mut valid = false;
+        let mut counts = Vec::new();
+        if let Some(checked_counts) =
+            checked_scatter_counts(self.shape(), &index_layout.local_counts(), self.len())
+        {
+            valid = checked_counts
+                .iter()
+                .all(|&count| i32::try_from(count).is_ok());
+            counts = checked_counts;
+        }
+        this_process.broadcast_into(&mut valid);
+        assert!(valid, "invalid distributed-array scatter shape or counts");
+
+        // We first send around the shape only after its count-derived payload
+        // metadata has been checked.
         let mut my_shape = self.shape();
-
-        let other_dims_count = my_shape.iter().skip(1).product::<usize>();
-
         this_process.broadcast_into(my_shape.as_mut_slice());
-
-        // We now have the shape of the array on all processes. Let's prepare the sending of the
-        // data.
 
         // We evaluate into a new array to ensure that we are row-major contiguous.
         let send_arr = StridedDynArray::row_major_from(self);
-
-        // Take the first comm.size elements of the counts. (counts is 1 + comm.size long)
-        // We also have to multiply the counts by the number of elements in the second dimension
-        // onwards. This is the same on every process as only the first dimension is distributed.
-        let counts = index_layout
-            .local_counts()
-            .iter()
-            .map(|&x| other_dims_count * x)
-            .collect::<Vec<usize>>();
-
-        // We can now scatter the data around.
-
         let my_data = scatterv_root(comm, &counts, send_arr.data().unwrap());
         // We wrap this data into an array view and then transpose it to get a standard column-major array.
         {
@@ -274,17 +306,22 @@ where
     ///
     /// The data is always scattered out along the first axis of the array.
     /// Call this method on all ranks that are not `root`.
-    pub fn scatter_from_one<'a, C: Communicator>(
+    pub fn scatter_from_one<'a, C: CommunicatorCollectives>(
         root: usize,
         index_layout: Rc<IndexLayout<'a, C>>,
     ) -> DistributedArray<'a, C, BaseArray<VectorContainer<Item>, NDIM>, NDIM> {
         let comm = index_layout.comm();
+        collective_root_agreement(comm, root);
+
+        let root_process = comm.process_at_rank(root as Rank);
+        let mut valid = false;
+        root_process.broadcast_into(&mut valid);
+        assert!(valid, "invalid distributed-array scatter shape or counts");
 
         let my_shape = {
             let mut my_shape = [0_usize; NDIM];
 
-            comm.process_at_rank(root as Rank)
-                .broadcast_into(my_shape.as_mut_slice());
+            root_process.broadcast_into(my_shape.as_mut_slice());
 
             my_shape[0] = index_layout.number_of_local_indices();
             my_shape
@@ -475,6 +512,25 @@ where
         alpha: Item,
     ) -> DistributedArray<'a, C, ArrayScalarMult<Item, ArrayImpl, NDIM>, NDIM> {
         DistributedArray::new(self.index_layout.clone(), self.local.scalar_mul(alpha))
+    }
+}
+
+impl<'a, C, ArrayImpl, Item> Inner<DistributedArray<'a, C, ArrayImpl, 1>>
+    for DistributedArray<'a, C, ArrayImpl, 1>
+where
+    C: Communicator,
+    ArrayImpl: Shape<1> + UnsafeRandom1DAccessByValue<Item = Item>,
+    Item: Conj<Output = Item>
+        + std::ops::Mul<Output = Item>
+        + std::ops::Add<Output = Item>
+        + Equivalence
+        + Copy
+        + Default,
+{
+    type Output = Item;
+
+    fn inner(&self, other: &DistributedArray<'a, C, ArrayImpl, 1>) -> Self::Output {
+        DistributedArray::inner(self, other).unwrap_or_default()
     }
 }
 
@@ -1041,10 +1097,13 @@ macro_rules! dist_vec {
 /// The index layout must be provided as `RefCell`, that is as `Rc<IndexLayout>`.
 #[macro_export]
 macro_rules! dist_mat {
-    ($scalar:ty, $index_layout:expr, ncols:expr) => {
+    ($scalar:ty, $index_layout:expr, $ncols:expr) => {
         $crate::sparse::distributed_array::DistributedArray::new(
             $index_layout,
-            $crate::DynArray::<$scalar, 2>::new([$index_layout.number_of_local_indices(), ncols]),
+            $crate::DynArray::<$scalar, 2>::from_shape([
+                $index_layout.number_of_local_indices(),
+                $ncols,
+            ]),
         )
     };
 }

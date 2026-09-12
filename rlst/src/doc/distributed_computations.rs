@@ -43,6 +43,31 @@
 //!   Create a distributed array by scattering out an array from a single process onto all processes,
 //!   distributing the first dimension as determined by `IndexLayout`. Call from the root rank.
 //!
+//! ## Empty partitions and migration
+//!
+//! An [`IndexLayout`](crate::distributed_tools::IndexLayout) may contain repeated
+//! offsets, so a rank may own no indices and the entire layout may be empty. Every
+//! rank must still call distributed operations in the same order; an empty local
+//! slice is not a reason to skip a collective. Gather and redistribution routines
+//! preserve empty slices, and sortedness of a globally empty sequence is `true`.
+//!
+//! `global_min` and `global_max` now return `Option<T>`: they return `None` when
+//! the global input is empty. Callers that previously assumed a value must handle
+//! this case explicitly. `communicate_back` returns the first value on the next
+//! *nonempty* rank (or `None`), including when the calling rank is empty.
+//! `parsort` accepts empty local input and can produce empty output ranks; it
+//! preserves all records but promises only approximate output balance.
+//!
+//! Chunked ghost, mapping, and permutation operations require a positive,
+//! communicator-consistent chunk size even when the local input is empty. Roots,
+//! layouts, and other collective metadata must likewise agree on every rank.
+//! RLST validates metadata before a payload phase where possible, but cannot
+//! recover from ranks that do not enter the same collective sequence, mismatched
+//! communicators, arbitrary user panics, allocation failure, or MPI runtime
+//! failure. Empty subsets embedded with
+//! [`IndexEmbedding`](crate::distributed_tools::index_embedding::IndexEmbedding) leave all
+//! unselected output positions at `Default::default()`.
+//!
 //! # Distributed sparse matrices
 //!
 //! RLST supports distributed CSR matrices via the [DistributedCsrMatrix](crate::sparse::distributed_csr_mat::DistributedCsrMatrix)

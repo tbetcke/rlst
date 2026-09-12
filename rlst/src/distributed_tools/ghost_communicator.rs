@@ -17,6 +17,25 @@ use mpi_sys;
 use mpi::topology::SimpleCommunicator;
 use mpi::traits::{AsRaw, Communicator, CommunicatorCollectives, Equivalence, FromRaw};
 
+type ChunkedMetadata = (Vec<i32>, Vec<i32>, Vec<i32>, Vec<i32>);
+
+fn checked_chunked_metadata(
+    send_counts: &[i32],
+    receive_counts: &[i32],
+    send_displacements: &[i32],
+    receive_displacements: &[i32],
+    chunk_size: usize,
+) -> Option<ChunkedMetadata> {
+    let chunk_size = i32::try_from(chunk_size).ok()?;
+    let scale = |values: &[i32]| values.iter().map(|&value| value * chunk_size).collect();
+    Some((
+        scale(send_counts),
+        scale(receive_counts),
+        scale(send_displacements),
+        scale(receive_displacements),
+    ))
+}
+
 /// Ghost communicator
 pub struct GhostCommunicator<I: Default + Copy + Equivalence> {
     /// The `out` ranks that data is sent to from the current process.
@@ -46,24 +65,74 @@ pub struct GhostCommunicator<I: Default + Copy + Equivalence> {
 }
 
 impl<I: Default + Copy + Equivalence> GhostCommunicator<I> {
+    fn validate_value_exchange(
+        &self,
+        out_len: usize,
+        in_len: usize,
+        chunk_size: usize,
+        expected_out: usize,
+        expected_in: usize,
+        mpi_metadata_valid: bool,
+    ) {
+        let metadata = [chunk_size, out_len, in_len];
+        let mut all_metadata = vec![0_usize; self.forward_comm.size() as usize * metadata.len()];
+        self.forward_comm
+            .all_gather_into(&metadata[..], &mut all_metadata);
+        let local_valid = chunk_size > 0
+            && expected_out == out_len
+            && expected_in == in_len
+            && mpi_metadata_valid
+            && all_metadata
+                .chunks_exact(metadata.len())
+                .all(|metadata| metadata[0] == chunk_size);
+        let mut valid = false;
+        self.forward_comm.all_reduce_into(
+            &local_valid,
+            &mut valid,
+            mpi::collective::SystemOperation::logical_and(),
+        );
+        assert!(valid, "invalid or inconsistent ghost exchange metadata");
+    }
+
+    fn chunked_metadata(&self, chunk_size: usize) -> Option<ChunkedMetadata> {
+        checked_chunked_metadata(
+            &self.send_counts,
+            &self.receive_counts,
+            &self.send_displacements,
+            &self.receive_displacements,
+            chunk_size,
+        )
+    }
+
     /// Create new ghost communicator.
     ///
     /// # Arguments
     /// - `ghost_indices` - The ghost indices required on the current process.
     /// - `owning_ranks` - The ranks of the processes that own the ghost indices.
     /// - `comm` - The MPI communicator.
-    pub fn new<C: Communicator>(
+    pub fn new<C: CommunicatorCollectives>(
         ghost_indices: &[I],
         owning_ranks: &[usize],
         comm: &C,
     ) -> GhostCommunicator<I> {
-        // Get the processes of global indices and create a map rank -> indices_on_rank
-
-        let mut receive_counts = vec![0; comm.size() as usize];
-
+        // Get the processes of global indices and create a map rank -> indices_on_rank.
+        // Validate on every rank before the all-to-all graph setup so invalid local
+        // ownership cannot strand peers in that collective.
+        let mut receive_counts = vec![0_i32; comm.size() as usize];
+        let mut valid = ghost_indices.len() == owning_ranks.len();
         for &rank in owning_ranks {
-            receive_counts[rank] += 1;
+            valid &= rank < comm.size() as usize;
+            if rank < comm.size() as usize {
+                receive_counts[rank] += 1;
+            }
         }
+        let mut all_valid = false;
+        comm.all_reduce_into(
+            &valid,
+            &mut all_valid,
+            mpi::collective::SystemOperation::logical_and(),
+        );
+        assert!(all_valid, "invalid ghost owner metadata");
 
         // Now sort the ghost indices by ranks
         // These are the receive indices, meaning the indices that we are receiving on the process.
@@ -101,8 +170,8 @@ impl<I: Default + Copy + Equivalence> GhostCommunicator<I> {
         // are the ranks from which we receive data and out-neighbors
         // are the ranks to which we send data.
 
-        let mut total_send_count = 0;
-        let mut total_receive_count = 0;
+        let mut total_send_count = 0_i32;
+        let mut total_receive_count = 0_i32;
 
         // We restrict the send and receive counts to the neighbors
         // and also compute the corresponding displacements.
@@ -127,6 +196,18 @@ impl<I: Default + Copy + Equivalence> GhostCommunicator<I> {
             }
             (neighbor_receive_counts, neighbor_send_counts)
         };
+        let construction_valid =
+            i32::try_from(in_ranks.len()).is_ok() && i32::try_from(out_ranks.len()).is_ok();
+        let mut all_construction_valid = false;
+        comm.all_reduce_into(
+            &construction_valid,
+            &mut all_construction_valid,
+            mpi::collective::SystemOperation::logical_and(),
+        );
+        assert!(
+            all_construction_valid,
+            "ghost communication metadata exceeds MPI limits"
+        );
 
         // To create the actual communicator need to call into mpi-sys as not yet wrapped into
         // higher level interface.
@@ -135,10 +216,10 @@ impl<I: Default + Copy + Equivalence> GhostCommunicator<I> {
             let mut raw_comm = mpi_sys::RSMPI_COMM_NULL;
             mpi_sys::MPI_Dist_graph_create_adjacent(
                 comm.as_raw(),
-                in_ranks.len() as i32,
+                i32::try_from(in_ranks.len()).expect("collectively validated ghost in-neighbors"),
                 in_ranks.as_ptr(),
                 mpi_sys::RSMPI_UNWEIGHTED(),
-                out_ranks.len() as i32,
+                i32::try_from(out_ranks.len()).expect("collectively validated ghost out-neighbors"),
                 out_ranks.as_ptr(),
                 mpi_sys::RSMPI_UNWEIGHTED(),
                 mpi_sys::RSMPI_INFO_NULL,
@@ -155,10 +236,10 @@ impl<I: Default + Copy + Equivalence> GhostCommunicator<I> {
             let mut raw_comm = mpi_sys::RSMPI_COMM_NULL;
             mpi_sys::MPI_Dist_graph_create_adjacent(
                 comm.as_raw(),
-                out_ranks.len() as i32,
+                i32::try_from(out_ranks.len()).expect("collectively validated ghost out-neighbors"),
                 out_ranks.as_ptr(),
                 mpi_sys::RSMPI_UNWEIGHTED(),
-                in_ranks.len() as i32,
+                i32::try_from(in_ranks.len()).expect("collectively validated ghost in-neighbors"),
                 in_ranks.as_ptr(),
                 mpi_sys::RSMPI_UNWEIGHTED(),
                 mpi_sys::RSMPI_INFO_NULL,
@@ -269,19 +350,25 @@ impl<I: Default + Copy + Equivalence> GhostCommunicator<I> {
     /// This updates ghosts on the receiver process with the values of the ghosts from
     /// their owning process.
     pub fn forward_send_values<T: Equivalence>(&self, out_values: &[T], in_values: &mut [T]) {
-        assert_eq!(in_values.len(), self.total_receive_count);
-        assert_eq!(out_values.len(), self.total_send_count);
+        self.validate_value_exchange(
+            out_values.len(),
+            in_values.len(),
+            1,
+            self.total_send_count,
+            self.total_receive_count,
+            true,
+        );
 
         unsafe {
             mpi_sys::MPI_Neighbor_alltoallv(
                 out_values.as_ptr() as *const c_void,
                 self.send_counts.as_ptr(),
                 self.send_displacements.as_ptr(),
-                <I as Equivalence>::equivalent_datatype().as_raw(),
+                <T as Equivalence>::equivalent_datatype().as_raw(),
                 in_values.as_mut_ptr() as *mut c_void,
                 self.receive_counts.as_ptr(),
                 self.receive_displacements.as_ptr(),
-                <I as Equivalence>::equivalent_datatype().as_raw(),
+                <T as Equivalence>::equivalent_datatype().as_raw(),
                 self.forward_comm.as_raw(),
             );
         }
@@ -298,40 +385,34 @@ impl<I: Default + Copy + Equivalence> GhostCommunicator<I> {
         in_values: &mut [T],
         chunk_size: usize,
     ) {
-        assert_eq!(in_values.len(), self.total_receive_count * chunk_size);
-        assert_eq!(out_values.len(), self.total_send_count * chunk_size);
-
-        let chunked_send_counts = self
-            .send_counts
-            .iter()
-            .map(|&x| x * chunk_size as i32)
-            .collect::<Vec<_>>();
-        let chunked_receive_counts = self
-            .receive_counts
-            .iter()
-            .map(|&x| x * chunk_size as i32)
-            .collect::<Vec<_>>();
-        let chunked_send_displacements = self
-            .send_displacements
-            .iter()
-            .map(|&x| x * chunk_size as i32)
-            .collect::<Vec<_>>();
-        let chunked_receive_displacements = self
-            .receive_displacements
-            .iter()
-            .map(|&x| x * chunk_size as i32)
-            .collect::<Vec<_>>();
+        let expected_in = self.total_receive_count * chunk_size;
+        let expected_out = self.total_send_count * chunk_size;
+        let metadata = self.chunked_metadata(chunk_size);
+        self.validate_value_exchange(
+            out_values.len(),
+            in_values.len(),
+            chunk_size,
+            expected_out,
+            expected_in,
+            metadata.is_some(),
+        );
+        let (
+            chunked_send_counts,
+            chunked_receive_counts,
+            chunked_send_displacements,
+            chunked_receive_displacements,
+        ) = metadata.expect("collectively validated ghost chunk metadata");
 
         unsafe {
             mpi_sys::MPI_Neighbor_alltoallv(
                 out_values.as_ptr() as *const c_void,
                 chunked_send_counts.as_ptr(),
                 chunked_send_displacements.as_ptr(),
-                <I as Equivalence>::equivalent_datatype().as_raw(),
+                <T as Equivalence>::equivalent_datatype().as_raw(),
                 in_values.as_mut_ptr() as *mut c_void,
                 chunked_receive_counts.as_ptr(),
                 chunked_receive_displacements.as_ptr(),
-                <I as Equivalence>::equivalent_datatype().as_raw(),
+                <T as Equivalence>::equivalent_datatype().as_raw(),
                 self.forward_comm.as_raw(),
             );
         }
@@ -341,19 +422,25 @@ impl<I: Default + Copy + Equivalence> GhostCommunicator<I> {
     ///
     /// This back propagates updated ghost values from the receiver to the original owning process.
     pub fn backward_send_values<T: Equivalence>(&self, out_values: &[T], in_values: &mut [T]) {
-        assert_eq!(out_values.len(), self.total_receive_count);
-        assert_eq!(in_values.len(), self.total_send_count);
+        self.validate_value_exchange(
+            out_values.len(),
+            in_values.len(),
+            1,
+            self.total_receive_count,
+            self.total_send_count,
+            true,
+        );
 
         unsafe {
             mpi_sys::MPI_Neighbor_alltoallv(
                 out_values.as_ptr() as *const c_void,
                 self.receive_counts.as_ptr(),
                 self.receive_displacements.as_ptr(),
-                <I as Equivalence>::equivalent_datatype().as_raw(),
+                <T as Equivalence>::equivalent_datatype().as_raw(),
                 in_values.as_mut_ptr() as *mut c_void,
                 self.send_counts.as_ptr(),
                 self.send_displacements.as_ptr(),
-                <I as Equivalence>::equivalent_datatype().as_raw(),
+                <T as Equivalence>::equivalent_datatype().as_raw(),
                 self.backward_comm.as_raw(),
             );
         }
@@ -370,42 +457,48 @@ impl<I: Default + Copy + Equivalence> GhostCommunicator<I> {
         in_values: &mut [T],
         chunk_size: usize,
     ) {
-        assert_eq!(out_values.len(), self.total_receive_count * chunk_size);
-        assert_eq!(in_values.len(), self.total_send_count * chunk_size);
-
-        let chunked_send_counts = self
-            .send_counts
-            .iter()
-            .map(|&x| x * chunk_size as i32)
-            .collect::<Vec<_>>();
-        let chunked_receive_counts = self
-            .receive_counts
-            .iter()
-            .map(|&x| x * chunk_size as i32)
-            .collect::<Vec<_>>();
-        let chunked_send_displacements = self
-            .send_displacements
-            .iter()
-            .map(|&x| x * chunk_size as i32)
-            .collect::<Vec<_>>();
-        let chunked_receive_displacements = self
-            .receive_displacements
-            .iter()
-            .map(|&x| x * chunk_size as i32)
-            .collect::<Vec<_>>();
+        let expected_out = self.total_receive_count * chunk_size;
+        let expected_in = self.total_send_count * chunk_size;
+        let metadata = self.chunked_metadata(chunk_size);
+        self.validate_value_exchange(
+            out_values.len(),
+            in_values.len(),
+            chunk_size,
+            expected_out,
+            expected_in,
+            metadata.is_some(),
+        );
+        let (
+            chunked_send_counts,
+            chunked_receive_counts,
+            chunked_send_displacements,
+            chunked_receive_displacements,
+        ) = metadata.expect("collectively validated ghost chunk metadata");
 
         unsafe {
             mpi_sys::MPI_Neighbor_alltoallv(
                 out_values.as_ptr() as *const c_void,
                 chunked_receive_counts.as_ptr(),
                 chunked_receive_displacements.as_ptr(),
-                <I as Equivalence>::equivalent_datatype().as_raw(),
+                <T as Equivalence>::equivalent_datatype().as_raw(),
                 in_values.as_mut_ptr() as *mut c_void,
                 chunked_send_counts.as_ptr(),
                 chunked_send_displacements.as_ptr(),
-                <I as Equivalence>::equivalent_datatype().as_raw(),
+                <T as Equivalence>::equivalent_datatype().as_raw(),
                 self.backward_comm.as_raw(),
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::checked_chunked_metadata;
+
+    #[test]
+    fn chunked_metadata_rejects_count_and_displacement_overflow() {
+        assert!(checked_chunked_metadata(&[i32::MAX], &[1], &[0], &[0], 2).is_none());
+        assert!(checked_chunked_metadata(&[1], &[1], &[i32::MAX], &[0], 2).is_none());
+        assert!(checked_chunked_metadata(&[1], &[1], &[0], &[0], i32::MAX as usize + 1).is_none());
     }
 }

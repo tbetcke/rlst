@@ -6,7 +6,10 @@
 use crate::distributed_tools::all_to_allv;
 
 use itertools::Itertools;
-use mpi::traits::{Communicator, CommunicatorCollectives, Equivalence};
+use mpi::{
+    topology::CommunicatorRelation,
+    traits::{Communicator, CommunicatorCollectives, Equivalence},
+};
 
 // An index layout specifying index ranges on each rank.
 //
@@ -42,6 +45,9 @@ impl<'a, C: Communicator> IndexLayout<'a, C> {
     ///
     /// `scan` is a vector of cumulative counts of indices of all previous ranks.
     pub fn new(scan: Vec<usize>, comm: &'a C) -> Self {
+        assert_eq!(scan.len(), comm.size() as usize + 1);
+        assert_eq!(scan.first(), Some(&0));
+        assert!(scan.windows(2).all(|window| window[0] <= window[1]));
         Self { scan, comm }
     }
 
@@ -215,11 +221,60 @@ impl<'a, C: Communicator> IndexLayout<'a, C> {
     }
 
     /// Remap indices from one layout to another.
-    pub fn remap<T: Equivalence>(&self, other: &IndexLayout<'a, C>, data: &[T]) -> Vec<T> {
-        assert_eq!(data.len(), self.number_of_local_indices());
-        assert_eq!(
-            self.number_of_global_indices(),
-            other.number_of_global_indices()
+    pub fn remap<T: Equivalence + Default + Clone>(
+        &self,
+        other: &IndexLayout<'a, C>,
+        data: &[T],
+    ) -> Vec<T> {
+        // First exchange only scalar metadata on the source communicator.  In
+        // particular, do not gather `other.scan` until its length and
+        // communicator have been agreed: an incompatible target communicator
+        // can otherwise make the fixed-count offset gather itself invalid.
+        let same_comm = self.comm.compare(other.comm) == CommunicatorRelation::Identical;
+        let layout_len = self.scan.len();
+        let target_layout_len = other.scan.len();
+        let mut target_layout_lens = vec![0_usize; self.comm.size() as usize];
+        self.comm
+            .all_gather_into(&target_layout_len, &mut target_layout_lens);
+        let scalar_metadata_valid = same_comm
+            && target_layout_len == layout_len
+            && target_layout_lens
+                .iter()
+                .all(|&peer_layout_len| peer_layout_len == layout_len)
+            && data.len() == self.number_of_local_indices()
+            && self.number_of_global_indices() == other.number_of_global_indices();
+        let mut all_scalar_metadata_valid = false;
+        self.comm.all_reduce_into(
+            &scalar_metadata_valid,
+            &mut all_scalar_metadata_valid,
+            mpi::collective::SystemOperation::logical_and(),
+        );
+        assert!(
+            all_scalar_metadata_valid,
+            "layouts must use identical communicators and compatible offset/data sizes"
+        );
+
+        let mut all_source_scans = vec![0_usize; self.comm.size() as usize * layout_len];
+        let mut all_target_scans = vec![0_usize; self.comm.size() as usize * layout_len];
+        self.comm
+            .all_gather_into(self.scan.as_slice(), &mut all_source_scans);
+        self.comm
+            .all_gather_into(other.scan.as_slice(), &mut all_target_scans);
+        let offsets_valid = all_source_scans
+            .chunks_exact(layout_len)
+            .all(|scan| scan == self.scan.as_slice())
+            && all_target_scans
+                .chunks_exact(layout_len)
+                .all(|scan| scan == other.scan.as_slice());
+        let mut all_offsets_valid = false;
+        self.comm.all_reduce_into(
+            &offsets_valid,
+            &mut all_offsets_valid,
+            mpi::collective::SystemOperation::logical_and(),
+        );
+        assert!(
+            all_offsets_valid,
+            "layouts must have peer-consistent offsets"
         );
 
         let my_range = self.local_range();

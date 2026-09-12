@@ -21,6 +21,7 @@ use std::rc::Rc;
 
 use itertools::{Itertools, izip};
 use mpi::collective::CommunicatorCollectives;
+use mpi::topology::CommunicatorRelation;
 use mpi::traits::{Communicator, Equivalence};
 use num::One;
 
@@ -29,7 +30,7 @@ use crate::distributed_tools::{GhostCommunicator, IndexLayout, all_to_allv, sort
 use crate::{
     AijIteratorByValue, AsMatrixApply, BaseItem, FromAijDistributed, Nonzeros, Shape,
     SparseMatrixType, UnsafeRandom1DAccessByValue, UnsafeRandom1DAccessMut,
-    UnsafeRandomAccessByValue, UnsafeRandomAccessMut, empty_array,
+    UnsafeRandomAccessByValue, UnsafeRandomAccessMut,
 };
 
 use super::SparseMatType;
@@ -69,8 +70,12 @@ where
         domain_layout: Rc<IndexLayout<'a, C>>,
         range_layout: Rc<IndexLayout<'a, C>>,
     ) -> Self {
-        // Both layouts must have the same communicator.
-        assert!(std::ptr::addr_eq(domain_layout.comm(), range_layout.comm()));
+        // Both layouts must use the same MPI communicator. `from_aij` has
+        // already agreed this condition collectively before reaching `new`.
+        assert_eq!(
+            domain_layout.comm().compare(range_layout.comm()),
+            CommunicatorRelation::Identical
+        );
 
         // The indptr vector must have one more element than the number of local indices.
         assert_eq!(1 + range_layout.number_of_local_indices(), indptr.len());
@@ -275,11 +280,29 @@ where
         cols: &[usize],
         data: &[<Self as crate::BaseItem>::Item],
     ) -> Self {
-        // Require the communicators to be identical.
-
-        assert!(std::ptr::addr_eq(domain_layout.comm(), range_layout.comm()));
-
+        // Validate every contributor before normalization or routing.  In particular,
+        // a malformed empty-rank contribution must not panic while peers enter an
+        // all-to-all exchange.
         let comm = domain_layout.comm();
+        let local_valid = comm.compare(range_layout.comm()) == CommunicatorRelation::Identical
+            && rows.len() == cols.len()
+            && rows.len() == data.len()
+            && rows
+                .iter()
+                .all(|&row| row < range_layout.number_of_global_indices())
+            && cols
+                .iter()
+                .all(|&col| col < domain_layout.number_of_global_indices());
+        let mut valid = false;
+        comm.all_reduce_into(
+            &local_valid,
+            &mut valid,
+            mpi::collective::SystemOperation::logical_and(),
+        );
+        assert!(
+            valid,
+            "AIJ lengths, indices, and layout communicators must be valid on every rank"
+        );
 
         let (rows, cols, data) = normalize_aij(rows, cols, data, SparseMatType::Csr);
 
@@ -309,43 +332,25 @@ where
         // We now have all the data at the right processes.
         // We can now create the indptr array.
 
-        // First create the special case that there are no rows at our local process.
-
-        if rows.is_empty() {
-            // The index pointer of an empty sparse matrix still has one element.
-            // It contains the total number of elements, namely zero.
-            let indptr = empty_array::<_, 1>();
-            let indices = empty_array::<_, 1>();
-            let data = empty_array::<_, 1>();
-
-            Self::new(indices, indptr, data, domain_layout, range_layout)
-        } else {
-            let mut indptr =
-                Vec::<usize>::with_capacity(1 + range_layout.number_of_local_indices());
-            let nelems = data.len();
-
-            // The actual rows in the aij format start at a nonzero index
-            // When we iterate through in the following loop we need to
-            // take this into account.
-            let first_row = range_layout.local_range().0;
-
-            let mut count: usize = 0;
-            for row in first_row..first_row + range_layout.number_of_local_indices() {
-                indptr.push(count);
-                while count < nelems && row == rows[count] {
-                    count += 1;
-                }
-            }
+        let mut indptr = Vec::<usize>::with_capacity(1 + range_layout.number_of_local_indices());
+        let nelems = data.len();
+        let first_row = range_layout.local_range().0;
+        let mut count = 0;
+        for row in first_row..first_row + range_layout.number_of_local_indices() {
             indptr.push(count);
-
-            Self::new(
-                cols.into(),
-                indptr.into(),
-                data.into(),
-                domain_layout,
-                range_layout,
-            )
+            while count < nelems && row == rows[count] {
+                count += 1;
+            }
         }
+        indptr.push(count);
+
+        Self::new(
+            cols.into(),
+            indptr.into(),
+            data.into(),
+            domain_layout,
+            range_layout,
+        )
     }
 }
 
@@ -385,41 +390,25 @@ where
 
         let my_rank = self.domain_layout.comm().rank() as usize;
 
-        let out_values = {
-            let mut out_values =
-                Vec::<Self::Item>::with_capacity(self.domain_ghosts.total_send_count());
-            let out_buff: &mut [Self::Item] =
-                unsafe { std::mem::transmute(out_values.spare_capacity_mut()) };
+        let mut out_values = vec![Self::Item::default(); self.domain_ghosts.total_send_count()];
+        for (out, out_index) in izip!(
+            out_values.iter_mut(),
+            self.domain_ghosts.send_indices.iter()
+        ) {
+            *out = x
+                .local
+                .get_value([self
+                    .domain_layout()
+                    .global2local(my_rank, *out_index)
+                    .unwrap()])
+                .unwrap();
+        }
 
-            for (out, out_index) in
-                izip!(out_buff.iter_mut(), self.domain_ghosts.send_indices.iter())
-            {
-                *out = x
-                    .local
-                    .get_value([self
-                        .domain_layout()
-                        .global2local(my_rank, *out_index)
-                        .unwrap()])
-                    .unwrap();
-            }
-
-            unsafe { out_values.set_len(self.domain_ghosts.total_send_count()) };
-            out_values
-        };
-
-        let local_vec = {
-            let mut local_vec = Vec::<Self::Item>::with_capacity(self.local_dof_count);
-            local_vec.extend(x.local.iter_value());
-            let ghost_data: &mut [Item] =
-                unsafe { std::mem::transmute(local_vec.spare_capacity_mut()) };
-
-            // Prepare the values that are sent to other ranks
-
-            self.domain_ghosts
-                .forward_send_values(&out_values, ghost_data);
-            unsafe { local_vec.set_len(self.local_dof_count) };
-            local_vec
-        };
+        let mut local_vec = x.local.iter_value().collect::<Vec<_>>();
+        let ghost_start = local_vec.len();
+        local_vec.resize(self.local_dof_count, Self::Item::default());
+        self.domain_ghosts
+            .forward_send_values(&out_values, &mut local_vec[ghost_start..]);
 
         // Compute result
         self.local_matrix

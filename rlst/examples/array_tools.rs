@@ -117,8 +117,8 @@ fn test_global_min_max<C: Communicator>(comm: &C) {
 
     let arr = (0..n).map(|elem| rank * n + elem).collect_vec();
 
-    assert_eq!(global_max(&arr, comm), n * size - 1);
-    assert_eq!(global_min(&arr, comm), 0);
+    assert_eq!(global_max(&arr, comm), Some(n * size - 1));
+    assert_eq!(global_min(&arr, comm), Some(0));
 }
 
 fn main() {
