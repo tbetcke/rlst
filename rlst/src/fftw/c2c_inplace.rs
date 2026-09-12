@@ -6,7 +6,7 @@ use std::{
 };
 
 use crate::{
-    BaseItem, RawAccessMut, RlstScalar, Shape, Stride, c32, c64,
+    BaseItem, RlstScalar, Shape, StableRawAccessMut, Stride, c32, c64,
     fftw::{FftwPlanFlags, FftwPlanPtrType, FftwPlanPtrTypeTrait, PlanInplace},
 };
 
@@ -46,7 +46,7 @@ macro_rules! impl_c2c_inplace {
     ($ty: ty, $precision: ident) => {
         impl<ArrayImpl, const NDIM: usize> C2CPlan<$ty, ArrayImpl, NDIM> for Fft<ArrayImpl, NDIM>
         where
-            ArrayImpl: Shape<NDIM> + Stride<NDIM> + RawAccessMut<Item = $ty>,
+            ArrayImpl: Shape<NDIM> + Stride<NDIM> + StableRawAccessMut<Item = $ty>,
         {
             /// Create a new plan wrapped inside an array structure. Returns None if the Plan cannot be created.
             fn c2c_fft(

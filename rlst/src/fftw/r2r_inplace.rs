@@ -6,7 +6,7 @@ use std::{
 };
 
 use crate::{
-    BaseItem, RawAccessMut, RlstScalar, Shape, Stride,
+    BaseItem, RlstScalar, Shape, StableRawAccessMut, Stride,
     fftw::{FftwPlanFlags, FftwPlanPtrType, FftwPlanPtrTypeTrait, PlanInplace},
 };
 
@@ -38,7 +38,7 @@ macro_rules! impl_r2r_inplace {
     ($ty: ty, $precision: ident) => {
         impl<ArrayImpl, const NDIM: usize> R2RPlan<$ty, ArrayImpl, NDIM> for Fft<ArrayImpl, NDIM>
         where
-            ArrayImpl: Shape<NDIM> + Stride<NDIM> + RawAccessMut<Item = $ty>,
+            ArrayImpl: Shape<NDIM> + Stride<NDIM> + StableRawAccessMut<Item = $ty>,
         {
             /// Create a new plan wrapped inside an array structure. Returns None if the Plan cannot be created.
             fn r2r_fft(

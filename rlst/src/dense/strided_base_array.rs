@@ -9,14 +9,15 @@ use crate::{
     dense::layout::{check_multi_index_in_bounds, convert_1d_nd_from_shape, convert_nd_raw},
     traits::{
         accessors::{
-            RawAccess, RawAccessMut, UnsafeDisjointRandom1DAccessMut, UnsafeRandom1DAccessByRef,
-            UnsafeRandom1DAccessByValue, UnsafeRandom1DAccessMut, UnsafeRandomAccessByRef,
-            UnsafeRandomAccessByValue, UnsafeRandomAccessMut,
+            RawAccess, RawAccessMut, StableRawAccessMut, UnsafeDisjointRandom1DAccessMut,
+            UnsafeRandom1DAccessByRef, UnsafeRandom1DAccessByValue, UnsafeRandom1DAccessMut,
+            UnsafeRandomAccessByRef, UnsafeRandomAccessByValue, UnsafeRandomAccessMut,
         },
         base_operations::{BaseItem, Shape, Stride},
         data_container::{
-            ContainerType, DataContainer, MutableRawAccessDataContainer, RawAccessDataContainer,
-            RefDataContainer, RefDataContainerMut, ValueDataContainer,
+            ContainerType, DataContainer, DisjointRefDataContainerMut,
+            MutableRawAccessDataContainer, RawAccessDataContainer, RefDataContainer,
+            RefDataContainerMut, StableRawAccessDataContainer, ValueDataContainer,
         },
     },
 };
@@ -143,7 +144,7 @@ impl<Data: RefDataContainerMut, const NDIM: usize> UnsafeRandom1DAccessMut
 
 // SAFETY: `new` rejects layouts that alias logical indices, and the shape and stride
 // remain immutable for the lifetime of this value.
-unsafe impl<Data: RefDataContainerMut, const NDIM: usize> UnsafeDisjointRandom1DAccessMut
+unsafe impl<Data: DisjointRefDataContainerMut, const NDIM: usize> UnsafeDisjointRandom1DAccessMut
     for StridedBaseArray<Data, NDIM>
 {
 }
@@ -165,6 +166,11 @@ impl<Data: RawAccessDataContainer, const NDIM: usize> RawAccess for StridedBaseA
     fn data(&self) -> Option<&[Self::Item]> {
         self.data.data()
     }
+}
+
+unsafe impl<Data: StableRawAccessDataContainer, const NDIM: usize> StableRawAccessMut
+    for StridedBaseArray<Data, NDIM>
+{
 }
 
 impl<Data: MutableRawAccessDataContainer, const NDIM: usize> RawAccessMut

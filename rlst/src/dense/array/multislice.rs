@@ -419,6 +419,13 @@ mod test {
     }
 
     #[test]
+    fn test_multislice_iter_empty_axis_is_empty() {
+        let mut arr = DynArray::<f64, 3>::from_shape([2, 0, 4]);
+        assert_eq!(arr.multislice_iter::<1, 2>([1]).count(), 0);
+        assert_eq!(arr.multislice_iter_mut::<1, 2>([1]).count(), 0);
+    }
+
+    #[test]
     fn test_multislice_access() {
         let mut arr = DynArray::<f64, 4>::from_shape([2, 3, 4, 5]);
         arr.fill_from_seed_equally_distributed(0);

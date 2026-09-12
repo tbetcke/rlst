@@ -397,6 +397,10 @@ mod tests {
 
     #[test]
     fn rejects_missing_malformed_truncated_and_excess_data() {
+        let missing =
+            std::env::temp_dir().join(format!("rlst-mm-missing-{}.mtx", std::process::id()));
+        assert!(read_array_mm::<f64>(missing.to_str().unwrap()).is_err());
+
         let cases = [
             "",
             "not a header\n",
@@ -414,6 +418,27 @@ mod tests {
             );
             fs::remove_file(path).unwrap();
         }
+
+        let malformed_complex = fixture("%%MatrixMarket matrix array complex general\n1 1\n1\n");
+        assert!(read_array_mm::<c64>(malformed_complex.to_str().unwrap()).is_err());
+        fs::remove_file(malformed_complex).unwrap();
+
+        let truncated_coordinate =
+            fixture("%%MatrixMarket matrix coordinate real general\n2 2 2\n1 1 2\n");
+        assert!(read_coordinate_mm::<f64>(truncated_coordinate.to_str().unwrap()).is_err());
+        fs::remove_file(truncated_coordinate).unwrap();
+    }
+
+    #[test]
+    fn reads_real_coordinate_records() {
+        let path =
+            fixture("%%MatrixMarket matrix coordinate real general\n2 3 2\n2 3 -1.5\n1 1 2.5\n");
+        let matrix = read_coordinate_mm::<f64>(path.to_str().unwrap()).unwrap();
+        assert_eq!(
+            matrix.iter_aij_value().collect::<Vec<_>>(),
+            vec![([0, 0], 2.5), ([1, 2], -1.5)]
+        );
+        fs::remove_file(path).unwrap();
     }
 
     #[test]

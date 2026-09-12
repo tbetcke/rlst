@@ -16,10 +16,12 @@
 //!   always identical to `nnz`.
 //! - `data`: The data entries of the sparse matrix.
 //!
-//! CSR matrices are canonical: column indices are sorted within each row,
-//! duplicate coordinates are summed, and explicit zeros are removed. Both raw
-//! [`CsrMatrix::new`](crate::sparse::csr_mat::CsrMatrix::new) construction and
-//! AIJ construction enforce this invariant.
+//! CSR constructors produce a canonical representation: column indices are sorted within each
+//! row, duplicate coordinates are summed, and explicit zeros are removed. Both raw
+//! [`CsrMatrix::new`](crate::sparse::csr_mat::CsrMatrix::new) construction and AIJ construction
+//! enforce this construction-time invariant. Mutable entry access can subsequently introduce a
+//! stored zero; `map_stored` applies its function to every currently stored entry and filters zero
+//! results when the mapped matrix is assembled.
 //!
 //! On a single node the [CsrMatrix](crate::sparse::csr_mat::CsrMatrix) defines this structure. To initialize a new sparse
 //! matrix the easiest is to use the [CsrMatrix::from_aij](crate::traits::FromAij::from_aij) method. It creates a sparse

@@ -183,11 +183,15 @@ mod test {
     #[test]
     fn test_pseudo_inverse_rank_deficient() {
         let mut a = DynArray::<f64, 2>::from_shape([3, 2]);
-        a[[0, 0]] = 2.0;
+        a[[0, 0]] = 1.0;
+        a[[1, 0]] = 2.0;
+        a[[2, 0]] = 3.0;
+        a[[0, 1]] = 2.0;
         a[[1, 1]] = 4.0;
+        a[[2, 1]] = 6.0;
 
-        let pinv = a.pseudo_inverse(None, None).unwrap();
-        assert_eq!(pinv.s().len(), 2);
+        let pinv = a.pseudo_inverse(None, Some(1E-12)).unwrap();
+        assert_eq!(pinv.s().len(), 1);
 
         let pinv_mat = pinv.as_matrix();
         let reconstructed = dot!(a.r(), pinv_mat.r(), a.r());

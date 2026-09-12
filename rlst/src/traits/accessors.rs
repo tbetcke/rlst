@@ -87,8 +87,11 @@ pub trait UnsafeRandom1DAccessMut: BaseItem {
 /// # Safety
 /// Implementors must guarantee that, while the array is mutably borrowed, every valid
 /// one-dimensional index always identifies the same element and distinct indices identify
-/// non-overlapping elements. This permits an iterator to keep several returned mutable
-/// references alive simultaneously.
+/// non-overlapping elements. Repeated calls must remain valid while references returned by
+/// earlier calls are live. If the implementation also implements [`UnsafeRandomAccessMut`],
+/// its multidimensional accessor must identify the same element as the corresponding
+/// column-major one-dimensional index. This permits views to forward this capability and an
+/// iterator to keep several returned mutable references alive simultaneously.
 pub unsafe trait UnsafeDisjointRandom1DAccessMut: UnsafeRandom1DAccessMut {}
 
 /// This trait provides bounds checked access to the underlying data by value.
@@ -127,6 +130,13 @@ pub trait RawAccessMut: RawAccess {
     /// Returns `None` if data is not available as contigous slice.
     fn data_mut(&mut self) -> Option<&mut [Self::Item]>;
 }
+
+/// Raw mutable storage whose allocation and extent remain stable while borrowed by an owner.
+///
+/// # Safety
+/// Calls to [`RawAccessMut::data_mut`] must return the same allocation and extent for the
+/// lifetime of the value, and that storage must remain consistent with its shape and stride.
+pub unsafe trait StableRawAccessMut: RawAccessMut {}
 
 /// Check if `multi_index` not out of bounds with respect to `shape`.
 #[inline]

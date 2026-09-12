@@ -502,13 +502,14 @@ where
             tmp
         };
 
+        let nindices = axes_shape.iter().product::<usize>();
         Self {
             arr,
             axes,
             axes_shape,
-            nindices: axes_shape.iter().product::<usize>(),
+            nindices,
             indices: [0; SDIM],
-            is_finished: false,
+            is_finished: nindices == 0,
             _marker: PhantomData,
         }
     }
@@ -624,13 +625,14 @@ where
             tmp
         };
 
+        let nindices = axes_shape.iter().product::<usize>();
         Self {
             arr,
             axes,
             axes_shape,
-            nindices: axes_shape.iter().product::<usize>(),
+            nindices,
             indices: [0; SDIM],
-            is_finished: false,
+            is_finished: nindices == 0,
             _marker: PhantomData,
         }
     }

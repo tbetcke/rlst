@@ -138,8 +138,8 @@ use std::{
 };
 
 use crate::{
-    Array, BaseItem, BorrowAtRuntime, BorrowAtRuntimeMut, RawAccessMut, RlstScalar, Shape, Stride,
-    c32, c64, dense::array::shared_array::ArrayAtomicSharedRef,
+    Array, BaseItem, BorrowAtRuntime, BorrowAtRuntimeMut, RawAccessMut, RlstScalar, Shape,
+    StableRawAccessMut, Stride, c32, c64, dense::array::shared_array::ArrayAtomicSharedRef,
 };
 use fftw_sys;
 use num::Complex;
@@ -494,7 +494,7 @@ impl<Item, ArrayImpl, const NDIM: usize> Array<ArrayImpl, NDIM>
 where
     Item: RlstScalar + 'static,
     FftwPlanPtrType<Item::Real>: FftwPlanPtrTypeTrait,
-    ArrayImpl: RawAccessMut<Item = Item> + Shape<NDIM> + Stride<NDIM>,
+    ArrayImpl: StableRawAccessMut<Item = Item> + Shape<NDIM> + Stride<NDIM>,
 {
     /// Initialize a FFT computation.
     pub fn into_fft(self) -> Fft<ArrayImpl, NDIM> {
@@ -507,7 +507,7 @@ impl<Item, ArrayImpl, const NDIM: usize> Fft<ArrayImpl, NDIM>
 where
     Item: RlstScalar + 'static,
     FftwPlanPtrType<Item::Real>: FftwPlanPtrTypeTrait,
-    ArrayImpl: RawAccessMut<Item = Item> + Shape<NDIM> + Stride<NDIM>,
+    ArrayImpl: StableRawAccessMut<Item = Item> + Shape<NDIM> + Stride<NDIM>,
 {
     /// Create a new FFT struct from an existing array
     pub fn from_arr(arr: Array<ArrayImpl, NDIM>) -> Self {

@@ -317,4 +317,15 @@ mod tests {
             vec![([1, 1], 3.0)]
         );
     }
+
+    #[test]
+    fn map_stored_filters_many_entries_without_recursion() {
+        let count = 100_000;
+        let rows = (0..count).collect::<Vec<_>>();
+        let cols = vec![0; count];
+        let values = vec![1.0; count];
+        let matrix = CsrMatrix::from_aij([count, 1], &rows, &cols, &values);
+        let mapped = matrix.op().map_stored(|_| 0.0).into_csr();
+        assert_eq!(mapped.nnz(), 0);
+    }
 }

@@ -8,9 +8,9 @@ use crate::{
     dense::array::Array,
     traits::{
         accessors::{
-            RawAccess, RawAccessMut, UnsafeDisjointRandom1DAccessMut, UnsafeRandom1DAccessByRef,
-            UnsafeRandom1DAccessByValue, UnsafeRandom1DAccessMut, UnsafeRandomAccessByRef,
-            UnsafeRandomAccessByValue, UnsafeRandomAccessMut,
+            RawAccess, RawAccessMut, StableRawAccessMut, UnsafeDisjointRandom1DAccessMut,
+            UnsafeRandom1DAccessByRef, UnsafeRandom1DAccessByValue, UnsafeRandom1DAccessMut,
+            UnsafeRandomAccessByRef, UnsafeRandomAccessByValue, UnsafeRandomAccessMut,
         },
         base_operations::{BaseItem, ResizeInPlace, Shape, Stride},
     },
@@ -142,6 +142,11 @@ impl<ArrayImpl: RawAccess, const NDIM: usize> RawAccess for ArrayRefMut<'_, Arra
     fn data(&self) -> Option<&[Self::Item]> {
         self.0.data()
     }
+}
+
+unsafe impl<ArrayImpl: StableRawAccessMut, const NDIM: usize> StableRawAccessMut
+    for ArrayRefMut<'_, ArrayImpl, NDIM>
+{
 }
 
 impl<ArrayImpl: RawAccessMut, const NDIM: usize> RawAccessMut for ArrayRefMut<'_, ArrayImpl, NDIM> {
