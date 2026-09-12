@@ -6,9 +6,9 @@
 use std::rc::Rc;
 
 use itertools::izip;
-use mpi::traits::{Communicator, Equivalence};
+use mpi::traits::{Communicator, CommunicatorCollectives, Equivalence};
 
-use super::index_layout::IndexLayout;
+use super::{array_tools::all_to_allv, index_layout::IndexLayout};
 
 /// Permuation of data.
 pub struct DataPermutation<'a, C: Communicator> {
@@ -23,11 +23,61 @@ pub struct DataPermutation<'a, C: Communicator> {
 
 impl<'a, C: Communicator> DataPermutation<'a, C> {
     /// Create a new permutation object.
-    pub fn new(index_layout: Rc<IndexLayout<'a, C>>, custom_indices: &[usize]) -> Self {
+    pub fn new(index_layout: Rc<IndexLayout<'a, C>>, custom_indices: &[usize]) -> Self
+    where
+        C: CommunicatorCollectives,
+    {
         // We first need to identify which custom indices are local and which are global.
 
         let comm = index_layout.comm();
+        let local_valid = custom_indices
+            .iter()
+            .all(|&index| index_layout.rank_from_index(index).is_some());
+        let mut valid = false;
+        comm.all_reduce_into(
+            &local_valid,
+            &mut valid,
+            mpi::collective::SystemOperation::logical_and(),
+        );
+        assert!(valid, "permutation index is outside the global layout");
+
+        // Route every requested index to its owner.  This includes requests made
+        // by the owner itself, so each owner can verify exact global multiplicity.
+        let mut owner_counts = vec![0_usize; comm.size() as usize];
+        let mut owner_grouped_indices = Vec::with_capacity(custom_indices.len());
+        for (owner, owner_count) in owner_counts.iter_mut().enumerate() {
+            for &index in custom_indices {
+                if index_layout.rank_from_index(index) == Some(owner) {
+                    *owner_count += 1;
+                    owner_grouped_indices.push(index);
+                }
+            }
+        }
+        // `all_to_allv` partitions its input contiguously by destination rank.
+        // Keep this validation-only copy owner grouped; the original order below
+        // remains the caller's permutation order.
+        let (_, owned_requests) = all_to_allv(comm, &owner_counts, &owner_grouped_indices);
+        let mut multiplicities = vec![0_usize; index_layout.number_of_local_indices()];
         let my_rank = comm.rank() as usize;
+        let mut multiplicity_valid = true;
+        for index in owned_requests {
+            if let Some(local_index) = index_layout.global2local(my_rank, index) {
+                multiplicities[local_index] += 1;
+            } else {
+                multiplicity_valid = false;
+            }
+        }
+        multiplicity_valid &= multiplicities.iter().all(|&count| count == 1);
+        let mut exact_permutation = false;
+        comm.all_reduce_into(
+            &multiplicity_valid,
+            &mut exact_permutation,
+            mpi::collective::SystemOperation::logical_and(),
+        );
+        assert!(
+            exact_permutation,
+            "custom indices must contain every global index exactly once"
+        );
 
         let mut custom_local_indices = Vec::new();
         let mut custom_ghost_indices = Vec::new();
@@ -80,6 +130,32 @@ impl<'a, C: Communicator> DataPermutation<'a, C> {
         }
     }
 
+    fn validate_buffers(
+        &self,
+        actual_lengths: [usize; 2],
+        chunk_size: usize,
+        expected_lengths: [usize; 4],
+    ) {
+        let mut chunks = vec![0_usize; self.index_layout.comm().size() as usize];
+        self.index_layout
+            .comm()
+            .all_gather_into(&chunk_size, &mut chunks);
+        let valid = chunk_size > 0
+            && chunks.iter().all(|&candidate| candidate == chunk_size)
+            && expected_lengths[0] == actual_lengths[0]
+            && expected_lengths[1] == actual_lengths[1];
+        let mut all_valid = false;
+        self.index_layout.comm().all_reduce_into(
+            &valid,
+            &mut all_valid,
+            mpi::collective::SystemOperation::logical_and(),
+        );
+        assert!(
+            all_valid,
+            "invalid or inconsistent permutation exchange metadata"
+        );
+    }
+
     /// Permute data from the layout given by the `index_set` to the custom index layout.
     pub fn forward_permute<T: Equivalence + Copy + Default>(
         &self,
@@ -87,17 +163,25 @@ impl<'a, C: Communicator> DataPermutation<'a, C> {
         permuted_data: &mut [T],
         chunk_size: usize,
     ) {
-        assert_eq!(
-            data.len(),
-            chunk_size * self.index_layout.number_of_local_indices()
+        let expected_data_len = self.index_layout.number_of_local_indices() * chunk_size;
+        let expected_output_len = self.nindices * chunk_size;
+        let expected_send_len = self.ghost_communicator.total_send_count() * chunk_size;
+        let expected_receive_len = self.ghost_communicator.total_receive_count() * chunk_size;
+        self.validate_buffers(
+            [data.len(), permuted_data.len()],
+            chunk_size,
+            [
+                expected_data_len,
+                expected_output_len,
+                expected_send_len,
+                expected_receive_len,
+            ],
         );
-        assert_eq!(permuted_data.len(), chunk_size * self.nindices);
 
         // We first need to get the send data. This is quite easy. We can just
         // use the global2local method from the index layout.
 
-        let mut send_data =
-            Vec::<T>::with_capacity(chunk_size * self.ghost_communicator.total_send_count());
+        let mut send_data = Vec::<T>::with_capacity(expected_send_len);
 
         for &index in self.ghost_communicator.send_indices() {
             let local_start_index =
@@ -108,8 +192,7 @@ impl<'a, C: Communicator> DataPermutation<'a, C> {
 
         // Now we do the data exchange across ranks.
 
-        let mut received_data =
-            vec![T::default(); chunk_size * self.ghost_communicator.total_receive_count()];
+        let mut received_data = vec![T::default(); expected_receive_len];
         self.ghost_communicator.forward_send_values_by_chunks(
             &send_data,
             &mut received_data,
@@ -143,15 +226,23 @@ impl<'a, C: Communicator> DataPermutation<'a, C> {
         permuted_data: &mut [T],
         chunk_size: usize,
     ) {
-        assert_eq!(data.len(), chunk_size * self.nindices);
-        assert_eq!(
-            permuted_data.len(),
-            chunk_size * self.index_layout.number_of_local_indices()
+        let expected_data_len = self.nindices * chunk_size;
+        let expected_output_len = self.index_layout.number_of_local_indices() * chunk_size;
+        let expected_send_len = self.ghost_communicator.total_send_count() * chunk_size;
+        let expected_receive_len = self.ghost_communicator.total_receive_count() * chunk_size;
+        self.validate_buffers(
+            [data.len(), permuted_data.len()],
+            chunk_size,
+            [
+                expected_data_len,
+                expected_output_len,
+                expected_send_len,
+                expected_receive_len,
+            ],
         );
 
         // We need to fill up the receive indices as this is the data that is sent around.
-        let mut receive_data =
-            Vec::<T>::with_capacity(chunk_size * self.ghost_communicator.total_receive_count());
+        let mut receive_data = Vec::<T>::with_capacity(expected_receive_len);
         for &custom_index in self.receive_to_custom_map.iter() {
             receive_data.extend_from_slice(
                 &data[custom_index * chunk_size..(1 + custom_index) * chunk_size],
@@ -160,8 +251,7 @@ impl<'a, C: Communicator> DataPermutation<'a, C> {
 
         // We can now send back the receive indices.
 
-        let mut send_data =
-            vec![T::default(); chunk_size * self.ghost_communicator.total_send_count()];
+        let mut send_data = vec![T::default(); expected_send_len];
 
         // We now send data backwards from receiver to sender.
         self.ghost_communicator.backward_send_values_by_chunks(
