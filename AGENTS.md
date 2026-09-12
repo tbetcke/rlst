@@ -60,19 +60,25 @@ FFTW linkage can impose GPL obligations (`fftw_system` and `fftw_source`); prese
 
 ## Validation commands
 
-Run commands from the repository root.
+Run commands from the repository root. After every code edit, and again after any corrective edit, run all five Clippy commands below independently so a failure does not prevent later checks. `.forgejo/workflows/run-tests.yml` is authoritative; keep this list synchronized with it.
+
+```bash
+cargo clippy -- -D warnings
+cargo clippy --examples -- -D warnings
+cargo clippy --features "mpi,fftw,fftw_system,strict" -- -D warnings
+cargo clippy --examples --features "mpi,fftw,fftw_system,strict" -- -D warnings
+cargo clippy -p rlst-suitesparse -- -D warnings
+```
+
+The feature and SuiteSparse checks require their native dependencies. If those dependencies are unavailable, report the check as unavailable or failed due to the environment; never represent it as passing. Do not use `--all-features` as a substitute: optional FFTW backends and native integrations have distinct environment and linkage requirements.
 
 ```bash
 # Fast default validation
 cargo fmt -- --check
-cargo clippy -- -D warnings
-cargo clippy --examples -- -D warnings
 cargo test
 
 # Check the full CI feature configuration (requires libclang, CMake, OpenBLAS,
 # FFTW, OpenMPI, and SuiteSparse on Linux)
-cargo clippy --features "mpi,fftw,fftw_system,strict" -- -D warnings
-cargo clippy --examples --features "mpi,fftw,fftw_system,strict" -- -D warnings
 RUST_MIN_STACK=8388608 cargo test --features "mpi,fftw,fftw_system,strict"
 cargo doc --no-deps --features "mpi,fftw,fftw_system,strict"
 
@@ -81,7 +87,7 @@ cargo test --manifest-path proc-macro/Cargo.toml
 cargo clippy --manifest-path proc-macro/Cargo.toml -- -D warnings
 ```
 
-Use `cargo fmt --all` to apply formatting after Rust changes. Do not use `--all-features` as a substitute for the CI command: optional FFTW backends and native integrations have distinct environment and linkage requirements.
+Use `cargo fmt --all` to apply formatting after Rust changes.
 
 ## Before submitting
 

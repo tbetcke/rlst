@@ -10,11 +10,14 @@
 //! - [Triangular linear systems](#triangular-linear-systems)
 //! - [Cholesky decomposition and linear system solves](#cholesky-decomposition-and-linear-system-solves)
 //! - [QR Decomposition](#qr-decomposition)
+//! - [LQ Decomposition and minimum-norm solves](#lq-decomposition-and-minimum-norm-solves)
 //! - [Singular Value Decomposition](#singular-value-decomposition)
 //! - [Pseudo-Inverse of a matrix](#pseudo-inverse-of-a-matrix)
 //! - [Symmetric Eigenvalue Decomposition](#symmetric-eigenvalue-decomposition)
 //! - [General Eigenvalue Decomposition](#general-eigenvalue-decomposition)
 //! - [Schur decomposition](#schur-decomposition)
+//! - [Generalized Schur (QZ) decomposition](#generalized-schur-qz-decomposition)
+//! - [Sylvester equations](#sylvester-equations)
 //!
 //! # LU Decomposition and linear systems of equations
 //!
@@ -226,6 +229,63 @@
 //! For the matrix `Q` we have used the paramter [QMode::Compact](crate::dense::linalg::lapack::qr::QMode::Compact).
 //! This returns a `Q` matrix of dimension `m x k`. One can also return a full `m x m` matrix by
 //! providing the parameter [QMode::Full](crate::dense::linalg::lapack::qr::QMode::Full) instead.
+//!
+//! # LQ Decomposition and minimum-norm solves
+//!
+//! For an `m x n` matrix A and `k = min(m, n)`, the unpivoted LQ
+//! decomposition is `A = L Q`. The method
+//! [l_mat](crate::dense::linalg::lapack::lq::LqDecomposition::l_mat) returns
+//! an `m x k` lower-trapezoidal matrix. With
+//! [QMode::Compact](crate::dense::linalg::lapack::lq::QMode::Compact), Q has
+//! shape `k x n`, so the two returned factors reconstruct A directly. Full Q
+//! has shape `n x n`; use its first `k` rows, or pad L with zero columns, to
+//! reconstruct A.
+//!
+//! ```
+//! # extern crate lapack_src;
+//! # extern crate blas_src;
+//! use rlst::{Lq, dot};
+//! use rlst::dense::linalg::lapack::lq::QMode;
+//! let mut a = rlst::rlst_dynamic_array!(f64, [2, 3]);
+//! a[[0, 0]] = 2.0;
+//! a[[0, 1]] = -1.0;
+//! a[[1, 1]] = 3.0;
+//! a[[1, 2]] = 1.0;
+//! let lq = a.lq().unwrap();
+//! let l = lq.l_mat().unwrap();
+//! let q = lq.q_mat(QMode::Compact).unwrap();
+//! assert_eq!(l.shape(), [2, 2]);
+//! assert_eq!(q.shape(), [2, 3]);
+//! rlst::assert_array_relative_eq!(dot!(l, q), a, 1E-12);
+//! ```
+//!
+//! [apply_q](crate::dense::linalg::lapack::lq::LqDecomposition::apply_q)
+//! applies full Q or `Q^H` from either side without forming Q and without
+//! modifying the packed factors. The affected dimension must be `n`.
+//! [solve](crate::dense::linalg::lapack::lq::LqDecomposition::solve) accepts a
+//! vector of length `m` or a matrix with `m` rows when `m <= n` and A has full
+//! row rank. It returns the minimum Euclidean- or Frobenius-norm solution with
+//! `n` rows. The factorization is not rank revealing: it rejects exact zero
+//! diagonals, but gives no reliability guarantee for near-rank-deficient A.
+//!
+//! ```
+//! # extern crate lapack_src;
+//! # extern crate blas_src;
+//! use rlst::{Lq, dot};
+//! let mut a = rlst::rlst_dynamic_array!(f64, [2, 3]);
+//! a[[0, 0]] = 1.0;
+//! a[[1, 1]] = 1.0;
+//! let mut b = rlst::rlst_dynamic_array!(f64, [2]);
+//! b[[0]] = 2.0;
+//! b[[1]] = -3.0;
+//! let x = a.lq().unwrap().solve(&b).unwrap();
+//! assert_eq!(x.shape(), [3]);
+//! rlst::assert_array_relative_eq!(dot!(a, x), b, 1E-12);
+//! ```
+//!
+//! This specialized minimum-norm operation is a method on the LQ object; it
+//! does not change the dispatch or semantics of the general [Solve](crate::Solve)
+//! trait.
 //!
 //! # Singular Value Decomposition
 //!
@@ -461,3 +521,72 @@
 //! let (r, q) = a.schur().unwrap();
 //! rlst::assert_array_relative_eq!(dot!(q.r(), r, q.r().conj().transpose().eval()), a, 1E-10);
 //! ```
+//!
+//! # Generalized Schur (QZ) decomposition
+//!
+//! For equally sized square matrices A and B, the unsorted generalized Schur
+//! decomposition computes `A = Q S Z^H` and `B = Q T Z^H`. Q and Z are
+//! orthogonal for real inputs and unitary for complex inputs. For real inputs,
+//! S is quasi-upper triangular and T is upper triangular; for complex inputs,
+//! both are upper triangular. The diagonal blocks have no promised ordering.
+//!
+//! ```
+//! # extern crate lapack_src;
+//! # extern crate blas_src;
+//! use rlst::{EvaluateArray, GeneralizedSchur, dot};
+//! let mut a = rlst::rlst_dynamic_array!(f64, [2, 2]);
+//! let mut b = rlst::rlst_dynamic_array!(f64, [2, 2]);
+//! a[[0, 0]] = 2.0;
+//! a[[1, 1]] = 3.0;
+//! b[[0, 0]] = 1.0;
+//! b[[1, 1]] = 4.0;
+//! let qz = a.qz(&b).unwrap();
+//! let z_h = qz.z().r().conj().transpose().eval();
+//! rlst::assert_array_relative_eq!(dot!(qz.q().r(), qz.s().r(), z_h.r()), a, 1E-12);
+//! rlst::assert_array_relative_eq!(dot!(qz.q().r(), qz.t().r(), z_h.r()), b, 1E-12);
+//! ```
+//!
+//! Generalized eigenvalues are represented by paired entries from
+//! [alpha](crate::dense::linalg::lapack::generalized_schur::QzDecomposition::alpha)
+//! and
+//! [beta](crate::dense::linalg::lapack::generalized_schur::QzDecomposition::beta).
+//! They are deliberately not divided: `beta = 0` can represent an infinite
+//! eigenvalue, and `alpha = beta = 0` is indeterminate. Singular B is therefore
+//! valid. A caller that needs finite ratios must first check beta and must not
+//! rely on the order of the returned pairs.
+//!
+//! # Sylvester equations
+//!
+//! [SylvesterSolve](crate::SylvesterSolve) solves the ordinary equation
+//! `A X + sign X B = scale C`, where A and B are square matrices of possibly
+//! different orders and C has shape `A.nrows() x B.nrows()`. The input arrays
+//! are not modified. Select addition or subtraction with
+//! [TrsylSign](crate::dense::linalg::lapack::sylvester::TrsylSign).
+//!
+//! ```
+//! # extern crate lapack_src;
+//! # extern crate blas_src;
+//! use rlst::SylvesterSolve;
+//! use rlst::dense::linalg::lapack::sylvester::{TrsylSign, TrsylStatus};
+//! let mut a = rlst::rlst_dynamic_array!(f64, [1, 1]);
+//! let mut b = rlst::rlst_dynamic_array!(f64, [1, 1]);
+//! let mut c = rlst::rlst_dynamic_array!(f64, [1, 1]);
+//! a[[0, 0]] = 2.0;
+//! b[[0, 0]] = 3.0;
+//! c[[0, 0]] = 10.0;
+//! let solution = a.solve_sylvester(&b, &c, TrsylSign::Plus).unwrap();
+//! assert_eq!(solution.status(), TrsylStatus::Success);
+//! assert!((a[[0, 0]] * solution.x()[[0, 0]]
+//!     + solution.x()[[0, 0]] * b[[0, 0]]
+//!     - solution.scale() * c[[0, 0]]).abs() < 1E-12);
+//! ```
+//!
+//! LAPACK may choose `scale <= 1` to prevent overflow. RLST returns that scale
+//! and does not divide X by it: `X / scale` may itself overflow. Callers may
+//! unscale only when they know it is numerically safe. A
+//! [Success](crate::dense::linalg::lapack::sylvester::TrsylStatus::Success)
+//! status satisfies the scaled input equation up to rounding error. A
+//! [Perturbed](crate::dense::linalg::lapack::sylvester::TrsylStatus::Perturbed)
+//! status retains LAPACK's computed X but means close or common eigenvalues
+//! were perturbed, so the result solves a nearby problem rather than exactly
+//! the original one. This API does not solve generalized Sylvester equations.
