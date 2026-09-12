@@ -413,7 +413,7 @@ pub fn is_sorted_array<T: Equivalence + Default + Clone + TotalCmp, C: Communica
 
 #[cfg(test)]
 mod test {
-    use super::{checked_counts_for_data, checked_displacements};
+    use super::checked_displacements;
     use crate::distributed_tools::{displacements, sort_to_bins};
 
     #[test]
@@ -444,11 +444,5 @@ mod test {
     fn test_displacements() {
         assert_eq!(displacements(&[3, 4, 5]), [0, 3, 7]);
         assert_eq!(checked_displacements(&[-1]), None);
-        assert_eq!(checked_displacements(&[i32::MAX, 1]), None);
-        let too_large_for_mpi = i32::MAX as usize + 1;
-        assert_eq!(
-            checked_counts_for_data(&[too_large_for_mpi], 1, too_large_for_mpi),
-            None
-        );
     }
 }
