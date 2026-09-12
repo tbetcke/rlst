@@ -787,7 +787,7 @@ where
     /// The iterator always proceeds in column-major order.
     ///
     /// # Traits
-    /// - [UnsafeRandom1DAccessMut]
+    /// - [UnsafeDisjointRandom1DAccessMut]
     /// - [Shape]
     #[inline(always)]
     pub fn iter_mut(&mut self) -> ArrayDefaultIteratorMut<'_, ArrayImpl, NDIM> {
@@ -935,7 +935,7 @@ where
     /// Note that the array only fills as many values as the other iterator provides.
     ///
     /// # Traits
-    /// - [UnsafeRandom1DAccessMut]
+    /// - [UnsafeDisjointRandom1DAccessMut]
     /// - [Shape]
     #[inline(always)]
     pub fn fill_from_iter<Iter>(&mut self, iter: Iter)
@@ -957,7 +957,7 @@ where
     /// This method is especially useful together with [empty_array].
     ///
     /// #Traits
-    /// - [UnsafeRandom1DAccessMut]
+    /// - [UnsafeDisjointRandom1DAccessMut]
     /// - [Shape]
     #[inline(always)]
     pub fn fill_from_resize<ArrayImplOther>(&mut self, other: &Array<ArrayImplOther, NDIM>)
@@ -976,7 +976,7 @@ where
     /// Fill array with a given value.
     ///
     /// # Traits
-    /// - [UnsafeRandom1DAccessMut]
+    /// - [UnsafeDisjointRandom1DAccessMut]
     /// - [Shape]
     #[inline(always)]
     pub fn fill_with_value(&mut self, value: ArrayImpl::Item) {
@@ -1363,7 +1363,7 @@ where
     /// Fill an array with normally distributed random numbers.
     ///
     /// # Traits
-    /// - [UnsafeRandom1DAccessMut]
+    /// - [UnsafeDisjointRandom1DAccessMut]
     /// - [Shape]
     /// - Item: [RandScalar] + [RlstScalar]
     pub fn fill_from_standard_normal<R: Rng>(&mut self, rng: &mut R) {
@@ -1375,7 +1375,7 @@ where
     /// Fill an array with equally distributed random numbers.
     ///
     /// # Traits
-    /// - [UnsafeRandom1DAccessMut]
+    /// - [UnsafeDisjointRandom1DAccessMut]
     /// - [Shape]
     /// - Item: [RandScalar] + [RlstScalar]
     pub fn fill_from_equally_distributed<R: Rng>(&mut self, rng: &mut R) {
@@ -1387,7 +1387,7 @@ where
     /// Fill an array with equally distributed random numbers using a given `seed`.
     ///
     /// # Traits
-    /// - [UnsafeRandom1DAccessMut]
+    /// - [UnsafeDisjointRandom1DAccessMut]
     /// - [Shape]
     /// - Item: [RandScalar] + [RlstScalar]
     pub fn fill_from_seed_equally_distributed(&mut self, seed: usize) {
@@ -1400,7 +1400,7 @@ where
     /// Fill an array with normally distributed random numbers using a given `seed`.
     ///
     /// # Traits
-    /// - [UnsafeRandom1DAccessMut]
+    /// - [UnsafeDisjointRandom1DAccessMut]
     /// - [Shape]
     /// - Item: [RandScalar] + [RlstScalar]
     pub fn fill_from_seed_normally_distributed(&mut self, seed: usize) {
