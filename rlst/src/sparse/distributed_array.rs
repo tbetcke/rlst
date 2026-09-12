@@ -31,7 +31,7 @@ use num::traits::MulAdd;
 use crate::dense::array::{DynArray, StridedDynArray, StridedSliceArray};
 use crate::{
     Array, BaseItem, Conj, EvaluateArray, Inner, Max, RlstResult, Shape,
-    UnsafeRandom1DAccessByValue, UnsafeRandom1DAccessMut, UnsafeRandomAccessMut,
+    UnsafeDisjointRandom1DAccessMut, UnsafeRandom1DAccessByValue, UnsafeRandomAccessMut,
 };
 use crate::{EvaluateRowMajorArray, UnsafeRandomAccessByValue};
 
@@ -380,7 +380,7 @@ where
 impl<'a, C, ArrayImpl, const NDIM: usize> DistributedArray<'a, C, ArrayImpl, NDIM>
 where
     C: Communicator,
-    ArrayImpl: UnsafeRandom1DAccessMut + Shape<NDIM>,
+    ArrayImpl: UnsafeDisjointRandom1DAccessMut + Shape<NDIM>,
 {
     /// Fill from an other distributed array.
     pub fn fill_from<ArrayImplOther>(
@@ -401,7 +401,7 @@ where
 impl<'a, C, ArrayImpl, const NDIM: usize> DistributedArray<'a, C, ArrayImpl, NDIM>
 where
     C: Communicator,
-    ArrayImpl: Shape<NDIM> + UnsafeRandom1DAccessMut,
+    ArrayImpl: Shape<NDIM> + UnsafeDisjointRandom1DAccessMut,
     Self: BaseItem<Item = ArrayImpl::Item>,
 {
     /// Fill global array with `value`.

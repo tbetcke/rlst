@@ -29,7 +29,7 @@ use crate::dense::array::DynArray;
 use crate::distributed_tools::{GhostCommunicator, IndexLayout, all_to_allv, sort_to_bins};
 use crate::{
     AijIteratorByValue, AsMatrixApply, BaseItem, FromAijDistributed, Nonzeros, Shape,
-    SparseMatrixType, UnsafeRandom1DAccessByValue, UnsafeRandom1DAccessMut,
+    SparseMatrixType, UnsafeDisjointRandom1DAccessMut, UnsafeRandom1DAccessByValue,
     UnsafeRandomAccessByValue, UnsafeRandomAccessMut,
 };
 
@@ -376,7 +376,7 @@ where
     ArrayImplX: UnsafeRandom1DAccessByValue<Item = Item>
         + UnsafeRandomAccessByValue<1, Item = Item>
         + Shape<1>,
-    ArrayImplY: UnsafeRandom1DAccessMut<Item = Item> + Shape<1>,
+    ArrayImplY: UnsafeDisjointRandom1DAccessMut<Item = Item> + Shape<1>,
     // CsrMatrix<Item>: AsMatrixApply<DynArray<Item, 1>, Array<ArrayImplY, 1>, Item = Item>,
 {
     fn apply(
@@ -434,7 +434,7 @@ where
     ArrayImplX: UnsafeRandom1DAccessByValue<Item = Item>
         + UnsafeRandomAccessByValue<2, Item = Item>
         + Shape<2>,
-    ArrayImplY: UnsafeRandom1DAccessMut<Item = Item>
+    ArrayImplY: UnsafeDisjointRandom1DAccessMut<Item = Item>
         + UnsafeRandomAccessMut<2, Item = Item>
         + Shape<2>
         + 'a,
