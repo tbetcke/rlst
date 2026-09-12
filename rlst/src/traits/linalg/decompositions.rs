@@ -10,11 +10,14 @@ use crate::{
         array::DynArray,
         linalg::lapack::{
             eigenvalue_decomposition::EigMode,
+            generalized_schur::QzDecomposition,
             ldlt::LdlDecomposition,
+            lq::LqDecomposition,
             lu::LuDecomposition,
             pseudo_inverse::PInv,
             qr::{EnablePivoting, QrDecomposition},
             singular_value_decomposition::SvdMode,
+            sylvester::SylvesterSolution,
             symmeig::SymmEigMode,
         },
     },
@@ -22,6 +25,7 @@ use crate::{
 };
 
 use super::{base::Gemm, lapack::Lapack};
+use crate::dense::linalg::lapack::interface::trsyl::TrsylSign;
 
 /// Compute the matrix inverse.
 pub trait Inverse {
@@ -63,6 +67,18 @@ pub trait Qr {
 
     /// Compute the QR decomposition of a matrix.
     fn qr(&self, pivoting: EnablePivoting) -> RlstResult<QrDecomposition<Self::Item>>;
+}
+
+/// Compute an LQ decomposition without pivoting.
+pub trait Lq {
+    /// Item type of the LQ decomposition.
+    type Item: Lapack;
+
+    /// Compute packed factors satisfying `A = L Q`.
+    ///
+    /// For an `m` by `n` matrix, the decomposition can produce an `m` by
+    /// `min(m, n)` lower-trapezoidal L and either compact or full Q.
+    fn lq(&self) -> RlstResult<LqDecomposition<Self::Item>>;
 }
 
 /// Compute the symmetric eigenvalue decomposition of a matrix.
@@ -202,6 +218,39 @@ pub trait GeneralizedEigenvalueDecomposition<B> {
         Option<DynArray<<Self::Item as RlstScalar>::Complex, 2>>,
         Option<DynArray<<Self::Item as RlstScalar>::Complex, 2>>,
     )>;
+}
+
+/// Compute an unsorted generalized Schur (QZ) decomposition of a matrix pencil.
+pub trait GeneralizedSchur<B> {
+    /// The scalar type of the matrix pencil.
+    type Item: Lapack;
+
+    /// Compute factors satisfying `A = Q S Z^H` and `B = Q T Z^H`.
+    ///
+    /// A and B must be equally sized square matrices. Generalized eigenvalues
+    /// are returned in homogeneous `(alpha, beta)` form by the decomposition
+    /// object. Their order is unspecified, and zero `beta` values are retained
+    /// rather than divided through.
+    fn qz(&self, b: &B) -> RlstResult<QzDecomposition<Self::Item>>;
+}
+
+/// Solve an ordinary dense Sylvester equation.
+pub trait SylvesterSolve<B, C> {
+    /// The scalar type of the coefficient matrices.
+    type Item: Lapack + Gemm;
+
+    /// Solve `A X + sign X B = scale C` without automatically unscaling X.
+    ///
+    /// A and B must be square (of possibly different orders), and C must have
+    /// shape `A.nrows()` by `B.nrows()`. The result reports both LAPACK's
+    /// overflow-avoiding scale and whether close/common eigenvalues were
+    /// perturbed; a perturbed result solves a nearby problem.
+    fn solve_sylvester(
+        &self,
+        b: &B,
+        c: &C,
+        sign: TrsylSign,
+    ) -> RlstResult<SylvesterSolution<Self::Item>>;
 }
 
 /// Compute the singular value decomposition of a matrix.
