@@ -72,7 +72,7 @@ mod test {
     use super::*;
     use crate::base_types::{c32, c64};
     use crate::dense::array::DynArray;
-    use crate::dot;
+    use crate::dot_blas;
 
     use crate::RlstScalar;
     use itertools::izip;
@@ -112,7 +112,7 @@ mod test {
                     &v.r().conj().transpose(),
                 );
 
-                let actual = dot!(v.r(), dot!(lambda.r(), vt.r()));
+                let actual = dot_blas!(v.r(), dot_blas!(lambda.r(), vt.r()));
 
                 crate::assert_array_relative_eq!(actual, a, $tol);
             }

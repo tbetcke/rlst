@@ -119,7 +119,7 @@ where
 mod tests {
     use super::*;
     use crate::base_types::{c32, c64};
-    use crate::dot;
+    use crate::dot_blas;
     use paste::paste;
 
     macro_rules! sylvester_tests {
@@ -136,8 +136,8 @@ mod tests {
                     expected.fill_from_seed_normally_distributed(33);
                     for i in 0..m { a[[i, i]] += <$scalar as num::One>::one() * <$scalar as num::FromPrimitive>::from_f64(5.0).unwrap(); }
                     for sign in [TrsylSign::Plus, TrsylSign::Minus] {
-                        let ax = dot!(a.r(), expected.r());
-                        let xb = dot!(expected.r(), b.r());
+                        let ax = dot_blas!(a.r(), expected.r());
+                        let xb = dot_blas!(expected.r(), b.r());
                         let mut c = ax;
                         for j in 0..n {
                             for i in 0..m {
@@ -176,8 +176,8 @@ mod tests {
             .transpose()
             .solve_sylvester(&b, &c.r().transpose(), TrsylSign::Plus)
             .unwrap();
-        let lhs = dot!(a.r().transpose().eval(), solution.x().r());
-        let rhs_product = dot!(solution.x().r(), b.r());
+        let lhs = dot_blas!(a.r().transpose().eval(), solution.x().r());
+        let rhs_product = dot_blas!(solution.x().r(), b.r());
         for i in 0..2 {
             assert!(
                 (lhs[[i, 0]] + rhs_product[[i, 0]] - solution.scale() * c[[0, i]]).abs() < 1e-12

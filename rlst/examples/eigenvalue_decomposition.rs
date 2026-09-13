@@ -4,7 +4,7 @@ extern crate blas_src;
 extern crate lapack_src;
 
 use rlst::dense::linalg::lapack::eigenvalue_decomposition::EigMode;
-use rlst::{DynArray, EigenvalueDecomposition, EvaluateArray, dot};
+use rlst::{DynArray, EigenvalueDecomposition, EvaluateArray, dot_blas};
 use rlst::{Inverse, c64};
 
 fn main() {
@@ -24,7 +24,7 @@ fn main() {
 
     // Test the Schur decomposition
 
-    let actual = dot!(z.r(), t.r(), z.r().conj().transpose().eval());
+    let actual = dot_blas!(z.r(), t.r(), z.r().conj().transpose().eval());
 
     rlst::assert_array_relative_eq!(actual, a, 1E-10);
 
@@ -47,7 +47,7 @@ fn main() {
 
     let vlh = vl.unwrap().conj().transpose().eval();
 
-    let actual = dot!(vlh.inverse().unwrap(), dot!(diag.r(), vlh));
+    let actual = dot_blas!(vlh.inverse().unwrap(), dot_blas!(diag.r(), vlh));
 
     // We test the absolute distance since some imaginary parts are zero
     // making relative tests fail.
@@ -58,6 +58,6 @@ fn main() {
 
     let vr = vr.unwrap();
 
-    let actual = dot!(vr.r(), dot!(diag, vr.r().inverse().unwrap()));
+    let actual = dot_blas!(vr.r(), dot_blas!(diag, vr.r().inverse().unwrap()));
     rlst::assert_array_abs_diff_eq!(actual, a_complex, 1E-10);
 }

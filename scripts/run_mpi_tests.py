@@ -28,6 +28,8 @@ CASES = (
     "collective-metadata-rejection",
     "expanded-empty-contracts",
     "csr-empty-matrix-contracts",
+    "distributed-dot",
+    "distributed-dot-rejection",
     "remap-layout-agreement",
     "layouts-and-consumers",
 )

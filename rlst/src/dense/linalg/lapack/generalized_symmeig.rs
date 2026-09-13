@@ -70,7 +70,7 @@ where
 mod test {
     use super::*;
     use crate::base_types::{c32, c64};
-    use crate::dot;
+    use crate::dot_blas;
     use crate::traits::base_operations::EvaluateArray;
     use crate::traits::rlst_num::RlstScalar;
     use paste::paste;
@@ -103,8 +103,8 @@ mod test {
                     let lambda = w[[i]];
                     let vi = v.r().into_subview([0, i], [n, 1]).eval();
 
-                    let lhs = dot!(a.r(), vi.r());
-                    let rhs = dot!(b.r(), (vi.r() * <$scalar as RlstScalar>::from_real(lambda)).eval());
+                    let lhs = dot_blas!(a.r(), vi.r());
+                    let rhs = dot_blas!(b.r(), (vi.r() * <$scalar as RlstScalar>::from_real(lambda)).eval());
 
                     crate::assert_array_abs_diff_eq!(lhs, rhs, $tol);
                 }

@@ -128,7 +128,7 @@ mod test {
     use super::*;
     use crate::base_types::{c32, c64};
     use crate::dense::array::DynArray;
-    use crate::dot;
+    use crate::dot_blas;
     use crate::traits::base_operations::*;
     use paste::paste;
 
@@ -143,11 +143,11 @@ mod test {
                 a.fill_from_seed_normally_distributed(0);
 
                 // Make it symmetric positive definite
-                a = dot!(a.r().conj().transpose().eval(), a.r());
+                a = dot_blas!(a.r().conj().transpose().eval(), a.r());
 
                 let z = a.cholesky(UpLo::Upper).unwrap();
 
-                let actual = dot!(z.r().conj().transpose().eval(), z.r());
+                let actual = dot_blas!(z.r().conj().transpose().eval(), z.r());
 
                 crate::assert_array_abs_diff_eq!(actual, a, $tol);
 
@@ -156,7 +156,7 @@ mod test {
                 let mut x_expected = DynArray::<$scalar, 2>::from_shape([n, 2]);
                 x_expected.fill_from_seed_equally_distributed(1);
 
-                let b = dot!(a.r(), x_expected.r());
+                let b = dot_blas!(a.r(), x_expected.r());
 
                 let x_actual = a.cholesky_solve(UpLo::Upper, &b).unwrap();
 

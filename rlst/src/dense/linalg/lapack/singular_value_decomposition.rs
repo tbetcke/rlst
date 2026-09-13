@@ -102,7 +102,7 @@ mod test {
     use super::*;
     use crate::base_types::{c32, c64};
     use crate::dense::array::DynArray;
-    use crate::dot;
+    use crate::dot_blas;
     use crate::traits::base_operations::*;
     use crate::traits::linalg::SymmEig;
     use itertools::izip;
@@ -121,7 +121,7 @@ mod test {
                 let mut a = DynArray::<$scalar, 2>::from_shape([m, n]);
                 a.fill_from_seed_equally_distributed(0);
 
-                let ata = dot!(a.r().conj().transpose().eval(), a.r());
+                let ata = dot_blas!(a.r().conj().transpose().eval(), a.r());
 
                 let s = a.singular_values().unwrap();
 
@@ -152,7 +152,7 @@ mod test {
                     s_mat
                 };
 
-                let actual = dot!(u.r(), dot!(s.r(), vt.r()));
+                let actual = dot_blas!(u.r(), dot_blas!(s.r(), vt.r()));
                 crate::assert_array_relative_eq!(actual, a, $tol);
             }
 
@@ -173,7 +173,7 @@ mod test {
                     s_mat
                 };
 
-                let actual = dot!(u.r(), dot!(s.r(), vt.r()));
+                let actual = dot_blas!(u.r(), dot_blas!(s.r(), vt.r()));
                 crate::assert_array_relative_eq!(actual, a, $tol);
             }
 
@@ -195,7 +195,7 @@ mod test {
                     s_mat
                 };
 
-                let actual = dot!(u.r(), dot!(s.r(), vt.r()));
+                let actual = dot_blas!(u.r(), dot_blas!(s.r(), vt.r()));
                 crate::assert_array_relative_eq!(actual, a, $tol);
             }
 
@@ -216,7 +216,7 @@ mod test {
                     s_mat
                 };
 
-                let actual = dot!(u.r(), dot!(s.r(), vt.r()));
+                let actual = dot_blas!(u.r(), dot_blas!(s.r(), vt.r()));
                 crate::assert_array_relative_eq!(actual, a, $tol);
             }
 
@@ -250,7 +250,7 @@ mod test {
                 let mut ident = DynArray::<$scalar, 2>::from_shape([n, n]);
                 ident.set_identity();
 
-                let actual = dot!(pinv_mat.r(), a.r());
+                let actual = dot_blas!(pinv_mat.r(), a.r());
 
                 crate::assert_array_abs_diff_eq!(actual, ident, $tol);
 
@@ -258,7 +258,7 @@ mod test {
 
                 x.fill_from_seed_equally_distributed(1);
 
-                crate::assert_array_relative_eq!(dot!(pinv_mat.r(), x.r()), pinv.apply(&x), $tol);
+                crate::assert_array_relative_eq!(dot_blas!(pinv_mat.r(), x.r()), pinv.apply(&x), $tol);
             }
 
             #[test]
@@ -277,7 +277,7 @@ mod test {
                 let mut ident = DynArray::<$scalar, 2>::from_shape([m, m]);
                 ident.set_identity();
 
-                let actual = dot!(a.r(), pinv_mat.r());
+                let actual = dot_blas!(a.r(), pinv_mat.r());
 
                 crate::assert_array_abs_diff_eq!(actual, ident, $tol);
 
@@ -285,7 +285,7 @@ mod test {
 
                 x.fill_from_seed_equally_distributed(1);
 
-                crate::assert_array_relative_eq!(dot!(pinv_mat.r(), x.r()), pinv.apply(&x), $tol);
+                crate::assert_array_relative_eq!(dot_blas!(pinv_mat.r(), x.r()), pinv.apply(&x), $tol);
             }
 
                     }

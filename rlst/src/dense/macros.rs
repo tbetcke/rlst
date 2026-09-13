@@ -75,6 +75,100 @@ pub mod dynamic {
 /// Implementation support for the direct tensor multiplication macros.
 #[doc(hidden)]
 pub mod direct {
+    use std::ops::{Add, AddAssign, Mul};
+
+    use num::{One, Zero};
+
+    use crate::{
+        Array, BaseItem, DynArray, Shape, UnsafeRandomAccessByValue, UnsafeRandomAccessMut,
+        ZeroDimArray, operator::element::Element, sparse::csr_mat::CsrMatrix,
+        traits::abstract_operator::OperatorBase,
+    };
+
+    /// Construct storage for a direct contraction with an inferred output type.
+    pub trait AllocateOutput<const R: usize>: Output<R> + Sized {
+        /// Construct default-initialized storage of the validated shape.
+        fn allocate_output(shape: [usize; R]) -> Self;
+    }
+
+    impl<Item: Copy + Default, const R: usize> AllocateOutput<R> for DynArray<Item, R> {
+        fn allocate_output(shape: [usize; R]) -> Self {
+            Self::from_shape(shape)
+        }
+    }
+
+    impl<Item: Copy + Default> AllocateOutput<0> for ZeroDimArray<Item> {
+        fn allocate_output(_shape: [usize; 0]) -> Self {
+            Self::from_scalar(Item::default())
+        }
+    }
+
+    /// Type-based dispatch for dense contractions and existing sparse/operator products.
+    pub trait Product<'a, Rhs, Result> {
+        /// Compute a product, borrowing both arguments.
+        fn __rlst_dot_product(&'a self, rhs: &Rhs) -> Result;
+    }
+
+    impl<'a, A, B, C, Item, const M: usize, const N: usize, const R: usize>
+        Product<'a, Array<B, N>, Array<C, R>> for Array<A, M>
+    where
+        A: Shape<M> + UnsafeRandomAccessByValue<M>,
+        B: Shape<N> + UnsafeRandomAccessByValue<N>,
+        A::Item: Mul<B::Item, Output = Item>,
+        C: Shape<R> + BaseItem<Item = Item>,
+        Array<C, R>: AllocateOutput<R> + BaseItem<Item = Item>,
+        Item: Copy + Default + Zero + AddAssign,
+    {
+        fn __rlst_dot_product(&'a self, rhs: &Array<B, N>) -> Array<C, R> {
+            let (shape, _, _, _) = shape(self.shape(), rhs.shape());
+            let mut output = Array::<C, R>::allocate_output(shape);
+            crate::dot_into!(output, self, rhs);
+            output
+        }
+    }
+
+    impl<'a, B, Item, const N: usize> Product<'a, Array<B, N>, DynArray<Item, N>> for CsrMatrix<Item>
+    where
+        B: Shape<N> + UnsafeRandomAccessByValue<N, Item = Item>,
+        Item: Copy + Default + One + Mul<Output = Item> + AddAssign + Add<Output = Item>,
+    {
+        fn __rlst_dot_product(&'a self, rhs: &Array<B, N>) -> DynArray<Item, N> {
+            self.dot(rhs)
+        }
+    }
+
+    impl<'a, 'b, Op: OperatorBase + ?Sized + 'a>
+        Product<'a, Element<'b, Op::Domain>, Element<'a, Op::Range>> for Op
+    where
+        <Op::Range as crate::LinearSpace>::F: One + Zero,
+    {
+        fn __rlst_dot_product(&'a self, rhs: &Element<'b, Op::Domain>) -> Element<'a, Op::Range> {
+            self.dot(rhs)
+        }
+    }
+
+    /// Mutable output access for indexed arrays and dedicated scalar storage.
+    pub trait Output<const R: usize>: BaseItem {
+        /// Access an output element after validating its index.
+        ///
+        /// # Safety
+        /// `index` must be within the output shape.
+        unsafe fn output_mut(&mut self, index: [usize; R]) -> &mut Self::Item;
+    }
+
+    impl<Impl: UnsafeRandomAccessMut<R>, const R: usize> Output<R> for Array<Impl, R> {
+        unsafe fn output_mut(&mut self, index: [usize; R]) -> &mut Self::Item {
+            // SAFETY: the caller guarantees a valid index.
+            unsafe { self.get_unchecked_mut(index) }
+        }
+    }
+
+    impl<Item: Copy + Default> Output<0> for ZeroDimArray<Item> {
+        unsafe fn output_mut(&mut self, _index: [usize; 0]) -> &mut Item {
+            self.scalar_mut()
+        }
+    }
+
     /// Validate contraction ranks, dimensions, and size arithmetic before any writes.
     pub fn shape<const M: usize, const N: usize, const R: usize>(
         a: [usize; M],
@@ -86,8 +180,7 @@ pub mod direct {
         );
         let rank = (M - 1)
             .checked_add(N - 1)
-            .expect("direct multiplication rank overflow")
-            .max(1);
+            .expect("direct multiplication rank overflow");
         assert_eq!(R, rank, "direct multiplication output rank mismatch");
         assert_eq!(a[M - 1], b[0], "direct multiplication contraction mismatch");
 
@@ -112,15 +205,6 @@ pub mod direct {
         (output, rows, a[M - 1], cols)
     }
 
-    /// Allocate through the public allocation macro in a scope with stable path hygiene.
-    pub fn allocate<Item: Copy + Default, const R: usize>(
-        shape: [usize; R],
-    ) -> crate::DynArray<Item, R> {
-        // The proc macro hardcodes `rlst` and reparses identifier tokens from text.
-        use crate as rlst;
-        crate::rlst_dynamic_array!(Item, shape)
-    }
-
     /// Obtain the additive identity without requiring downstream imports of `num`.
     pub fn zero<Item: num::Zero>() -> Item {
         Item::zero()
@@ -130,7 +214,7 @@ pub mod direct {
 /// Contract the last axis of `a` with the first axis of `b`, overwriting `c`.
 ///
 /// The output shape concatenates the remaining axes of `a` and `b`. Two vectors
-/// produce shape `[1]`. All ranks must be positive; there is no fixed rank limit.
+/// produce shape `[]`. Input ranks must be positive; there is no fixed rank limit.
 /// The output rank is inferred independently from `c`.
 ///
 /// Arguments are evaluated and borrowed once, including temporary `r()` and
@@ -148,11 +232,12 @@ pub mod direct {
 /// let a = rlst::rlst_dynamic_array!(f64, [2, 3]);
 /// let b = rlst::rlst_dynamic_array!(f64, [3, 4]);
 /// let mut c = rlst::rlst_dynamic_array!(f64, [2, 4]);
-/// rlst::dot_direct_into!(c.r_mut(), a.r(), b.r());
+/// rlst::dot_into!(c.r_mut(), a.r(), b.r());
 /// ```
 #[macro_export]
-macro_rules! dot_direct_into {
+macro_rules! dot_into {
     ($c:expr, $a:expr, $b:expr $(,)?) => {{
+        use $crate::dense::macros::direct::Output as _;
         let c = &mut $c;
         let a = &$a;
         let b = &$b;
@@ -175,7 +260,7 @@ macro_rules! dot_direct_into {
                 for _ in 0..rows {
                     // SAFETY: validated output shape and bounded mixed-radix indices.
                     unsafe {
-                        *c.get_unchecked_mut(ci) = $crate::dense::macros::direct::zero();
+                        *c.output_mut(ci) = $crate::dense::macros::direct::zero();
                     }
                     // Advance axis zero first, wrapping all free A axes after
                     // the final row so the next sweep starts at zero.
@@ -197,7 +282,7 @@ macro_rules! dot_direct_into {
                         // SAFETY: all indices are within the validated shapes.
                         // The exclusive output borrow prevents aliasing with inputs.
                         unsafe {
-                            *c.get_unchecked_mut(ci) += a.get_value_unchecked(ai) * right;
+                            *c.output_mut(ci) += a.get_value_unchecked(ai) * right;
                         }
                         // Carry the shared free A/output indices together.
                         for axis in 0..last {
@@ -229,13 +314,24 @@ macro_rules! dot_direct_into {
 
 /// Allocate a direct contraction of the last axis of `a` with the first of `b`.
 ///
-/// Uses [`rlst_dynamic_array!`](crate::rlst_dynamic_array) for allocation and
-/// [`dot_direct_into!`](crate::dot_direct_into) for multiplication. Arguments are
+/// Uses the same rank-dependent storage as [`rlst_dynamic_array!`](crate::rlst_dynamic_array) and
+/// [`dot_into!`](crate::dot_into) for multiplication. Arguments are
 /// evaluated and borrowed once. The output concatenates the remaining input axes,
-/// with shape `[1]` for two vectors; multiplication does not conjugate either input.
+/// with a [`ZeroDimArray`](crate::ZeroDimArray) of shape `[]` for two vectors;
+/// multiplication does not conjugate either input.
 ///
 /// Stable Rust requires the independent output rank to be inferred from context,
-/// for example an explicit `DynArray<_, R>` annotation. There is no rank cap.
+/// for example an explicit `DynArray<_, R>` or `ZeroDimArray<_>` annotation.
+/// There is no rank cap.
+///
+/// For general dense matrices, [`dot_blas!`](crate::dot_blas) is significantly
+/// faster than `dot!` and is the recommended choice for matrix multiplication.
+/// Sparse matrices and abstract operators retain their existing `.dot()` behavior.
+/// With the `mpi` feature, distributed CSR matrices accept distributed vectors
+/// and matrices collectively, returning owned local storage on the range layout.
+/// Their multi-operand products are evaluated from right to left. For dense
+/// contractions, use two operands and explicitly type intermediate results;
+/// [`dot_blas!`](crate::dot_blas) also supports chains of dense matrix products.
 ///
 /// # Panics
 /// Panics for zero input ranks, incompatible contracted dimensions or output rank,
@@ -244,36 +340,38 @@ macro_rules! dot_direct_into {
 /// ```
 /// let a = rlst::rlst_dynamic_array!(f64, [2, 3, 4]);
 /// let b = rlst::rlst_dynamic_array!(f64, [4, 5]);
-/// let c: rlst::DynArray<f64, 3> = rlst::dot_direct!(a.r(), b.r());
+/// let c: rlst::DynArray<f64, 3> = rlst::dot!(a.r(), b.r());
 /// assert_eq!(c.shape(), [2, 3, 5]);
 /// ```
 #[macro_export]
-macro_rules! dot_direct {
+macro_rules! dot {
     ($a:expr, $b:expr $(,)?) => {{
-        let a = &$a;
-        let b = &$b;
-        let (shape, _, _, _) = $crate::dense::macros::direct::shape(a.shape(), b.shape());
-        let mut output = $crate::dense::macros::direct::allocate(shape);
-        $crate::dot_direct_into!(output, a, b);
-        output
+        use $crate::dense::macros::direct::Product as _;
+        ($a).__rlst_dot_product(&$b)
+    }};
+    ($a:expr, $b:expr, $($c:expr),+ $(,)?) => {{
+        $crate::dot!($a, $crate::dot!($b, $($c),+))
     }};
 }
 
-/// Dot product between compatible arrays.
+/// BLAS-backed multiplication between compatible dense arrays.
 ///
 /// It always allocates a new array for the result.
-/// Call as `res = dot!(a, b, c)` to multiply the matrices
+/// For general dense matrices, `dot_blas!` is significantly faster than
+/// [`dot!`](crate::dot) and is the recommended choice for matrix multiplication.
+///
+/// Call as `res = dot_blas!(a, b, c)` to multiply the matrices
 /// `a`, `b,`, and `c`. The product of arbitrary numbers of matrices
 /// is supported. For more than two arguments the product is evaluated
 /// from back to front.
 #[macro_export]
-macro_rules! dot {
-    ($a:expr, $b:expr) => {
+macro_rules! dot_blas {
+    ($a:expr, $b:expr $(,)?) => {
         $a.dot(&$b)
     };
 
-    ($a:expr, $b:expr, $($c:expr),+) => {{
-        dot!($a, dot!($b, $($c),+))
+    ($a:expr, $b:expr, $($c:expr),+ $(,)?) => {{
+        $crate::dot_blas!($a, $crate::dot_blas!($b, $($c),+))
     }};
 
 }
@@ -323,7 +421,7 @@ mod test {
     use crate::{MultIntoResize, dense::array::DynArray, empty_array};
 
     #[test]
-    fn test_dot() {
+    fn test_dot_blas() {
         let mut rng = rand_chacha::ChaCha8Rng::seed_from_u64(0);
         let mut arr1 = DynArray::<f64, 2>::from_shape([2, 3]);
         let mut arr2 = DynArray::<f64, 2>::from_shape([3, 4]);
@@ -337,7 +435,7 @@ mod test {
             arr3.r(),
         );
 
-        let actual = crate::dot!(arr1.r(), arr2.r(), arr3.r());
+        let actual = crate::dot_blas!(arr1.r(), arr2.r(), arr3.r());
 
         crate::assert_array_relative_eq!(expected, actual, 1E-10);
     }

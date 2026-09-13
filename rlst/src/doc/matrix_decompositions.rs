@@ -47,7 +47,7 @@
 //! # extern crate blas_src;
 //! # use rand::SeedableRng;
 //! # use rand_chacha::ChaCha8Rng;
-//! # use rlst::dot;
+//! # use rlst::dot_blas;
 //! # let mut rng = ChaCha8Rng::seed_from_u64(0);
 //! # use rlst::Lu;
 //! # let mut a = rlst::rlst_dynamic_array!(f64, [5, 3]);
@@ -56,7 +56,7 @@
 //! let p = lu.p_mat().unwrap();
 //! let l = lu.l_mat().unwrap();
 //! let u = lu.u_mat().unwrap();
-//! rlst::assert_array_relative_eq!(dot!(p, l, u), a, 1E-10);
+//! rlst::assert_array_relative_eq!(dot_blas!(p, l, u), a, 1E-10);
 //! ```
 //! To solve a linear system of equations we use the `solve` method.
 //! ```
@@ -65,7 +65,7 @@
 //! # use rand::SeedableRng;
 //! # use rand_chacha::ChaCha8Rng;
 //! # use rlst::base_types::TransMode;
-//! # use rlst::dot;
+//! # use rlst::dot_blas;
 //! # let mut rng = ChaCha8Rng::seed_from_u64(0);
 //! # use rlst::Lu;
 //! let mut a = rlst::rlst_dynamic_array!(f64, [5, 5]);
@@ -84,7 +84,7 @@
 //! # use rand::SeedableRng;
 //! # use rand_chacha::ChaCha8Rng;
 //! # use rlst::base_types::TransMode;
-//! # use rlst::dot;
+//! # use rlst::dot_blas;
 //! # let mut rng = ChaCha8Rng::seed_from_u64(0);
 //! # use rlst::Lu;
 //! let mut a = rlst::rlst_dynamic_array!(f64, [5, 5]);
@@ -100,7 +100,7 @@
 //! # use rand::SeedableRng;
 //! # use rand_chacha::ChaCha8Rng;
 //! # use rlst::base_types::TransMode;
-//! # use rlst::dot;
+//! # use rlst::dot_blas;
 //! # let mut rng = ChaCha8Rng::seed_from_u64(0);
 //! # use rlst::Lu;
 //! use rlst::Inverse;
@@ -121,7 +121,7 @@
 //! # use rand::SeedableRng;
 //! # use rand_chacha::ChaCha8Rng;
 //! # use rlst::base_types::TransMode;
-//! # use rlst::dot;
+//! # use rlst::dot_blas;
 //! # let mut rng = ChaCha8Rng::seed_from_u64(0);
 //! use rlst::Solve;
 //! let mut a = rlst::rlst_dynamic_array!(f64, [5, 3]);
@@ -140,7 +140,7 @@
 //! # use rand::SeedableRng;
 //! # use rand_chacha::ChaCha8Rng;
 //! # use rlst::base_types::TransMode;
-//! # use rlst::dot;
+//! # use rlst::dot_blas;
 //! # let mut rng = ChaCha8Rng::seed_from_u64(0);
 //! use rlst::base_types::UpLo;
 //! use rlst::SolveTriangular;
@@ -163,16 +163,16 @@
 //! # use rand::SeedableRng;
 //! # use rand_chacha::ChaCha8Rng;
 //! # use rlst::base_types::TransMode;
-//! # use rlst::dot;
+//! # use rlst::dot_blas;
 //! # let mut rng = ChaCha8Rng::seed_from_u64(0);
 //! use rlst::EvaluateArray;
 //! use rlst::Cholesky;
 //! use rlst::base_types::UpLo;
 //! let mut a = rlst::rlst_dynamic_array!(f64, [5, 5]);
 //! a.fill_from_standard_normal(&mut rng);
-//! let a = dot!(a.r().conj().transpose().eval(), a.r());
+//! let a = dot_blas!(a.r().conj().transpose().eval(), a.r());
 //! let cholesky = a.cholesky(UpLo::Upper).unwrap();
-//! rlst::assert_array_relative_eq!(dot!(cholesky.r().conj().transpose().eval(), cholesky.r()), a, 1E-10);
+//! rlst::assert_array_relative_eq!(dot_blas!(cholesky.r().conj().transpose().eval(), cholesky.r()), a, 1E-10);
 //! ```
 //! The parameter [UpLo](crate::base_types::UpLo) determines whether the Cholesky decomposition uses the upper or lower
 //! triangular part of the matrix. Correspondingly, the upper or lower triangular Cholesky factor is returned.
@@ -184,18 +184,18 @@
 //! # use rand::SeedableRng;
 //! # use rand_chacha::ChaCha8Rng;
 //! # use rlst::base_types::TransMode;
-//! # use rlst::dot;
+//! # use rlst::dot_blas;
 //! # let mut rng = ChaCha8Rng::seed_from_u64(0);
 //! # use rlst::EvaluateArray;
 //! # use rlst::CholeskySolve;
 //! # use rlst::base_types::UpLo;
 //! # let mut a = rlst::rlst_dynamic_array!(f64, [5, 5]);
 //! # a.fill_from_standard_normal(&mut rng);
-//! # let a = dot!(a.r().conj().transpose().eval(), a.r());
+//! # let a = dot_blas!(a.r().conj().transpose().eval(), a.r());
 //! let mut b = rlst::rlst_dynamic_array!(f64, [5]);
 //! b.fill_from_standard_normal(&mut rng);
 //! let x = a.cholesky_solve(UpLo::Upper, &b).unwrap();
-//! rlst::assert_array_relative_eq!(dot!(a, x), b, 1E-10);
+//! rlst::assert_array_relative_eq!(dot_blas!(a, x), b, 1E-10);
 //! ```
 //!
 //! Both Cholesky operations require a square Hermitian positive-definite
@@ -212,7 +212,7 @@
 //! ```
 //! # extern crate lapack_src;
 //! # extern crate blas_src;
-//! use rlst::{Ldl, dot};
+//! use rlst::{Ldl, dot_blas};
 //! use rlst::base_types::UpLo;
 //! let mut a = rlst::rlst_dynamic_array!(f64, [2, 2]);
 //! a[[0, 1]] = 1.0;
@@ -221,7 +221,7 @@
 //! b[[0]] = 2.0;
 //! b[[1]] = -3.0;
 //! let x = a.ldl(UpLo::Upper).unwrap().solve(&b).unwrap();
-//! rlst::assert_array_relative_eq!(dot!(a, x), b, 1E-12);
+//! rlst::assert_array_relative_eq!(dot_blas!(a, x), b, 1E-12);
 //! ```
 //!
 //! The input must be square. Solves accept a vector or a matrix whose first
@@ -245,7 +245,7 @@
 //! # use rand::SeedableRng;
 //! # use rand_chacha::ChaCha8Rng;
 //! # use rlst::base_types::TransMode;
-//! # use rlst::dot;
+//! # use rlst::dot_blas;
 //! # let mut rng = ChaCha8Rng::seed_from_u64(0);
 //! # use rlst::EvaluateArray;
 //! use rlst::Qr;
@@ -257,7 +257,7 @@
 //! let p = qr.p_mat().unwrap();
 //! let q = qr.q_mat(QMode::Compact).unwrap();
 //! let r = qr.r_mat().unwrap();
-//! rlst::assert_array_relative_eq!(dot!(q, r, p.r().transpose().eval()), a, 1E-10);
+//! rlst::assert_array_relative_eq!(dot_blas!(q, r, p.r().transpose().eval()), a, 1E-10);
 //! ```
 //! For the matrix `Q` we have used the parameter [QMode::Compact](crate::dense::linalg::lapack::qr::QMode::Compact).
 //! This returns a `Q` matrix of dimension `m x k`. One can also return a full `m x m` matrix by
@@ -277,7 +277,7 @@
 //! ```
 //! # extern crate lapack_src;
 //! # extern crate blas_src;
-//! use rlst::{Lq, dot};
+//! use rlst::{Lq, dot_blas};
 //! use rlst::dense::linalg::lapack::lq::QMode;
 //! let mut a = rlst::rlst_dynamic_array!(f64, [2, 3]);
 //! a[[0, 0]] = 2.0;
@@ -289,7 +289,7 @@
 //! let q = lq.q_mat(QMode::Compact).unwrap();
 //! assert_eq!(l.shape(), [2, 2]);
 //! assert_eq!(q.shape(), [2, 3]);
-//! rlst::assert_array_relative_eq!(dot!(l, q), a, 1E-12);
+//! rlst::assert_array_relative_eq!(dot_blas!(l, q), a, 1E-12);
 //! ```
 //!
 //! [apply_q](crate::dense::linalg::lapack::lq::LqDecomposition::apply_q)
@@ -304,7 +304,7 @@
 //! ```
 //! # extern crate lapack_src;
 //! # extern crate blas_src;
-//! use rlst::{Lq, dot};
+//! use rlst::{Lq, dot_blas};
 //! let mut a = rlst::rlst_dynamic_array!(f64, [2, 3]);
 //! a[[0, 0]] = 1.0;
 //! a[[1, 1]] = 1.0;
@@ -313,7 +313,7 @@
 //! b[[1]] = -3.0;
 //! let x = a.lq().unwrap().solve(&b).unwrap();
 //! assert_eq!(x.shape(), [3]);
-//! rlst::assert_array_relative_eq!(dot!(a, x), b, 1E-12);
+//! rlst::assert_array_relative_eq!(dot_blas!(a, x), b, 1E-12);
 //! ```
 //!
 //! This specialized minimum-norm operation is a method on the LQ object; it
@@ -336,7 +336,7 @@
 //! # use rand::SeedableRng;
 //! # use rand_chacha::ChaCha8Rng;
 //! # use rlst::base_types::TransMode;
-//! # use rlst::dot;
+//! # use rlst::dot_blas;
 //! # let mut rng = ChaCha8Rng::seed_from_u64(0);
 //! use rlst::SingularValueDecomposition;
 //! let mut a = rlst::rlst_dynamic_array!(f64, [5, 3]);
@@ -351,7 +351,7 @@
 //! # use rand::SeedableRng;
 //! # use rand_chacha::ChaCha8Rng;
 //! # use rlst::base_types::TransMode;
-//! # use rlst::dot;
+//! # use rlst::dot_blas;
 //! # let mut rng = ChaCha8Rng::seed_from_u64(0);
 //! # use rlst::SingularValueDecomposition;
 //! # let mut a = rlst::rlst_dynamic_array!(f64, [5, 3]);
@@ -363,7 +363,7 @@
 //! for (d, s_val) in izip!(s_mat.diag_iter_mut(), s.iter_value()) {
 //!     *d = s_val;
 //! }
-//! rlst::assert_array_relative_eq!(dot!(u, s_mat, vt), a, 1E-10);
+//! rlst::assert_array_relative_eq!(dot_blas!(u, s_mat, vt), a, 1E-10);
 //! ```
 //! The parameter [SvdMode::Full](crate::dense::linalg::lapack::singular_value_decomposition::SvdMode::Full) returns the full SVD as
 //! defined above. To instead compute a compact representation with `m x k` matrix `U` and `k x n` matrix `Vt` use the
@@ -374,7 +374,7 @@
 //! # use rand::SeedableRng;
 //! # use rand_chacha::ChaCha8Rng;
 //! # use rlst::base_types::TransMode;
-//! # use rlst::dot;
+//! # use rlst::dot_blas;
 //! # let mut rng = ChaCha8Rng::seed_from_u64(0);
 //! # use rlst::SingularValueDecomposition;
 //! # let mut a = rlst::rlst_dynamic_array!(f64, [5, 3]);
@@ -386,7 +386,7 @@
 //! for (d, s_val) in izip!(s_mat.diag_iter_mut(), s.iter_value()) {
 //!     *d = s_val;
 //! }
-//! rlst::assert_array_relative_eq!(dot!(u, s_mat, vt), a, 1E-10);
+//! rlst::assert_array_relative_eq!(dot_blas!(u, s_mat, vt), a, 1E-10);
 //! ```
 //!
 //! # Pseudo-Inverse of a matrix
@@ -407,7 +407,7 @@
 //! # use rand::SeedableRng;
 //! # use rand_chacha::ChaCha8Rng;
 //! # use rlst::base_types::TransMode;
-//! # use rlst::dot;
+//! # use rlst::dot_blas;
 //! # let mut rng = ChaCha8Rng::seed_from_u64(0);
 //! use rlst::SingularValueDecomposition;
 //! # let mut a = rlst::rlst_dynamic_array!(f64, [10, 5]);
@@ -422,7 +422,7 @@
 //! # use rand::SeedableRng;
 //! # use rand_chacha::ChaCha8Rng;
 //! # use rlst::base_types::TransMode;
-//! # use rlst::dot;
+//! # use rlst::dot_blas;
 //! # let mut rng = ChaCha8Rng::seed_from_u64(0);
 //! use rlst::SingularValueDecomposition;
 //! # let mut a = rlst::rlst_dynamic_array!(f64, [10, 5]);
@@ -447,7 +447,7 @@
 //! # use rand::SeedableRng;
 //! # use rand_chacha::ChaCha8Rng;
 //! # use rlst::base_types::TransMode;
-//! # use rlst::dot;
+//! # use rlst::dot_blas;
 //! # let mut rng = ChaCha8Rng::seed_from_u64(0);
 //! # use rlst::EvaluateArray;
 //! use rlst::dense::linalg::lapack::symmeig::SymmEigMode;
@@ -465,7 +465,7 @@
 //! # use rand::SeedableRng;
 //! # use rand_chacha::ChaCha8Rng;
 //! # use rlst::base_types::TransMode;
-//! # use rlst::{diag, dot};
+//! # use rlst::{diag, dot_blas};
 //! # let mut rng = ChaCha8Rng::seed_from_u64(0);
 //! # use rlst::dense::linalg::lapack::symmeig::SymmEigMode;
 //! # use rlst::SymmEig;
@@ -477,7 +477,7 @@
 //! let (eig, Q) = a.eigh(UpLo::Upper, SymmEigMode::EigenvaluesAndEigenvectors).unwrap();
 //! let Q = Q.unwrap();
 //! let eig_mat = diag!(eig);
-//! rlst::assert_array_relative_eq!(a, dot!(Q.r(), eig_mat, Q.r().transpose().eval()), 1E-10);
+//! rlst::assert_array_relative_eq!(a, dot_blas!(Q.r(), eig_mat, Q.r().transpose().eval()), 1E-10);
 //! ```
 //! Eigenvalues are returned in ascending order. Only the triangle selected by
 //! `UpLo` is read; the other triangle need not contain matching values.
@@ -526,7 +526,7 @@
 //! # extern crate blas_src;
 //! # use rand::SeedableRng;
 //! # use rand_chacha::ChaCha8Rng;
-//! # use rlst::{dot, diag};
+//! # use rlst::{dot_blas, diag};
 //! # let mut rng = ChaCha8Rng::seed_from_u64(0);
 //! # use rlst::EvaluateArray;
 //! use rlst::base_types::c64;
@@ -539,8 +539,8 @@
 //! let vr = vr.unwrap();
 //! let vlh = vl.unwrap().conj().transpose().eval();
 //! let lam_mat = diag!(lam);
-//! rlst::assert_array_abs_diff_eq!(dot!(vr, lam_mat, vr.inverse().unwrap()), a.r().into_type::<c64>(), 1E-10);
-//! rlst::assert_array_abs_diff_eq!(dot!(vlh.inverse().unwrap(), lam_mat, vlh), a.r().into_type::<c64>(), 1E-10);
+//! rlst::assert_array_abs_diff_eq!(dot_blas!(vr, lam_mat, vr.inverse().unwrap()), a.r().into_type::<c64>(), 1E-10);
+//! rlst::assert_array_abs_diff_eq!(dot_blas!(vlh.inverse().unwrap(), lam_mat, vlh), a.r().into_type::<c64>(), 1E-10);
 //! ```
 //! Note that for the assertion at the end we convert the matrix `a` to the complex type [c64](crate::base_types::c64).
 //! The reason is that eigenvalues and eigenvectors are complex in general. Hence, even for a real matrix `a` the eigenvalues
@@ -552,7 +552,7 @@
 //! # extern crate blas_src;
 //! # use rand::SeedableRng;
 //! # use rand_chacha::ChaCha8Rng;
-//! # use rlst::{dot, diag};
+//! # use rlst::{dot_blas, diag};
 //! # let mut rng = ChaCha8Rng::seed_from_u64(0);
 //! # use rlst::EvaluateArray;
 //! # use rlst::base_types::c64;
@@ -614,14 +614,14 @@
 //! # use rand::SeedableRng;
 //! # use rand_chacha::ChaCha8Rng;
 //! # use rlst::base_types::TransMode;
-//! # use rlst::{diag, dot};
+//! # use rlst::{diag, dot_blas};
 //! # let mut rng = ChaCha8Rng::seed_from_u64(0);
 //! # use rlst::EvaluateArray;
 //! # let mut a = rlst::rlst_dynamic_array!(f64, [5, 5]);
 //! use rlst::EigenvalueDecomposition;
 //! a.fill_from_standard_normal(&mut rng);
 //! let (r, q) = a.schur().unwrap();
-//! rlst::assert_array_relative_eq!(dot!(q.r(), r, q.r().conj().transpose().eval()), a, 1E-10);
+//! rlst::assert_array_relative_eq!(dot_blas!(q.r(), r, q.r().conj().transpose().eval()), a, 1E-10);
 //! ```
 //!
 //! # Generalized Schur (QZ) decomposition
@@ -635,7 +635,7 @@
 //! ```
 //! # extern crate lapack_src;
 //! # extern crate blas_src;
-//! use rlst::{EvaluateArray, GeneralizedSchur, dot};
+//! use rlst::{EvaluateArray, GeneralizedSchur, dot_blas};
 //! let mut a = rlst::rlst_dynamic_array!(f64, [2, 2]);
 //! let mut b = rlst::rlst_dynamic_array!(f64, [2, 2]);
 //! a[[0, 0]] = 2.0;
@@ -644,8 +644,8 @@
 //! b[[1, 1]] = 4.0;
 //! let qz = a.qz(&b).unwrap();
 //! let z_h = qz.z().r().conj().transpose().eval();
-//! rlst::assert_array_relative_eq!(dot!(qz.q().r(), qz.s().r(), z_h.r()), a, 1E-12);
-//! rlst::assert_array_relative_eq!(dot!(qz.q().r(), qz.t().r(), z_h.r()), b, 1E-12);
+//! rlst::assert_array_relative_eq!(dot_blas!(qz.q().r(), qz.s().r(), z_h.r()), a, 1E-12);
+//! rlst::assert_array_relative_eq!(dot_blas!(qz.q().r(), qz.t().r(), z_h.r()), b, 1E-12);
 //! ```
 //!
 //! Generalized eigenvalues are represented by paired entries from

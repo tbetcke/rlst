@@ -62,7 +62,7 @@ pub trait Gemm: Sized {
 /// Multiply into with resize.
 /// This trait allows to resize the target array if necessary.
 /// It is used for matrix multiplication where the result array may need to be resized.
-/// It is not meant to be used outside the library. use the `dot` macro instead.
+/// It is not meant to be used outside the library. Use [`dot_blas!`](crate::dot_blas) instead.
 pub trait MultIntoResize<First, Second>: BaseItem {
     /// Multiply First * Second and sum into Self. Allow to resize Self if necessary
     fn simple_mult_into_resize(self, arr_a: First, arr_b: Second) -> Self

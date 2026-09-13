@@ -26,6 +26,9 @@ use mpi::traits::{Communicator, Equivalence};
 use num::One;
 
 use crate::dense::array::DynArray;
+use crate::dense::base_array::BaseArray;
+use crate::dense::data_container::VectorContainer;
+use crate::dense::macros::direct::Product;
 use crate::distributed_tools::{GhostCommunicator, IndexLayout, all_to_allv, sort_to_bins};
 use crate::{
     AijIteratorByValue, AsMatrixApply, BaseItem, FromAijDistributed, Nonzeros, Shape,
@@ -357,9 +360,96 @@ where
     }
 }
 
-// impl<'a, Item, C, ArrayImplX, const NDIM: usize> DistributedCsrMatrix<'a, Item, C> {
-//     pub fn dot(&self, other: &Array<ArrayImplX, NDIM>)
-// }
+impl<'a, Item, C> DistributedCsrMatrix<'a, Item, C>
+where
+    Item: Copy + Default + One + Equivalence,
+    C: Communicator,
+{
+    /// Multiply by a distributed vector or matrix and allocate the result.
+    ///
+    /// The input must use this matrix's domain layout (the same shared
+    /// [`IndexLayout`] instance). The result owns its local dense storage and
+    /// shares this matrix's range layout. A vector produces a vector; a matrix
+    /// preserves the number of right-hand-side columns. Also available through
+    /// [`dot!`](crate::dot), including borrowed and lazy distributed inputs.
+    ///
+    /// This operation is collective on the matrix communicator. All ranks must
+    /// participate, including ranks with no local rows and globally empty inputs.
+    ///
+    /// # Panics
+    /// Panics on all ranks before ghost exchange if an input layout or local row
+    /// count is incompatible, RHS ranks or column counts disagree across ranks,
+    /// or an output shape's element count overflows.
+    pub fn dot<ArrayImplX, const NDIM: usize>(
+        &self,
+        other: &DistributedArray<'a, C, ArrayImplX, NDIM>,
+    ) -> DistributedArray<'a, C, BaseArray<VectorContainer<Item>, NDIM>, NDIM>
+    where
+        ArrayImplX: Shape<NDIM>,
+        Self: AsMatrixApply<
+                DistributedArray<'a, C, ArrayImplX, NDIM>,
+                DistributedArray<'a, C, BaseArray<VectorContainer<Item>, NDIM>, NDIM>,
+            > + BaseItem<Item = Item>,
+    {
+        let input_shape = other.local.shape();
+        let mut output_shape = input_shape;
+        if let Some(rows) = output_shape.first_mut() {
+            *rows = self.range_layout.number_of_local_indices();
+        }
+        let valid = (NDIM == 1 || NDIM == 2)
+            && self.domain_layout.is_same(&other.index_layout)
+            && input_shape.first() == Some(&self.domain_layout.number_of_local_indices())
+            && output_shape
+                .iter()
+                .try_fold(1_usize, |size, &dim| size.checked_mul(dim))
+                .is_some();
+        // Fixed-size metadata also permits collective rejection when different
+        // ranks call the vector and matrix instantiations of this method.
+        let metadata = [
+            usize::from(valid),
+            NDIM,
+            input_shape.get(1).copied().unwrap_or(1),
+        ];
+        let mut metadata_by_rank = vec![0_usize; 3 * self.comm().size() as usize];
+        self.comm()
+            .all_gather_into(&metadata, &mut metadata_by_rank);
+        assert!(
+            metadata_by_rank
+                .as_chunks::<3>()
+                .0
+                .iter()
+                .all(|candidate| { candidate[0] == 1 && candidate[1..] == metadata[1..] }),
+            "distributed dot requires compatible domain layouts, local rows, and agreeing RHS dimensions on every rank"
+        );
+        let mut output =
+            DistributedArray::new(self.range_layout(), DynArray::from_shape(output_shape));
+        self.apply(Item::one(), other, Item::default(), &mut output);
+        output
+    }
+}
+
+impl<'a, 'borrow, Item, C, ArrayImplX, const NDIM: usize>
+    Product<
+        'borrow,
+        DistributedArray<'a, C, ArrayImplX, NDIM>,
+        DistributedArray<'a, C, BaseArray<VectorContainer<Item>, NDIM>, NDIM>,
+    > for DistributedCsrMatrix<'a, Item, C>
+where
+    Item: Copy + Default + One + Equivalence,
+    C: Communicator,
+    ArrayImplX: Shape<NDIM>,
+    Self: AsMatrixApply<
+            DistributedArray<'a, C, ArrayImplX, NDIM>,
+            DistributedArray<'a, C, BaseArray<VectorContainer<Item>, NDIM>, NDIM>,
+        > + BaseItem<Item = Item>,
+{
+    fn __rlst_dot_product(
+        &'borrow self,
+        rhs: &DistributedArray<'a, C, ArrayImplX, NDIM>,
+    ) -> DistributedArray<'a, C, BaseArray<VectorContainer<Item>, NDIM>, NDIM> {
+        self.dot(rhs)
+    }
+}
 
 impl<'a, Item, C, ArrayImplX, ArrayImplY>
     AsMatrixApply<DistributedArray<'a, C, ArrayImplX, 1>, DistributedArray<'a, C, ArrayImplY, 1>>

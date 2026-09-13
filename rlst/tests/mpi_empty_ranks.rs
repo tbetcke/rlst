@@ -827,6 +827,168 @@ fn csr_empty_matrix_contracts<C: CommunicatorCollectives>(comm: &C) {
     );
 }
 
+/// Contract: allocating distributed products preserve layouts and communicate
+/// ghosts even when domain and range ownership are on disjoint ranks.
+fn distributed_dot<C: CommunicatorCollectives>(comm: &C) {
+    let rank = comm.rank();
+    let domain = Rc::new(IndexLayout::from_local_counts(
+        if rank == comm.size() - 1 { 2 } else { 0 },
+        comm,
+    ));
+    let range = Rc::new(IndexLayout::from_local_counts(
+        if rank == 0 { 3 } else { 0 },
+        comm,
+    ));
+    let matrix = rlst::sparse::distributed_csr_mat::DistributedCsrMatrix::from_aij(
+        domain.clone(),
+        range.clone(),
+        if rank == 0 { &[0, 0, 2] } else { &[] },
+        if rank == 0 { &[0, 1, 0] } else { &[] },
+        if rank == 0 {
+            &[2.0_f64, 3.0, -1.0]
+        } else {
+            &[]
+        },
+    );
+    let mut x = rlst::dist_vec!(f64, domain.clone());
+    for i in 0..x.local.len() {
+        x.local[[i]] = 4.0 + (domain.local_range().0 + i) as f64;
+    }
+    let calls = std::cell::Cell::new(0);
+    let y = rlst::dot!(
+        {
+            calls.set(calls.get() + 1);
+            &matrix
+        },
+        &x
+    );
+    let values = y.gather_to_all();
+    let doubled = rlst::dot!(matrix, x.r() + x.r()).gather_to_all();
+    collective_assert(
+        comm,
+        calls.get() == 1
+            && Rc::ptr_eq(&y.index_layout, &range)
+            && values.data().unwrap() == [23.0, 0.0, -4.0]
+            && doubled.data().unwrap() == [46.0, 0.0, -8.0],
+        "distributed dot must borrow once, preserve the range layout, and exchange remote vector values",
+    );
+
+    let mut rhs = rlst::dist_mat!(f64, domain.clone(), 2);
+    for j in 0..2 {
+        for i in 0..domain.number_of_local_indices() {
+            rhs.local[[i, j]] = 4.0 + (domain.local_range().0 + i + 10 * j) as f64;
+        }
+    }
+    let result = rlst::dot!(matrix, rhs.r());
+    let values = result.gather_to_all();
+    collective_assert(
+        comm,
+        Rc::ptr_eq(&result.index_layout, &range)
+            && values.shape() == [3, 2]
+            && values.data().unwrap() == [23.0, 0.0, -4.0, 73.0, 0.0, -14.0],
+        "distributed dot must preserve multiple RHS columns and zero-nnz rows",
+    );
+    let no_columns = rlst::dist_mat!(f64, domain.clone(), 0);
+    let result = rlst::dot!(matrix, no_columns);
+    collective_assert(
+        comm,
+        result.local.shape() == [range.number_of_local_indices(), 0],
+        "zero RHS columns must produce empty local matrices",
+    );
+
+    for (rows, cols) in [(0, 0), (0, 2), (3, 0), (3, 2)] {
+        let domain = Rc::new(IndexLayout::from_local_counts(
+            if rank == 0 { cols } else { 0 },
+            comm,
+        ));
+        let range = Rc::new(IndexLayout::from_local_counts(
+            if rank == 0 { rows } else { 0 },
+            comm,
+        ));
+        let matrix = rlst::sparse::distributed_csr_mat::DistributedCsrMatrix::<f64, C>::from_aij(
+            domain.clone(),
+            range.clone(),
+            &[],
+            &[],
+            &[],
+        );
+        let vector = rlst::dist_vec!(f64, domain.clone());
+        let rhs = rlst::dist_mat!(f64, domain.clone(), 2);
+        // The returned storage must not borrow the matrix or either input.
+        let y = rlst::dot!(matrix, vector);
+        let z = rlst::dot!(matrix, rhs);
+        drop((matrix, vector, rhs));
+        let y = y.gather_to_all();
+        let z = z.gather_to_all();
+        collective_assert(
+            comm,
+            y.shape() == [rows]
+                && z.shape() == [rows, 2]
+                && y.iter_value().all(|v| v == 0.0)
+                && z.iter_value().all(|v| v == 0.0),
+            "globally empty and zero-nnz distributed products must have correct zero outputs",
+        );
+    }
+}
+
+/// Contract: invalid metadata on one rank is rejected before peers exchange ghosts.
+fn distributed_dot_rejection<C: CommunicatorCollectives>(comm: &C) {
+    let layout = Rc::new(IndexLayout::from_local_counts(1, comm));
+    let other_layout = Rc::new(IndexLayout::from_local_counts(1, comm));
+    let row = layout.local_range().0;
+    let matrix = rlst::sparse::distributed_csr_mat::DistributedCsrMatrix::from_aij(
+        layout.clone(),
+        layout.clone(),
+        &[row],
+        &[(row + 1) % comm.size() as usize],
+        &[1.0_f64],
+    );
+    let wrong_layout = rlst::dist_vec!(
+        f64,
+        if comm.rank() == 0 {
+            other_layout.clone()
+        } else {
+            layout.clone()
+        }
+    );
+    let layout_rejected = std::panic::catch_unwind(AssertUnwindSafe(|| {
+        let _ = rlst::dot!(matrix, wrong_layout);
+    }))
+    .is_err();
+    let mut wrong_rows = rlst::dist_vec!(f64, layout.clone());
+    if comm.rank() == 0 {
+        wrong_rows.local = rlst::DynArray::from_shape([2]);
+    }
+    let rows_rejected = std::panic::catch_unwind(AssertUnwindSafe(|| {
+        let _ = rlst::dot!(matrix, wrong_rows);
+    }))
+    .is_err();
+    let mut columns_rejected = true;
+    let mut ranks_rejected = true;
+    if comm.size() > 1 {
+        let wrong_columns = rlst::dist_mat!(f64, layout.clone(), usize::from(comm.rank() == 0));
+        columns_rejected = std::panic::catch_unwind(AssertUnwindSafe(|| {
+            let _ = rlst::dot!(matrix, wrong_columns);
+        }))
+        .is_err();
+        ranks_rejected = std::panic::catch_unwind(AssertUnwindSafe(|| {
+            if comm.rank() == 0 {
+                let x = rlst::dist_vec!(f64, layout.clone());
+                let _ = rlst::dot!(matrix, x);
+            } else {
+                let x = rlst::dist_mat!(f64, layout.clone(), 1);
+                let _ = rlst::dot!(matrix, x);
+            }
+        }))
+        .is_err();
+    }
+    collective_assert(
+        comm,
+        layout_rejected && rows_rejected && columns_rejected && ranks_rejected,
+        "invalid distributed dot metadata must be rejected on every rank",
+    );
+}
+
 /// Contract: remapping rejects per-rank disagreement about either layout before routing.
 fn remap_layout_agreement(comm: &SimpleCommunicator) {
     if comm.size() == 1 {
@@ -1008,6 +1170,8 @@ fn main() {
         "collective-metadata-rejection" => collective_metadata_rejection(&world),
         "expanded-empty-contracts" => expanded_empty_contracts(&world),
         "csr-empty-matrix-contracts" => csr_empty_matrix_contracts(&world),
+        "distributed-dot" => distributed_dot(&world),
+        "distributed-dot-rejection" => distributed_dot_rejection(&world),
         "remap-layout-agreement" => remap_layout_agreement(&world),
         "layouts-and-consumers" => layouts_and_consumers(&world),
         _ => panic!("unknown RLST_MPI_EMPTY_CASE={case}"),

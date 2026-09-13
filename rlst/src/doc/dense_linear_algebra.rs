@@ -348,7 +348,9 @@
 //!
 //! # Matrix multiplication
 //!
-//! RLST uses its BLAS interface to perform matrix multiplication.
+//! [`dot_blas!`](crate::dot_blas) uses RLST's BLAS interface to perform matrix multiplication.
+//! For general dense matrices, `dot_blas!` is significantly faster than
+//! [`dot!`](crate::dot) and is recommended.
 //! To use matrix products make sure to have a BLAS/Lapack provider as explained [here](crate::doc::getting_started). Furthermore,
 //! BLAS requires the data stored in memory using column-major order. Hence, array expressions are not supported and need to first be
 //! evaluated.
@@ -357,16 +359,21 @@
 //! # extern crate blas_src;
 //! let arr1 = rlst::rlst_dynamic_array!(f64, [4, 5]);
 //! let arr2 = rlst::rlst_dynamic_array!(f64, [5, 3]);
-//! let res = rlst::dot!(arr1.r(), arr2.r());
+//! let res = rlst::dot_blas!(arr1.r(), arr2.r());
 //! ```
-//! This multiplies the matrices `arr1` and `arr2` into a new matrix `res`. The macro [crate::dot] initializes a new array and multiplies
-//! `arr1` and `arr2` into it. `dot` supports the multiplication of multiple arrays. Hence, an expression of the form `dot!(a1, a2, a3, a4)`
-//! is possible. Arrays are multiplied with `dot` from right to left. For combined array multiplication/addition of the form `Y -> alpha * A B + beta * Y`
+//! This multiplies the matrices `arr1` and `arr2` into a new matrix `res`. The macro [`dot_blas!`](crate::dot_blas) initializes a new array and multiplies
+//! `arr1` and `arr2` into it. `dot_blas!` supports the multiplication of multiple arrays. Hence, an expression of the form `dot_blas!(a1, a2, a3, a4)`
+//! is possible. Arrays are multiplied with `dot_blas!` from right to left. For combined array multiplication/addition of the form `Y -> alpha * A B + beta * Y`
 //! the [apply](crate::AsMatrixApply::apply) is implemented for all array types that support BLAS operations.
 //!
 //! # Direct tensor multiplication
 //!
-//! [`dot_direct!`](crate::dot_direct) and [`dot_direct_into!`](crate::dot_direct_into)
+//! The shared [`dot!`](crate::dot) macro uses direct tensor contraction for dense
+//! arrays, while preserving the existing multiplication behavior for
+//! [sparse matrices](crate::doc::sparse_matrices) and
+//! [abstract operators](crate::doc::abstract_linear_algebra).
+//!
+//! For dense arrays, [`dot!`](crate::dot) and [`dot_into!`](crate::dot_into)
 //! contract the **last axis of A with the first axis of B**, without requiring BLAS.
 //! For shapes `[a0, ..., aN, k]` and `[k, b0, ..., bM]`, the result has shape
 //! `[a0, ..., aN, b0, ..., bM]`: the uncontracted axes of A followed by those of B.
@@ -375,14 +382,14 @@
 //!
 //! | A shape | B shape | Result shape |
 //! | --- | --- | --- |
-//! | `[k]` | `[k]` | `[1]` |
+//! | `[k]` | `[k]` | `[]` |
 //! | `[m, k]` | `[k]` | `[m]` |
 //! | `[k]` | `[k, n]` | `[n]` |
 //! | `[m, k]` | `[k, n]` | `[m, n]` |
 //! | `[p, q, k]` | `[k, r, s]` | `[p, q, r, s]` |
 //!
-//! A vector-vector product uses a length-one vector, not a rank-zero scalar array;
-//! read its scalar value with `result[[0]]`. Both inputs must have at least one axis.
+//! A vector-vector product returns a [`ZeroDimArray`](crate::ZeroDimArray);
+//! read its scalar value with `*result.scalar()`. Both inputs must have at least one axis.
 //! Arbitrary positive input ranks are supported. Supply an output type annotation
 //! when Rust cannot infer the result rank:
 //!
@@ -392,16 +399,24 @@
 //! let mut b = DynArray::<f64, 3>::from_shape([4, 5, 2]);
 //! a.fill_with_value(2.0);
 //! b.fill_with_value(3.0);
-//! let result: DynArray<f64, 4> = rlst::dot_direct!(a, b);
+//! let result: DynArray<f64, 4> = rlst::dot!(a, b);
 //! assert_eq!(result.shape(), [2, 3, 5, 2]);
 //! assert_eq!(result[[1, 2, 4, 1]], 24.0);
 //! // The macros borrow named operands, so a and b remain usable.
 //! assert_eq!(a.shape(), [2, 3, 4]);
 //! ```
 //!
-//! `dot_direct!(a, b)` allocates a dynamic output using
+//! ```
+//! let mut a = rlst::rlst_dynamic_array!(f64, [3]);
+//! a.fill_with_value(2.0);
+//! let result: rlst::ZeroDimArray<f64> = rlst::dot!(a.r(), a.r());
+//! assert_eq!(result.shape(), []);
+//! assert_eq!(*result.scalar(), 12.0);
+//! ```
+//!
+//! For dense arrays, `dot!(a, b)` uses the same rank-dependent storage as
 //! [`rlst_dynamic_array!`](crate::rlst_dynamic_array), then delegates to
-//! `dot_direct_into!(c, a, b)`. The latter returns `()`, overwrites every output
+//! `dot_into!(c, a, b)`. The latter returns `()`, overwrites every output
 //! element, and neither allocates nor resizes the destination. Its shape and rank
 //! must already match the result. A contraction of length zero writes zeros; an
 //! output with any zero-length axis has no elements to write.
@@ -413,7 +428,7 @@
 //! b.fill_with_value(3.0);
 //! let mut storage = rlst::rlst_dynamic_array!(f64, [4, 6]);
 //! storage.fill_with_value(-1.0);
-//! rlst::dot_direct_into!(storage.r_mut().into_subview([1, 1], [2, 4]), a, b);
+//! rlst::dot_into!(storage.r_mut().into_subview([1, 1], [2, 4]), a, b);
 //! assert_eq!(storage[[1, 1]], 18.0);
 //! assert_eq!(storage[[0, 0]], -1.0);
 //! ```

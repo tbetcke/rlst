@@ -82,7 +82,7 @@ mod test {
     use super::*;
     use crate::base_types::{c32, c64};
     use crate::dense::array::DynArray;
-    use crate::dot;
+    use crate::dot_blas;
     use num::Zero;
     use paste::paste;
 
@@ -105,7 +105,7 @@ mod test {
                 let mut x_actual = DynArray::<$scalar, 2>::from_shape([n, 1]);
                 x_actual.fill_from_seed_equally_distributed(1);
 
-                let b = dot!(a.r(), x_actual.r());
+                let b = dot_blas!(a.r(), x_actual.r());
 
                 let x = a.solve_triangular(UpLo::Lower, &b).unwrap();
 

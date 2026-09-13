@@ -129,7 +129,7 @@ where
 mod tests {
     use super::*;
     use crate::base_types::{c32, c64};
-    use crate::dot;
+    use crate::dot_blas;
     use crate::traits::base_operations::*;
     use paste::paste;
 
@@ -144,14 +144,14 @@ mod tests {
                     a.fill_from_seed_normally_distributed(11);
                     b.fill_from_seed_normally_distributed(12);
                     let qz = a.qz(&b).unwrap();
-                    let ah = dot!(qz.q().r(), qz.s().r(), qz.z().r().conj().transpose().eval());
-                    let bh = dot!(qz.q().r(), qz.t().r(), qz.z().r().conj().transpose().eval());
+                    let ah = dot_blas!(qz.q().r(), qz.s().r(), qz.z().r().conj().transpose().eval());
+                    let bh = dot_blas!(qz.q().r(), qz.t().r(), qz.z().r().conj().transpose().eval());
                     crate::assert_array_abs_diff_eq!(ah, a, $tol);
                     crate::assert_array_abs_diff_eq!(bh, b, $tol);
                     let mut identity = DynArray::<$scalar, 2>::from_shape([n, n]);
                     identity.set_identity();
-                    let qhq = dot!(qz.q().r().conj().transpose().eval(), qz.q().r());
-                    let zhz = dot!(qz.z().r().conj().transpose().eval(), qz.z().r());
+                    let qhq = dot_blas!(qz.q().r().conj().transpose().eval(), qz.q().r());
+                    let zhz = dot_blas!(qz.z().r().conj().transpose().eval(), qz.z().r());
                     crate::assert_array_abs_diff_eq!(qhq, identity, $tol);
                     crate::assert_array_abs_diff_eq!(zhz, identity, $tol);
                 }

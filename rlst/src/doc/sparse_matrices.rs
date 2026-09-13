@@ -63,7 +63,7 @@
 //! x.fill_from_seed_equally_distributed(0);
 //!
 //! let y = rlst::dot!(sparse_mat, x);
-//! # let expected = rlst::dot!(sparse_mat.todense(), x);
+//! # let expected = rlst::dot_blas!(sparse_mat.todense(), x);
 //!
 //! # rlst::assert_array_relative_eq!(y, expected, 1E-10);
 //! ```     
@@ -88,7 +88,7 @@
 //! # let mut x = rlst::DynArray::<f64, 1>::from_shape([shape[1]]);
 //! # x.fill_from_seed_equally_distributed(0);
 //! let y = rlst::dot!(sparse_mat, x);
-//! # let expected = rlst::dot!(sparse_mat.todense(), x);
+//! # let expected = rlst::dot_blas!(sparse_mat.todense(), x);
 //! # rlst::assert_array_relative_eq!(y, expected, 1E-10);
 //! ```     
 //!
@@ -160,6 +160,40 @@
 //! record order, regardless of the source array's internal layout. Readers reject unsupported
 //! integer and symmetric variants, malformed records, count mismatches, and out-of-range indices
 //! with an [`RlstError`](crate::RlstError).
+//!
+//! # Distributed multiplication
+//!
+//! With the `mpi` feature, `dot!(a, x)` also accepts a distributed CSR matrix and
+//! a distributed vector or matrix. The input must share `a.domain_layout()`;
+//! the result shares `a.range_layout()` and owns its local dense data. Matrix
+//! inputs retain their number of RHS columns. Borrowed views and lazy distributed
+//! expressions are supported. The equivalent method call is `a.dot(&x)`.
+//!
+//! Every rank in the matrix communicator must call the operation, even with no
+//! local rows or a globally empty input. Input layouts, local row counts, and
+//! agreement on RHS dimensions are checked collectively before ghost exchange.
+//!
+//! ```no_run
+//! # #[cfg(feature = "mpi")]
+//! # {
+//! use std::rc::Rc;
+//! use rlst::{FromAijDistributed, distributed_tools::IndexLayout};
+//! use rlst::sparse::distributed_csr_mat::DistributedCsrMatrix;
+//! let universe = mpi::initialize().unwrap();
+//! let world = universe.world();
+//! let layout = Rc::new(IndexLayout::from_local_counts(1, &world));
+//! let row = layout.local_range().0;
+//! let a = DistributedCsrMatrix::from_aij(
+//!     layout.clone(), layout.clone(), &[row], &[row], &[2.0_f64],
+//! );
+//! let mut x = rlst::dist_vec!(f64, layout.clone());
+//! x.local.fill_with_value(3.0);
+//! let y = rlst::dot!(a, x.r());
+//! assert_eq!(y.local[[0]], 6.0);
+//! # }
+//! ```
+//!
+//! # Matrix Market round trip
 //!
 //! A coordinate-file round trip is:
 //!

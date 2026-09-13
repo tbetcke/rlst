@@ -109,7 +109,7 @@ mod test {
     use super::*;
     use crate::base_types::{c32, c64};
     use crate::dense::array::DynArray;
-    use crate::dot;
+    use crate::dot_blas;
     use crate::traits::base_operations::*;
     use crate::traits::rlst_num::RlstScalar;
     use itertools::izip;
@@ -144,14 +144,14 @@ mod test {
 
                 // Check right eigenvectors: A * vr = B * vr * diag
                 let vr = vr.unwrap();
-                let lhs = dot!(a_complex.r(), vr.r());
-                let rhs = dot!(b_complex.r(), dot!(vr.r(), diag.r()));
+                let lhs = dot_blas!(a_complex.r(), vr.r());
+                let rhs = dot_blas!(b_complex.r(), dot_blas!(vr.r(), diag.r()));
                 crate::assert_array_abs_diff_eq!(lhs, rhs, $tol);
 
                 // Check left eigenvectors: vl^H * A = diag * vl^H * B
                 let vlh = vl.unwrap().conj().transpose().eval();
-                let lhs = dot!(vlh.r(), a_complex.r());
-                let rhs = dot!(diag.r(), dot!(vlh.r(), b_complex.r()));
+                let lhs = dot_blas!(vlh.r(), a_complex.r());
+                let rhs = dot_blas!(diag.r(), dot_blas!(vlh.r(), b_complex.r()));
                 crate::assert_array_abs_diff_eq!(lhs, rhs, $tol);
 
 
