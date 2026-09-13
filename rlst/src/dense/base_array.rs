@@ -24,7 +24,8 @@ use crate::{
 /// Contiguous column-major array implementation backed by `Data`.
 ///
 /// The container length is exactly the product of `shape`; indexing uses the stride derived from
-/// that shape.
+/// that shape. At least one axis is required; scalar-only storage is provided by
+/// [`crate::ZeroDimArray`].
 pub struct BaseArray<Data, const NDIM: usize> {
     data: Data,
     shape: [usize; NDIM],
@@ -39,8 +40,12 @@ impl<Data: DataContainer, const NDIM: usize> BaseArray<Data, NDIM> {
     ///
     /// # Panics
     ///
-    /// Panics if the container length is not exactly the product of `shape`.
+    /// Panics if `NDIM` is zero or the container length is not exactly the product of `shape`.
     pub fn new(data: Data, shape: [usize; NDIM]) -> Self {
+        assert!(
+            NDIM > 0,
+            "BaseArray requires a positive rank; use ZeroDimArray for scalar storage"
+        );
         assert_eq!(
             data.number_of_elements(),
             shape.iter().product::<usize>(),
