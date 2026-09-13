@@ -14,6 +14,7 @@
 //!
 //! To learn about the features of RLST please have a look at the following documents.
 //! - [Getting started with RLST](crate::doc::getting_started)
+//! - [Changelog and migration notes](crate::doc::changelog)
 //! - [An introduction to dense linear algebra with RLST](crate::doc::dense_linear_algebra)
 //! - [Matrix decompositions](crate::doc::matrix_decompositions)
 //! - [Sparse matrix operations](crate::doc::sparse_matrices)

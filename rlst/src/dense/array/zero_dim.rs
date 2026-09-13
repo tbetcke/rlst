@@ -24,7 +24,7 @@ pub struct ScalarArrayImpl<Item: Copy + Default> {
 /// use rlst::ZeroDimArray;
 ///
 /// let mut value = ZeroDimArray::from_scalar(3.0_f64);
-/// assert_eq!(value.shape(), []);
+/// assert_eq!(value.shape(), [0usize; 0]);
 /// assert_eq!(value.number_of_elements(), 1);
 /// *value.scalar_mut() = 4.0;
 /// assert_eq!(value.into_scalar(), 4.0);
@@ -122,8 +122,8 @@ mod tests {
     #[test]
     fn scalar_shape_and_borrows() {
         let mut array = ZeroDimArray::from_scalar(7_i32);
-        assert_eq!(array.shape(), []);
-        assert_eq!(array.imp().shape(), []);
+        assert_eq!(array.shape(), [0usize; 0]);
+        assert_eq!(array.imp().shape(), [0usize; 0]);
         assert_eq!(array.len(), 1);
         assert_eq!(array.number_of_elements(), 1);
         assert!(!array.is_empty());

@@ -30,7 +30,7 @@
 //! This is identical to the following commands.
 //! ```
 //! # use rlst_dense::*;
-//! let mut rng = rand::thread_rng();
+//! let mut rng = rand::rng();
 //! let mut mat = rlst_dynamic_mat![f64, (3, 5)];
 //! mat.fill_from_standard_normal(&mut rng);
 //! ```

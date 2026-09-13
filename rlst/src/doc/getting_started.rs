@@ -35,7 +35,7 @@
 //! ```
 //! let shape: [usize; 0] = [];
 //! let mut result = rlst::rlst_dynamic_array!(f64, shape);
-//! assert_eq!(result.shape(), []);
+//! assert_eq!(result.shape(), [0usize; 0]);
 //! assert_eq!(result.number_of_elements(), 1);
 //! assert!(!result.is_empty());
 //! assert_eq!(*result.scalar(), 0.0);
@@ -71,20 +71,14 @@
 //! binary crate must arrange for compatible native libraries to be linked. For example,
 //! a macOS application can add the following dependencies to its `Cargo.toml`:
 //!
-//! The APIs described here target the in-development `0.7.0-dev` tree. Until a stable 0.7
-//! release is published, select that source explicitly; the registry requirement `"0.7"` does
-//! not select a prerelease:
-//!
 //! ```toml
 //! [dependencies]
-//! rlst = { git = "https://codeberg.org/linalg-rs/rlst", branch = "main" }
+//! rlst = "0.7"
 //! blas-src = { version = "0.14", features = ["accelerate"] }
 //! lapack-src = { version = "0.13", features = ["accelerate"] }
 //! ```
 //!
-//! For reproducible builds, replace `branch` with a tested `rev`. Users of the latest published
-//! stable release can instead select its `0.6` registry series, but APIs added during 0.7
-//! development will not be available there.
+//! See the [changelog](crate::doc::changelog) for new features and migration notes from 0.6.
 //!
 //! On Linux, use the provider appropriate for the installation (commonly system OpenBLAS).
 //! Provider crate versions and features change independently, so consult their current
