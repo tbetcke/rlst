@@ -25,6 +25,46 @@
 //! See the [dense-array tutorial](crate::doc::dense_linear_algebra) for storage layouts,
 //! slice-backed and static arrays, views, iteration, and matrix multiplication.
 //!
+//! ## Zero-dimensional scalar results
+//!
+//! A [`ZeroDimArray`](crate::ZeroDimArray) has no axes and owns exactly one scalar.
+//! It is useful as a reduction result. Shape `[]` is distinct from shape `[0]`,
+//! which describes an empty one-dimensional array. Scalar containers provide
+//! dedicated borrowing and consuming accessors instead of random indexing:
+//!
+//! ```
+//! let shape: [usize; 0] = [];
+//! let mut result = rlst::rlst_dynamic_array!(f64, shape);
+//! assert_eq!(result.shape(), []);
+//! assert_eq!(result.number_of_elements(), 1);
+//! assert!(!result.is_empty());
+//! assert_eq!(*result.scalar(), 0.0);
+//! *result.scalar_mut() = 3.5;
+//! assert_eq!(result.into_scalar(), 3.5);
+//!
+//! let result: rlst::ZeroDimArray<f64> = 7.0.into();
+//! let scalar: f64 = result.into();
+//! assert_eq!(scalar, 7.0);
+//! ```
+//!
+//! `From` conversions in both directions are provided for `f32`, `f64`, `c32`,
+//! `c64`, and all primitive signed and unsigned integer types. For generic
+//! `Copy + Default` items, use `ZeroDimArray::from_scalar(value)` and
+//! `into_scalar()`. Rust's orphan rules prevent a blanket reverse `From`
+//! implementation for arbitrary item types.
+//!
+//! The macro also accepts the literal `[]`. Rank-zero dispatch requires the rank
+//! to be known at the macro expansion site: within a const-generic function the
+//! macro retains its `DynArray<T, NDIM>` result type and rejects rank zero at
+//! runtime. Explicitly aligned rank-zero construction is also rejected.
+//!
+//! In the unaligned form, use a shape with an independently determined rank or
+//! provide an explicit result type. An unconstrained shape such as
+//! `Default::default()` otherwise selects rank zero; inference from subsequent
+//! array uses is not supported. Annotate the shape (for example,
+//! `let shape: [usize; 2] = Default::default()`) or use `DynArray::from_shape`
+//! when later uses must determine a positive rank.
+//!
 //! ## Selecting a BLAS/LAPACK library
 //!
 //! RLST calls BLAS and LAPACK but does not select a provider for downstream binaries. A

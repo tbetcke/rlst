@@ -65,6 +65,7 @@ pub use dense::array::DynArray;
 pub use dense::array::SliceArray;
 pub use dense::array::SliceArrayMut;
 pub use dense::array::StridedDynArray;
+pub use dense::array::ZeroDimArray;
 
 // Important constants
 

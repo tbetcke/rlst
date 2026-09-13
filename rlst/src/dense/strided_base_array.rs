@@ -58,10 +58,14 @@ impl<Data: DataContainer, const NDIM: usize> StridedBaseArray<Data, NDIM> {
     ///
     /// # Panics
     ///
-    /// Panics if the computed data requirement exceeds the container length or if two computed
+    /// Panics if `NDIM` is zero, the computed data requirement exceeds the container length, or two computed
     /// logical offsets are equal. Shape/stride arithmetic uses ordinary `usize` operations, so
     /// callers must provide metadata whose products, offsets, and storage span are representable.
     pub fn new(data: Data, shape: [usize; NDIM], stride: [usize; NDIM]) -> Self {
+        assert!(
+            NDIM > 0,
+            "StridedBaseArray requires a positive rank; use ZeroDimArray for scalar storage"
+        );
         let number_of_elements = shape.iter().product::<usize>();
         let required_span = required_storage_len(shape, stride);
         assert!(

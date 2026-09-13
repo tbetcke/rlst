@@ -78,11 +78,15 @@ pub mod reference;
 pub mod shared_array;
 pub mod slice;
 pub mod subview;
+pub mod zero_dim;
+
+pub use zero_dim::ZeroDimArray;
 
 /// A heap-allocated, contiguous column-major array.
 ///
 /// Construct one with [`DynArray::from_shape`], [`DynArray::from_shape_and_vec`], or
 /// [`crate::rlst_dynamic_array`]. Elements supplied as a flat vector use column-major order.
+/// This storage requires at least one axis; use [`ZeroDimArray`] for scalar results.
 pub type DynArray<Item, const NDIM: usize> = Array<BaseArray<VectorContainer<Item>, NDIM>, NDIM>;
 
 /// A contiguous column-major array with an explicitly aligned heap allocation.
@@ -128,14 +132,9 @@ pub struct Array<ArrayImpl, const NDIM: usize>(ArrayImpl);
 impl<ArrayImpl, const NDIM: usize> Array<ArrayImpl, NDIM> {
     /// Wrap an array implementation.
     ///
-    /// # Panics
-    ///
-    /// Panics when `NDIM` is zero; RLST arrays always have at least one axis.
+    /// The implementation determines the supported ranks and access operations.
+    /// [`ZeroDimArray`] provides scalar-only storage for rank zero.
     pub fn new(arr: ArrayImpl) -> Self {
-        assert!(
-            NDIM > 0,
-            "Array dimension must be greater than 0, got {NDIM}"
-        );
         Self(arr)
     }
 
