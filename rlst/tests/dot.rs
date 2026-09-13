@@ -317,7 +317,7 @@ fn complex_product_does_not_conjugate() {
     b[[1]] = c64::new(1.0, 4.0);
     let expected = a[[0]] * b[[0]] + a[[1]] * b[[1]];
     let allocated: ZeroDimArray<c64> = rlst::dot!(a, b);
-    assert_eq!(allocated.shape(), []);
+    assert_eq!(allocated.shape(), [0usize; 0]);
     assert_eq!(*allocated.scalar(), expected);
     let mut output = ZeroDimArray::from_scalar(c64::new(99.0, 88.0));
     rlst::dot_into!(output, a, b);
@@ -406,7 +406,7 @@ fn empty_vector_reduction_overwrites_scalar_with_zero() {
     let a = DynArray::<f64, 1>::from_shape([0]);
     let b = DynArray::<f64, 1>::from_shape([0]);
     let allocated: ZeroDimArray<f64> = rlst::dot!(a.r(), b.r());
-    assert_eq!(allocated.shape(), []);
+    assert_eq!(allocated.shape(), [0usize; 0]);
     assert_eq!(*allocated.scalar(), 0.0);
     let mut output = ZeroDimArray::from_scalar(f64::NAN);
     rlst::dot_into!(output.r_mut(), a.r(), b.r());

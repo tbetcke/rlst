@@ -4,7 +4,7 @@ enable_tracing = []
 
 [package]
 name = "rlst-proc-macro"
-version = "0.7.0-dev"
+version = "0.7.0"
 authors = ["The rlst contributors"]
 edition = "2021"
 description = "Proc macros for a Rust native linear algebra library."
@@ -19,9 +19,9 @@ categories = ["mathematics", "science"]
 proc-macro = true
 
 [dependencies]
-syn = { version = "2", features = ["full"]}
+syn = { version = "3", features = ["full"]}
 quote = "1.0"
-darling = "0.23"
+darling = "0.24"
 aligned-vec = "0.6"
 
 [lints.clippy]

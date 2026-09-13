@@ -5,7 +5,7 @@ use rlst::{DynArray, ZeroDimArray, rlst_dynamic_array};
 #[test]
 fn zero_rank_literal_and_expression() {
     let array: ZeroDimArray<f64> = rlst_dynamic_array!(f64, []);
-    assert_eq!(array.shape(), []);
+    assert_eq!(array.shape(), [0usize; 0]);
     assert_eq!(array.into_scalar(), 0.0);
 
     let mut calls = 0;
@@ -23,8 +23,8 @@ fn zero_rank_literal_and_expression() {
     assert!(!array.is_empty());
     *array.scalar_mut() = 4.5;
     assert_eq!(*array.scalar(), 4.5);
-    assert_eq!(array.r().shape(), []);
-    assert_eq!(array.r_mut().shape(), []);
+    assert_eq!(array.r().shape(), [0usize; 0]);
+    assert_eq!(array.r_mut().shape(), [0usize; 0]);
     assert_eq!(array.into_scalar(), 4.5);
 }
 

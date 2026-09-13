@@ -16,8 +16,7 @@
 //!
 //! Let us start by defining a random `(3, 5, 2)` array.
 //! ```
-//! use rand::Rng;
-//! let mut rng = rand::thread_rng();
+//! let mut rng = rand::rng();
 //! let mut arr1 = rlst::rlst_dynamic_array!(f64, [3, 5, 2]);
 //! arr1.fill_from_equally_distributed(&mut rng);
 //! ```
@@ -57,7 +56,7 @@
 //!
 //! Let us define a second `(3, 5, 2)` array and do some operations.
 //! ```
-//! # let mut rng = rand::thread_rng();
+//! # let mut rng = rand::rng();
 //! # let mut arr1 = rlst::rlst_dynamic_array!(f64, [3, 5, 2]);
 //! # arr1.fill_from_equally_distributed(&mut rng);
 //! let mut arr2 = rlst::rlst_dynamic_array!(f64, [3, 5, 2]);
@@ -70,7 +69,7 @@
 //! Array operations are only executed when requested by the user. We can evaluate the expression
 //! into a new array using the following command.
 //! ```
-//! # let mut rng = rand::thread_rng();
+//! # let mut rng = rand::rng();
 //! # let mut arr1 = rlst::rlst_dynamic_array!(f64, [3, 5, 2]);
 //! # arr1.fill_from_equally_distributed(&mut rng);
 //! # let mut arr2 = rlst::rlst_dynamic_array!(f64, [3, 5, 2]);
@@ -93,7 +92,7 @@
 //! create array wrappers that behave like the original arrays but internally borrow them. This is done with `arr1.r()` for non-mutable reference
 //! objects and with `arr1.r_mut()` for mutable reference objects.
 //! ```
-//! # let mut rng = rand::thread_rng();
+//! # let mut rng = rand::rng();
 //! # let mut arr1 = rlst::rlst_dynamic_array!(f64, [3, 5, 2]);
 //! # arr1.fill_from_equally_distributed(&mut rng);
 //! # let mut arr2 = rlst::rlst_dynamic_array!(f64, [3, 5, 2]);
@@ -136,7 +135,7 @@
 //!
 //! ```
 //! # use rlst::EvaluateArray;
-//! # let mut rng = rand::thread_rng();
+//! # let mut rng = rand::rng();
 //! let mut arr1 = rlst::rlst_static_array!(f64, [1, 3, 2]);
 //! let mut arr2 = rlst::rlst_static_array!(f64, [1, 3, 2]);
 //! arr1.fill_from_equally_distributed(&mut rng);
@@ -317,7 +316,7 @@
 //!
 //! RLST uses a system of static lazy evaluation for array operations. Consider the following example.
 //! ```
-//! # let mut rng = rand::thread_rng();
+//! # let mut rng = rand::rng();
 //! let mut arr = rlst::rlst_dynamic_array!(f64, [2, 3]);
 //! arr.fill_from_equally_distributed(&mut rng);
 //! let res = 5.0 * arr.r();
@@ -410,7 +409,7 @@
 //! let mut a = rlst::rlst_dynamic_array!(f64, [3]);
 //! a.fill_with_value(2.0);
 //! let result: rlst::ZeroDimArray<f64> = rlst::dot!(a.r(), a.r());
-//! assert_eq!(result.shape(), []);
+//! assert_eq!(result.shape(), [0usize; 0]);
 //! assert_eq!(*result.scalar(), 12.0);
 //! ```
 //!
@@ -454,7 +453,7 @@
 // ! The pivoted QR decomposition of a matrix can be computed as follows.
 // ! ```
 // ! # use rlst::prelude::*;
-// ! let mut rand = rand::thread_rng();
+// ! let mut rand = rand::rng();
 // ! let mut arr = rlst_dynamic_array2!(f64, [8, 5]);
 // ! let mut r_mat = rlst_dynamic_array2!(f64, [5, 5]);
 // ! let mut p_mat = rlst_dynamic_array2!(f64, [5, 5]);
@@ -473,7 +472,7 @@
 // ! To compute the singular values of a two-dimensional array `arr` use
 // ! ```
 // ! # use rlst::prelude::*;
-// ! let mut rand = rand::thread_rng();
+// ! let mut rand = rand::rng();
 // ! let mut arr = rlst_dynamic_array2!(f64, [8, 5]);
 // ! let mut singvals = rlst_dynamic_array1!(f64, [5]);
 // ! arr.into_singular_values_alloc(singvals.data_mut()).unwrap();
@@ -483,7 +482,7 @@
 // ! singular value decomposition use the method [into_svd_alloc](crate::MatrixSvd::into_svd_alloc).
 // ! ```
 // ! # use rlst::prelude::*;
-// ! let mut rand = rand::thread_rng();
+// ! let mut rand = rand::rng();
 // ! let mut arr = rlst_dynamic_array2!(f64, [8, 5]);
 // ! let mut u = rlst_dynamic_array2!(f64, [8, 5]);
 // ! let mut vt = rlst_dynamic_array2!(f64, [5, 5]);

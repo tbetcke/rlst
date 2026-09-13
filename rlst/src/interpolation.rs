@@ -7,7 +7,7 @@
 //!
 //! ```
 //! # use rand_chacha::ChaCha8Rng;
-//! # use rand::{Rng, SeedableRng};
+//! # use rand::{RngExt, SeedableRng};
 //! # use rlst::{
 //! #     DynArray,
 //! #     interpolation::{
@@ -665,7 +665,7 @@ mod test {
     use approx::assert_relative_eq;
     use itertools::izip;
     use num::traits::FloatConst;
-    use rand::{Rng, SeedableRng};
+    use rand::{RngExt, SeedableRng};
     use rand_chacha::ChaCha8Rng;
 
     use crate::{

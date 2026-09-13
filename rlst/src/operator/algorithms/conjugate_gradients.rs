@@ -212,7 +212,7 @@ mod test {
     use std::cell::Cell;
 
     use approx::assert_relative_eq;
-    use rand::{Rng, SeedableRng};
+    use rand::{RngExt, SeedableRng};
     use rand_chacha::ChaCha8Rng;
 
     use crate::{
