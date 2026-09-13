@@ -327,6 +327,8 @@ macro_rules! dot_into {
 /// For general dense matrices, [`dot_blas!`](crate::dot_blas) is significantly
 /// faster than `dot!` and is the recommended choice for matrix multiplication.
 /// Sparse matrices and abstract operators retain their existing `.dot()` behavior.
+/// With the `mpi` feature, distributed CSR matrices accept distributed vectors
+/// and matrices collectively, returning owned local storage on the range layout.
 /// Their multi-operand products are evaluated from right to left. For dense
 /// contractions, use two operands and explicitly type intermediate results;
 /// [`dot_blas!`](crate::dot_blas) also supports chains of dense matrix products.
