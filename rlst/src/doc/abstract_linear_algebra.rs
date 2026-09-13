@@ -54,18 +54,19 @@
 //!
 //! # Frames of elements
 //!
-//! A [`Frame`](crate::Frame) is a growable collection of columns in one space.
-//! [`FrameSpace::frame`](crate::FrameSpace::frame) selects the preferred storage:
-//! [`ArrayVectorSpace`](crate::operator::interface::array_vector_space::ArrayVectorSpace)
-//! uses a column-major [`ArrayFrame`](crate::ArrayFrame), while arbitrary spaces
-//! can use [`ElementFrame`](crate::ElementFrame). Custom spaces can implement
-//! `FrameSpace` with `type Frame<'a> = ElementFrame<'a, Self>` and return
-//! `ElementFrame::new(self)`. Direct construction also works without this trait.
+//! An [`ElementFrame`](crate::ElementFrame) is a growable collection of columns
+//! in one space. It owns an implementation satisfying [`FrameImpl`](crate::FrameImpl)
+//! and forwards all operations to it. [`GenericFrameImpl`](crate::GenericFrameImpl)
+//! stores owned elements of arbitrary linear spaces; [`ArrayFrameImpl`](crate::ArrayFrameImpl)
+//! uses a column-major matrix for an
+//! [`ArrayVectorSpace`](crate::operator::interface::array_vector_space::ArrayVectorSpace).
+//! [`FrameSpace::frame`](crate::FrameSpace::frame) selects the preferred implementation
+//! and returns an `ElementFrame` wrapping it.
 //!
 //! ```
 //! # extern crate blas_src;
 //! # extern crate lapack_src;
-//! use rlst::{Frame, FrameApply, FrameQr, FrameQrOptions, FrameSpace, LinearSpace, SliceArray};
+//! use rlst::{FrameQrOptions, FrameSpace, LinearSpace, SliceArray};
 //! use rlst::operator::interface::array_vector_space::ArrayVectorSpace;
 //!
 //! let space = ArrayVectorSpace::<f64>::new(3);
@@ -92,14 +93,34 @@
 //! # Ok::<(), rlst::RlstError>(())
 //! ```
 //!
+//! For explicit construction, wrap the desired implementation:
+//!
+//! ```
+//! use rlst::{ArrayFrameImpl, ElementFrame, GenericFrameImpl};
+//! use rlst::operator::interface::array_vector_space::ArrayVectorSpace;
+//!
+//! let space = ArrayVectorSpace::<f64>::new(3);
+//! let generic = ElementFrame::new(GenericFrameImpl::new(&space));
+//! let dense = ElementFrame::new(ArrayFrameImpl::new(&space));
+//! assert!(generic.is_empty());
+//! assert_eq!(dense.matrix().shape(), [3, 0]);
+//! ```
+//!
+//! Custom spaces can implement `FrameSpace` with
+//! `type FrameImpl<'a> = GenericFrameImpl<'a, Self> where Self: 'a` and return
+//! `ElementFrame::new(GenericFrameImpl::new(self))` from `frame`. Direct construction
+//! also works without this trait. The wrapper's `imp` and `imp_mut` methods borrow
+//! the implementation; `into_imp` transfers ownership back without copying storage.
+//!
 //! `push` and `set_element` copy values; `element` returns an owned copy that
 //! borrows the space, not the frame. Array frames additionally offer `matrix`,
 //! `matrix_mut`, `column`, and `column_mut` for zero-copy access to active entries.
 //! `reserve` grows capacity and `clear` retains it. Extracted elements and QR
 //! results can outlive the original frame, but cannot outlive the space.
 //!
-//! [`FrameApply`](crate::FrameApply) provides `apply`, accepting strided coefficient
-//! arrays and lazy expressions. Dense application uses BLAS with a `Gemm` scalar,
+//! Implementations supporting [`FrameApply`](crate::FrameApply) enable the wrapper's
+//! `apply` and `apply_into` methods, accepting strided coefficient arrays and lazy
+//! expressions. Dense application uses BLAS with a `Gemm` scalar,
 //! borrowing the active matrix and packing only the coefficients. Generic
 //! application uses the space's operations.
 //! `apply_into(alpha, coefficients, beta, output)` computes
@@ -109,12 +130,17 @@
 //!
 //! ## Rank-adaptive pivoted QR
 //!
-//! [`FrameQr`](crate::FrameQr) is available for numerical inner-product spaces.
+//! Implementations supporting [`FrameQr`](crate::FrameQr) enable the wrapper's
+//! `qr_pivoted` method for numerical inner-product spaces.
 //! Generic frames use two classical Gram–Schmidt passes, recomputing candidate
 //! residuals against the entire current Q and pivoting on the largest norm.
 //! Array frames use LAPACK pivoted Householder QR and require a `Lapack` scalar.
 //! Both return `frame[:, permutation] ≈ Q R`, with `rank` orthonormal Q columns
 //! and an upper-trapezoidal R of shape `[rank, frame.len()]`.
+//! The wrapper delegates to its implementation and wraps the returned Q in
+//! another `ElementFrame` with the same implementation type. Wrappers also implement
+//! `FrameImpl`, `FrameApply`, and `FrameQr` when their implementations do, so they
+//! can be passed to generic algorithms using these trait bounds.
 //!
 //! [`FrameQrOptions`](crate::FrameQrOptions) stops when all remaining residual
 //! norms are at most `max(atol, rtol * max_original_column_norm)`. Defaults are

@@ -74,12 +74,13 @@ pub trait NormedSpace: LinearSpace {
     fn norm(&self, x: &Element<Self>) -> Self::Output;
 }
 
-/// A growable collection of columns belonging to one borrowed space.
+/// Implementation of a growable collection of columns in one borrowed space.
 ///
+/// [`ElementFrame`](crate::ElementFrame) forwards its operations to this trait.
 /// Extracted elements own their values and borrow the space, not the frame.
 /// Unless a backend validates compatibility, callers must only supply elements
 /// from compatible space instances (as for ordinary element arithmetic).
-pub trait Frame<'a> {
+pub trait FrameImpl<'a> {
     /// The underlying linear space.
     type Space: LinearSpace + 'a;
     /// The space associated with every column.
@@ -111,7 +112,7 @@ pub trait Frame<'a> {
 /// The default operations use only the underlying space. Array frames override
 /// these methods with dense matrix multiplication and require a [`crate::Gemm`]
 /// scalar; storing columns does not require this additional bound.
-pub trait FrameApply<'a>: Frame<'a> {
+pub trait FrameApply<'a>: FrameImpl<'a> {
     /// Form the linear combination of columns with the given coefficients.
     ///
     /// Accepts strided arrays and lazy expressions. An empty combination is zero.
@@ -170,13 +171,13 @@ pub trait FrameApply<'a>: Frame<'a> {
 /// Select a space's preferred frame storage without Rust specialization.
 ///
 /// Custom spaces can opt in by selecting
-/// [`ElementFrame`](crate::operator::frame::ElementFrame). There is deliberately
+/// [`GenericFrameImpl`](crate::GenericFrameImpl). There is deliberately
 /// no blanket implementation, so array spaces can select matrix storage.
 pub trait FrameSpace: LinearSpace {
     /// Preferred frame implementation.
-    type Frame<'a>: Frame<'a, Space = Self>
+    type FrameImpl<'a>: FrameImpl<'a, Space = Self>
     where
         Self: 'a;
     /// Construct an empty frame borrowing this space.
-    fn frame(&self) -> Self::Frame<'_>;
+    fn frame(&self) -> crate::ElementFrame<'_, Self::FrameImpl<'_>>;
 }

@@ -4,8 +4,8 @@ use std::ops::Neg;
 
 use crate::operator::{element::Element, interface::array_vector_space::ArrayVectorSpace};
 use crate::{
-    Array, AsMatrixApply, DynArray, Frame, FrameApply, FrameSpace, Gemm, IndexableSpace,
-    LinearSpace, RlstError, RlstNum, RlstResult, Shape, SliceArray, SliceArrayMut,
+    Array, AsMatrixApply, DynArray, ElementFrame, FrameApply, FrameImpl, FrameSpace, Gemm,
+    IndexableSpace, LinearSpace, RlstError, RlstNum, RlstResult, Shape, SliceArray, SliceArrayMut,
     UnsafeRandom1DAccessByValue,
 };
 
@@ -13,13 +13,13 @@ use crate::{
 ///
 /// The allocated column capacity is separate from the active column count.
 /// Matrix and column views expose only active entries and cannot resize storage.
-pub struct ArrayFrame<'a, Item> {
+pub struct ArrayFrameImpl<'a, Item> {
     pub(super) space: &'a ArrayVectorSpace<Item>,
     pub(super) data: DynArray<Item, 2>,
     pub(super) len: usize,
 }
 
-impl<'a, Item: RlstNum + Neg<Output = Item>> ArrayFrame<'a, Item> {
+impl<'a, Item: RlstNum + Neg<Output = Item>> ArrayFrameImpl<'a, Item> {
     /// Construct an empty matrix-backed frame.
     pub fn new(space: &'a ArrayVectorSpace<Item>) -> Self {
         Self {
@@ -81,7 +81,7 @@ impl<'a, Item: RlstNum + Neg<Output = Item>> ArrayFrame<'a, Item> {
     }
 }
 
-impl<'a, Item: RlstNum + Neg<Output = Item>> Frame<'a> for ArrayFrame<'a, Item> {
+impl<'a, Item: RlstNum + Neg<Output = Item>> FrameImpl<'a> for ArrayFrameImpl<'a, Item> {
     type Space = ArrayVectorSpace<Item>;
 
     fn space(&self) -> &'a Self::Space {
@@ -141,7 +141,7 @@ impl<'a, Item: RlstNum + Neg<Output = Item>> Frame<'a> for ArrayFrame<'a, Item> 
     }
 }
 
-impl<'a, Item: RlstNum + Neg<Output = Item> + Gemm> FrameApply<'a> for ArrayFrame<'a, Item> {
+impl<'a, Item: RlstNum + Neg<Output = Item> + Gemm> FrameApply<'a> for ArrayFrameImpl<'a, Item> {
     fn apply<A>(&self, coefficients: &Array<A, 1>) -> RlstResult<Element<'a, Self::Space>>
     where
         A: Shape<1> + UnsafeRandom1DAccessByValue<Item = Item>,
@@ -189,8 +189,8 @@ impl<'a, Item: RlstNum + Neg<Output = Item> + Gemm> FrameApply<'a> for ArrayFram
 }
 
 impl<Item: RlstNum + Neg<Output = Item>> FrameSpace for ArrayVectorSpace<Item> {
-    type Frame<'a> = ArrayFrame<'a, Item>;
-    fn frame(&self) -> Self::Frame<'_> {
-        ArrayFrame::new(self)
+    type FrameImpl<'a> = ArrayFrameImpl<'a, Item>;
+    fn frame(&self) -> ElementFrame<'_, Self::FrameImpl<'_>> {
+        ElementFrame::new(ArrayFrameImpl::new(self))
     }
 }

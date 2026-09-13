@@ -1,10 +1,10 @@
 //! Rank-adaptive QR algorithms.
 
-use super::{ArrayFrame, ElementFrame};
+use super::{ArrayFrameImpl, GenericFrameImpl};
 use crate::dense::linalg::lapack::qr::{EnablePivoting, QMode};
 use crate::operator::element::Element;
 use crate::{
-    DynArray, Frame, InnerProductSpace, Lapack, Norm, Qr, RlstError, RlstResult, RlstScalar,
+    DynArray, FrameImpl, InnerProductSpace, Lapack, Norm, Qr, RlstError, RlstResult, RlstScalar,
 };
 use num::{Float, One, Zero};
 
@@ -68,7 +68,7 @@ impl<Q, Item> FrameQrDecomposition<Q, Item> {
 }
 
 /// Pivoted QR for frames over numerical inner-product spaces.
-pub trait FrameQr<'a>: Frame<'a> + Sized
+pub trait FrameQr<'a>: FrameImpl<'a> + Sized
 where
     Self::Space: InnerProductSpace,
     <Self::Space as crate::LinearSpace>::F: RlstScalar,
@@ -95,7 +95,7 @@ fn finite<Real: Float>(value: Real) -> RlstResult<Real> {
 
 /// Two classical passes: each coefficient vector is computed before any update.
 fn project_twice<'a, S: InnerProductSpace>(
-    q: &ElementFrame<'a, S>,
+    q: &GenericFrameImpl<'a, S>,
     original: &Element<S>,
 ) -> RlstResult<(Element<'a, S>, Vec<S::F>)>
 where
@@ -122,7 +122,7 @@ where
     Ok((residual, coefficients))
 }
 
-impl<'a, S: InnerProductSpace> FrameQr<'a> for ElementFrame<'a, S>
+impl<'a, S: InnerProductSpace> FrameQr<'a> for GenericFrameImpl<'a, S>
 where
     S::F: RlstScalar,
 {
@@ -187,7 +187,7 @@ where
     }
 }
 
-impl<'a, Item: Lapack> FrameQr<'a> for ArrayFrame<'a, Item> {
+impl<'a, Item: Lapack> FrameQr<'a> for ArrayFrameImpl<'a, Item> {
     fn qr_pivoted(
         &self,
         options: FrameQrOptions<Item::Real>,

@@ -1,9 +1,9 @@
 use crate::dense::array::StridedSliceArray;
 use crate::operator::{element::Element, interface::array_vector_space::ArrayVectorSpace};
 use crate::{
-    ArrayFrame, DynArray, ElementFrame, Frame, FrameApply, FrameQr, FrameQrOptions, FrameSpace,
-    Gemm, InnerProductSpace, Lapack, LinearSpace, Norm, RandScalar, RlstScalar, SliceArray, c32,
-    c64,
+    ArrayFrameImpl, DynArray, ElementFrame, FrameApply, FrameQr, FrameQrOptions, FrameSpace, Gemm,
+    GenericFrameImpl, InnerProductSpace, Lapack, LinearSpace, Norm, RandScalar, RlstScalar,
+    SliceArray, c32, c64,
 };
 
 // A non-array implementation with a non-Euclidean inner product. Its operations
@@ -60,9 +60,9 @@ impl<Item: RlstScalar> InnerProductSpace for WeightedSpace<Item> {
 }
 
 impl<Item: RlstScalar> FrameSpace for WeightedSpace<Item> {
-    type Frame<'a> = ElementFrame<'a, Self>;
-    fn frame(&self) -> Self::Frame<'_> {
-        ElementFrame::new(self)
+    type FrameImpl<'a> = GenericFrameImpl<'a, Self>;
+    fn frame(&self) -> ElementFrame<'_, Self::FrameImpl<'_>> {
+        ElementFrame::new(GenericFrameImpl::new(self))
     }
 }
 
@@ -152,7 +152,7 @@ where
         verify_qr(&dense, FrameQrOptions::default(), m.min(n), tol);
         // Orthogonality and reconstruction agree across backends even when
         // LAPACK and CGS choose different signs or tied pivots.
-        let mut generic = ElementFrame::new(&space);
+        let mut generic = ElementFrame::new(GenericFrameImpl::new(&space));
         for j in 0..n {
             generic.push(&dense.element(j).unwrap()).unwrap();
         }
@@ -180,7 +180,7 @@ fn qr_complex_single() {
 #[test]
 fn dense_storage_growth_and_views() {
     let space = ArrayVectorSpace::<f64>::new(3);
-    let mut frame: ArrayFrame<'_, f64> = space.frame();
+    let mut frame: ElementFrame<'_, ArrayFrameImpl<'_, f64>> = space.frame();
     frame.reserve(2);
     let mut element = space.zero();
     for j in 0..9 {
@@ -292,7 +292,7 @@ fn exercise_application<'a, F: FrameApply<'a, Space = ArrayVectorSpace<c64>>>(fr
 fn application_strides_expressions_and_alpha_beta() {
     let space = ArrayVectorSpace::<c64>::new(2);
     exercise_application(&mut space.frame());
-    exercise_application(&mut ElementFrame::new(&space));
+    exercise_application(&mut ElementFrame::new(GenericFrameImpl::new(&space)));
 }
 
 #[test]
@@ -320,7 +320,7 @@ fn qr_empty_zero_dimensional_and_zero_columns() {
     for m in [0, 3] {
         let space = ArrayVectorSpace::<f64>::new(m);
         let mut dense = space.frame();
-        let mut generic = ElementFrame::new(&space);
+        let mut generic = ElementFrame::new(GenericFrameImpl::new(&space));
         for n in 0..4 {
             verify_qr(&dense, FrameQrOptions::default(), 0, 1e-12);
             verify_qr(&generic, FrameQrOptions::default(), 0, 1e-12);
@@ -336,7 +336,7 @@ fn qr_truncation_and_relative_scale() {
     for scale in [1e-8, 1.0, 1e8] {
         let space = ArrayVectorSpace::<f64>::new(3);
         let mut dense = space.frame();
-        let mut generic = ElementFrame::new(&space);
+        let mut generic = ElementFrame::new(GenericFrameImpl::new(&space));
         for values in [
             [scale, 0.0, 0.0],
             [scale, scale * 1e-8, 0.0],
@@ -388,7 +388,7 @@ fn qr_reorthogonalizes_ill_conditioned_columns() {
 fn qr_pivots_and_preserves_input() {
     let space = ArrayVectorSpace::<f64>::new(3);
     let mut dense = space.frame();
-    let mut generic = ElementFrame::new(&space);
+    let mut generic = ElementFrame::new(GenericFrameImpl::new(&space));
     for values in [
         [1.0, 0.0, 0.0],
         [1.0, 1.0, 0.0],
@@ -419,7 +419,7 @@ fn qr_pivots_and_preserves_input() {
 fn qr_rejects_invalid_tolerances_and_nonfinite_data() {
     let space = ArrayVectorSpace::<f64>::new(1);
     let mut dense = space.frame();
-    let mut generic = ElementFrame::new(&space);
+    let mut generic = ElementFrame::new(GenericFrameImpl::new(&space));
     for options in [
         FrameQrOptions {
             atol: -1.0,
@@ -459,7 +459,7 @@ fn qr_results_borrow_space_not_input_frame() {
     element.imp_mut()[[1]] = 2.0;
     let (dense_qr, generic_qr) = {
         let mut dense = space.frame();
-        let mut generic = ElementFrame::new(&space);
+        let mut generic = ElementFrame::new(GenericFrameImpl::new(&space));
         dense.push(&element).unwrap();
         generic.push(&element).unwrap();
         (
