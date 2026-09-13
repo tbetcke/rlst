@@ -367,7 +367,7 @@ mod test {
         x.fill_from_seed_equally_distributed(0);
 
         let y = crate::dot!(sparse_mat, x);
-        let expected = crate::dot!(sparse_mat.todense(), x);
+        let expected = crate::dot_blas!(sparse_mat.todense(), x);
 
         crate::assert_array_relative_eq!(y, expected, 1E-10);
     }

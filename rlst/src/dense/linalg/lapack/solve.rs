@@ -93,7 +93,7 @@ mod test {
     use super::*;
     use crate::base_types::{c32, c64};
     use crate::dense::array::DynArray;
-    use crate::dot;
+    use crate::dot_blas;
 
     use crate::Max;
 
@@ -114,7 +114,7 @@ mod test {
                 let mut x_expected = DynArray::<$scalar, 2>::from_shape([n, nrhs]);
                 x_expected.fill_from_seed_equally_distributed(1);
 
-                let rhs = dot!(a.r(), x_expected.r());
+                let rhs = dot_blas!(a.r(), x_expected.r());
 
                 let x_actual = a.solve(&rhs).unwrap();
 
@@ -132,7 +132,7 @@ mod test {
                 let mut x_expected = DynArray::<$scalar, 2>::from_shape([n, nrhs]);
                 x_expected.fill_from_seed_equally_distributed(1);
 
-                let rhs = dot!(a.r(), x_expected.r());
+                let rhs = dot_blas!(a.r(), x_expected.r());
 
                 let x_actual = a.solve(&rhs).unwrap();
 
@@ -152,7 +152,7 @@ mod test {
 
                 let x_actual = a.solve(&rhs).unwrap();
 
-                let max_res = (dot!(a.r(), x_actual.r()) - rhs.r())
+                let max_res = (dot_blas!(a.r(), x_actual.r()) - rhs.r())
                     .iter_value()
                     .map(|v| crate::RlstScalar::abs(v))
                     .fold(0.0, |acc, v| Max::max(acc, v));

@@ -63,7 +63,7 @@
 //! x.fill_from_seed_equally_distributed(0);
 //!
 //! let y = rlst::dot!(sparse_mat, x);
-//! # let expected = rlst::dot!(sparse_mat.todense(), x);
+//! # let expected = rlst::dot_blas!(sparse_mat.todense(), x);
 //!
 //! # rlst::assert_array_relative_eq!(y, expected, 1E-10);
 //! ```     
@@ -88,7 +88,7 @@
 //! # let mut x = rlst::DynArray::<f64, 1>::from_shape([shape[1]]);
 //! # x.fill_from_seed_equally_distributed(0);
 //! let y = rlst::dot!(sparse_mat, x);
-//! # let expected = rlst::dot!(sparse_mat.todense(), x);
+//! # let expected = rlst::dot_blas!(sparse_mat.todense(), x);
 //! # rlst::assert_array_relative_eq!(y, expected, 1E-10);
 //! ```     
 //!

@@ -5,7 +5,7 @@ use itertools::izip;
 use crate::{
     Shape, UnsafeRandom1DAccessByValue,
     dense::array::{Array, DynArray},
-    diag, dot,
+    diag, dot_blas,
     traits::{
         base_operations::EvaluateArray,
         linalg::{base::Gemm, lapack::Lapack},
@@ -59,7 +59,7 @@ impl<Item: Lapack + Gemm> PInv<Item> {
             .r()
             .unary_op(|elem| <Item as RlstScalar>::recip(elem));
 
-        dot!(self.v.r(), diag!(sinv), self.ut.r())
+        dot_blas!(self.v.r(), diag!(sinv), self.ut.r())
     }
 
     /// Apply the pseudo-inverse to a vector or matrix.
@@ -92,7 +92,7 @@ impl<Item: Lapack + Gemm> PInv<Item> {
 
         if NDIM == 2 {
             let arr = DynArray::new_from(arr).coerce_dim::<2>().unwrap();
-            let mut tmp = dot!(self.ut.r(), arr);
+            let mut tmp = dot_blas!(self.ut.r(), arr);
             for mut col in tmp.col_iter_mut() {
                 for (elem, si) in izip!(col.iter_mut(), sinv.iter_value()) {
                     // Needed because rust analyzer had trouble identifying the type correctly.
@@ -100,14 +100,20 @@ impl<Item: Lapack + Gemm> PInv<Item> {
                     *elem *= si;
                 }
             }
-            dot!(self.v.r(), tmp).coerce_dim::<NDIM>().unwrap().eval()
+            dot_blas!(self.v.r(), tmp)
+                .coerce_dim::<NDIM>()
+                .unwrap()
+                .eval()
         } else if NDIM == 1 {
             let arr = DynArray::new_from(arr).coerce_dim::<1>().unwrap();
-            let mut tmp = dot!(self.ut.r(), arr);
+            let mut tmp = dot_blas!(self.ut.r(), arr);
             for (elem, si) in izip!(tmp.iter_mut(), sinv.iter_value()) {
                 *elem *= si;
             }
-            dot!(self.v.r(), tmp).coerce_dim::<NDIM>().unwrap().eval()
+            dot_blas!(self.v.r(), tmp)
+                .coerce_dim::<NDIM>()
+                .unwrap()
+                .eval()
         } else {
             panic!("`PInv::apply` is only implemented for 1D and 2D arrays.");
         }
@@ -119,7 +125,7 @@ mod test {
 
     use crate::base_types::{c32, c64};
     use crate::dense::array::DynArray;
-    use crate::dot;
+    use crate::dot_blas;
     use crate::traits::linalg::SingularValueDecomposition;
 
     use paste::paste;
@@ -144,7 +150,7 @@ mod test {
                 let mut ident = DynArray::<$scalar, 2>::from_shape([n, n]);
                 ident.set_identity();
 
-                let actual = dot!(pinv_mat.r(), a.r());
+                let actual = dot_blas!(pinv_mat.r(), a.r());
 
                 crate::assert_array_abs_diff_eq!(actual, ident, $tol);
 
@@ -152,7 +158,7 @@ mod test {
 
                 x.fill_from_seed_equally_distributed(1);
 
-                crate::assert_array_relative_eq!(dot!(pinv_mat.r(), x.r()), pinv.apply(&x), $tol);
+                crate::assert_array_relative_eq!(dot_blas!(pinv_mat.r(), x.r()), pinv.apply(&x), $tol);
             }
 
             #[test]
@@ -171,7 +177,7 @@ mod test {
                 let mut ident = DynArray::<$scalar, 2>::from_shape([m, m]);
                 ident.set_identity();
 
-                let actual = dot!(a.r(), pinv_mat.r());
+                let actual = dot_blas!(a.r(), pinv_mat.r());
 
                 crate::assert_array_abs_diff_eq!(actual, ident, $tol);
 
@@ -179,7 +185,7 @@ mod test {
 
                 x.fill_from_seed_equally_distributed(1);
 
-                crate::assert_array_relative_eq!(dot!(pinv_mat.r(), x.r()), pinv.apply(&x), $tol);
+                crate::assert_array_relative_eq!(dot_blas!(pinv_mat.r(), x.r()), pinv.apply(&x), $tol);
             }
 
                     }
@@ -205,7 +211,7 @@ mod test {
         assert_eq!(pinv.s().len(), 1);
 
         let pinv_mat = pinv.as_matrix();
-        let reconstructed = dot!(a.r(), pinv_mat.r(), a.r());
+        let reconstructed = dot_blas!(a.r(), pinv_mat.r(), a.r());
         crate::assert_array_abs_diff_eq!(reconstructed, a, 1E-12);
     }
 

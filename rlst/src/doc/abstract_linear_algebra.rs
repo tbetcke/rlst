@@ -73,7 +73,7 @@
 //! let mut x = zero_element(op.domain());
 //! x.imp_mut().fill_from_seed_equally_distributed(0);
 //! let y = dot!(op, x);
-//! # assert_array_relative_eq!(y.imp(), dot!(mat, x.imp()), 1E-10);
+//! # assert_array_relative_eq!(y.imp(), rlst::dot_blas!(mat, x.imp()), 1E-10);
 //! ```
 //! Operators implement a complete algebra, that is we can take sums of operators and multiply them with scalars. The following gives an example.
 //! ```

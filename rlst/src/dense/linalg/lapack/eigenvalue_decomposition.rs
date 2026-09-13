@@ -176,7 +176,7 @@ mod test {
     use super::*;
     use crate::base_types::{c32, c64};
     use crate::dense::array::DynArray;
-    use crate::dot;
+    use crate::dot_blas;
     use crate::traits::base_operations::*;
     use crate::traits::linalg::Inverse;
     use itertools::izip;
@@ -197,7 +197,7 @@ mod test {
 
                 // Test the Schur decomposition
 
-                let actual = dot!(z.r(), t.r(), z.r().conj().transpose().eval());
+                let actual = dot_blas!(z.r(), t.r(), z.r().conj().transpose().eval());
 
                 crate::assert_array_relative_eq!(actual, a, $tol);
 
@@ -222,7 +222,7 @@ mod test {
 
                 let vlh = vl.unwrap().conj().transpose().eval();
 
-                let actual = dot!(vlh.inverse().unwrap(), dot!(diag.r(), vlh));
+                let actual = dot_blas!(vlh.inverse().unwrap(), dot_blas!(diag.r(), vlh));
 
                 // We test the absolute distance since some imaginary parts are zero
                 // making relative tests fail.
@@ -233,7 +233,7 @@ mod test {
 
                 let vr = vr.unwrap();
 
-                let actual = dot!(vr.r(), dot!(diag, vr.r().inverse().unwrap()));
+                let actual = dot_blas!(vr.r(), dot_blas!(diag, vr.r().inverse().unwrap()));
                 crate::assert_array_abs_diff_eq!(actual, a_complex, $tol);
 
             }
