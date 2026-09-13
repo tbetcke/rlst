@@ -47,6 +47,10 @@ pub mod threading;
 
 pub mod operator;
 
+pub use operator::frame::{
+    ArrayFrame, ElementFrame, FrameQr, FrameQrDecomposition, FrameQrOptions,
+};
+
 // Re-exports
 pub use rlst_proc_macro::measure_duration;
 pub use rlst_proc_macro::rlst_dynamic_array;

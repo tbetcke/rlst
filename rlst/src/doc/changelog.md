@@ -6,6 +6,18 @@ Changes since [v0.6.1](https://codeberg.org/rlst/rlst/releases/tag/v0.6.1),
 ordered from major features and compatibility changes to smaller fixes.
 All workspace crates (`rlst`, `rlst-proc-macro`, and `rlst-suitesparse`) use version 0.7.0.
 
+### Frames of elements — migration required
+
+The previously unimplemented `Frame` trait has been replaced by `Frame<'a>`.
+It now supports both `ElementFrame` and matrix-backed `ArrayFrame`, growth,
+linear combinations, and rank-adaptive pivoted QR. The former reference-based
+`get`, `get_mut`, and iterator requirements have been replaced by owned
+`element` extraction and `set_element`; array frames provide zero-copy matrix
+and column views. `push` now borrows and copies an element and returns a result.
+Import `FrameApply` for application and `FrameQr` for QR. Use `FrameSpace::frame`
+for a space's preferred backend. See the abstract linear algebra guide for
+construction and QR examples.
+
 ### Expanded dense linear algebra
 
 - Added generalized eigenvalue decompositions for real and complex matrices,
@@ -145,4 +157,3 @@ All workspace crates (`rlst`, `rlst-proc-macro`, and `rlst-suitesparse`) use ver
 - Improved the `eval` routines. They now work in most situations where generic
   arrays are provided.
 - Small bug fixes, some CI improvements, etc.
-

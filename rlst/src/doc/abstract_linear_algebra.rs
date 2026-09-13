@@ -52,6 +52,79 @@
 //! Why should we use this abstract wrapper? The advantage is that once the function space is instantiated any operation on elements of the space
 //! is independent of the concrete implementation. This allows us to write algorithms that work on any linear structure and not just on specific types.
 //!
+//! # Frames of elements
+//!
+//! A [`Frame`](crate::Frame) is a growable collection of columns in one space.
+//! [`FrameSpace::frame`](crate::FrameSpace::frame) selects the preferred storage:
+//! [`ArrayVectorSpace`](crate::operator::interface::array_vector_space::ArrayVectorSpace)
+//! uses a column-major [`ArrayFrame`](crate::ArrayFrame), while arbitrary spaces
+//! can use [`ElementFrame`](crate::ElementFrame). Custom spaces can implement
+//! `FrameSpace` with `type Frame<'a> = ElementFrame<'a, Self>` and return
+//! `ElementFrame::new(self)`. Direct construction also works without this trait.
+//!
+//! ```
+//! # extern crate blas_src;
+//! # extern crate lapack_src;
+//! use rlst::{Frame, FrameApply, FrameQr, FrameQrOptions, FrameSpace, LinearSpace, SliceArray};
+//! use rlst::operator::interface::array_vector_space::ArrayVectorSpace;
+//!
+//! let space = ArrayVectorSpace::<f64>::new(3);
+//! let mut frame = space.frame();
+//! let mut element = space.zero();
+//! element.imp_mut()[[0]] = 1.0;
+//! frame.push(&element)?;
+//! element.imp_mut()[[0]] = 0.0;
+//! element.imp_mut()[[1]] = 2.0;
+//! frame.push(&element)?;
+//!
+//! let coefficients = SliceArray::from_shape(&[3.0, 4.0], [2]);
+//! let result = frame.apply(&coefficients)?;
+//! assert_eq!(result.imp()[[0]], 3.0);
+//! assert_eq!(result.imp()[[1]], 8.0);
+//!
+//! let qr = frame.qr_pivoted(FrameQrOptions::default())?;
+//! assert_eq!(qr.rank(), 2);
+//! for (j, &original_index) in qr.permutation.iter().enumerate() {
+//!     let reconstructed = qr.q.apply(&qr.r.r().col(j))?;
+//!     let original = frame.element(original_index).unwrap();
+//!     rlst::assert_array_abs_diff_eq!(reconstructed.imp(), original.imp(), 1e-12);
+//! }
+//! # Ok::<(), rlst::RlstError>(())
+//! ```
+//!
+//! `push` and `set_element` copy values; `element` returns an owned copy that
+//! borrows the space, not the frame. Array frames additionally offer `matrix`,
+//! `matrix_mut`, `column`, and `column_mut` for zero-copy access to active entries.
+//! `reserve` grows capacity and `clear` retains it. Extracted elements and QR
+//! results can outlive the original frame, but cannot outlive the space.
+//!
+//! [`FrameApply`](crate::FrameApply) provides `apply`, accepting strided coefficient
+//! arrays and lazy expressions. Dense application uses BLAS with a `Gemm` scalar,
+//! borrowing the active matrix and packing only the coefficients. Generic
+//! application uses the space's operations.
+//! `apply_into(alpha, coefficients, beta, output)` computes
+//! `output = alpha * frame * coefficients + beta * output`; a zero `beta`
+//! discards the old output. Dense frames validate element dimensions. Generic
+//! frames assume compatible space instances, just like element arithmetic.
+//!
+//! ## Rank-adaptive pivoted QR
+//!
+//! [`FrameQr`](crate::FrameQr) is available for numerical inner-product spaces.
+//! Generic frames use two classical Gram–Schmidt passes, recomputing candidate
+//! residuals against the entire current Q and pivoting on the largest norm.
+//! Array frames use LAPACK pivoted Householder QR and require a `Lapack` scalar.
+//! Both return `frame[:, permutation] ≈ Q R`, with `rank` orthonormal Q columns
+//! and an upper-trapezoidal R of shape `[rank, frame.len()]`.
+//!
+//! [`FrameQrOptions`](crate::FrameQrOptions) stops when all remaining residual
+//! norms are at most `max(atol, rtol * max_original_column_norm)`. Defaults are
+//! `atol = 0` and `rtol = 100 * epsilon` of the real scalar type. The dense path
+//! checks trailing R-column norms, rather than only diagonal entries. Omitting
+//! small nonzero residuals makes reconstruction approximate; floating-point
+//! rounding also contributes. Rank zero and empty inputs return an empty Q and
+//! an R of shape `[0, frame.len()]`. Invalid tolerances and non-finite numerical
+//! results are errors. Pivot ties and signs/phases may differ between backends.
+//!
 //! # Operators on linear spaces
 //!
 //! A linear operator maps between a domain space and a range space. RLST has a complete operator arithmetic that abstracts from concrete

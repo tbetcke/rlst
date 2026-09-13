@@ -74,35 +74,109 @@ pub trait NormedSpace: LinearSpace {
     fn norm(&self, x: &Element<Self>) -> Self::Output;
 }
 
-/// A frame is a collection of elements of a space.
-pub trait Frame {
-    ///  The underlying linear space.
-    type Space: LinearSpace;
-    /// Iterator
-    type Iter<'iter>: std::iter::Iterator<Item = &'iter Element<'iter, Self::Space>>
-    where
-        Self: 'iter;
-    /// Mutable iterator
-    type IterMut<'iter>: std::iter::Iterator<Item = &'iter mut Element<'iter, Self::Space>>
-    where
-        Self: 'iter;
-    /// Get a reference to an element
-    fn get(&self, index: usize) -> Option<&Element<'_, Self::Space>>;
-    /// Get a mutable reference to an element
-    fn get_mut(&mut self, index: usize) -> Option<&mut Element<'_, Self::Space>>;
-    /// Number of elements
+/// A growable collection of columns belonging to one borrowed space.
+///
+/// Extracted elements own their values and borrow the space, not the frame.
+/// Unless a backend validates compatibility, callers must only supply elements
+/// from compatible space instances (as for ordinary element arithmetic).
+pub trait Frame<'a> {
+    /// The underlying linear space.
+    type Space: LinearSpace + 'a;
+    /// The space associated with every column.
+    fn space(&self) -> &'a Self::Space;
+    /// Copy a column into an owned element, or return `None` out of bounds.
+    fn element(&self, index: usize) -> Option<Element<'a, Self::Space>>;
+    /// Replace a column. Return an error for an invalid index or incompatible input.
+    fn set_element(&mut self, index: usize, elem: &Element<Self::Space>) -> crate::RlstResult<()>;
+    /// Number of active columns.
     fn len(&self) -> usize;
-    /// Is empty
+    /// Number of columns that fit without reallocating storage.
+    fn capacity(&self) -> usize;
+    /// Reserve room for at least `additional` further columns.
+    fn reserve(&mut self, additional: usize);
+    /// Whether there are no active columns.
     fn is_empty(&self) -> bool {
         self.len() == 0
     }
-    /// Get iterator
-    fn iter(&self) -> Self::Iter<'_>;
-    /// Get mutable iterator
-    fn iter_mut(&mut self) -> Self::IterMut<'_>;
-    /// Add an element
-    fn push(&mut self, elem: Element<Self::Space>);
+    /// Copy an element into a new column.
+    fn push(&mut self, elem: &Element<Self::Space>) -> crate::RlstResult<()>;
+    /// Remove the last column, transferring its value into an owned element.
+    fn pop(&mut self) -> Option<Element<'a, Self::Space>>;
+    /// Remove all columns, retaining capacity.
+    fn clear(&mut self);
+}
 
-    /// Remove the last element and return it. If the frame is empty, return None.
-    fn pop(&mut self) -> Option<Element<'_, Self::Space>>;
+/// Linear combinations of frame columns.
+///
+/// The default operations use only the underlying space. Array frames override
+/// these methods with dense matrix multiplication and require a [`crate::Gemm`]
+/// scalar; storing columns does not require this additional bound.
+pub trait FrameApply<'a>: Frame<'a> {
+    /// Form the linear combination of columns with the given coefficients.
+    ///
+    /// Accepts strided arrays and lazy expressions. An empty combination is zero.
+    fn apply<A>(
+        &self,
+        coefficients: &crate::Array<A, 1>,
+    ) -> crate::RlstResult<Element<'a, Self::Space>>
+    where
+        A: crate::Shape<1>
+            + crate::UnsafeRandom1DAccessByValue<Item = <Self::Space as LinearSpace>::F>,
+    {
+        if coefficients.shape()[0] != self.len() {
+            return Err(crate::RlstError::SingleDimensionError {
+                expected: self.len(),
+                actual: coefficients.shape()[0],
+            });
+        }
+        let space = self.space();
+        let mut result = space.zero();
+        for (index, coefficient) in coefficients.iter_value().enumerate() {
+            let scaled = space.scalar_mul(&coefficient, &self.element(index).unwrap());
+            space.sum_inplace(&mut result, &scaled);
+        }
+        Ok(result)
+    }
+
+    /// Compute `output = alpha * self * coefficients + beta * output`.
+    ///
+    /// A zero `beta` replaces the output without reading its previous value.
+    /// Shape errors leave the output unchanged. The output must belong to a
+    /// compatible space instance.
+    fn apply_into<A>(
+        &self,
+        alpha: <Self::Space as LinearSpace>::F,
+        coefficients: &crate::Array<A, 1>,
+        beta: <Self::Space as LinearSpace>::F,
+        output: &mut Element<Self::Space>,
+    ) -> crate::RlstResult<()>
+    where
+        A: crate::Shape<1>
+            + crate::UnsafeRandom1DAccessByValue<Item = <Self::Space as LinearSpace>::F>,
+        <Self::Space as LinearSpace>::F: num::Zero,
+    {
+        let space = self.space();
+        let mut result = self.apply(coefficients)?;
+        space.scale_inplace(&alpha, &mut result);
+        if !num::Zero::is_zero(&beta) {
+            let previous = space.scalar_mul(&beta, output);
+            space.sum_inplace(&mut result, &previous);
+        }
+        *output.imp_mut() = result.into_imp();
+        Ok(())
+    }
+}
+
+/// Select a space's preferred frame storage without Rust specialization.
+///
+/// Custom spaces can opt in by selecting
+/// [`ElementFrame`](crate::operator::frame::ElementFrame). There is deliberately
+/// no blanket implementation, so array spaces can select matrix storage.
+pub trait FrameSpace: LinearSpace {
+    /// Preferred frame implementation.
+    type Frame<'a>: Frame<'a, Space = Self>
+    where
+        Self: 'a;
+    /// Construct an empty frame borrowing this space.
+    fn frame(&self) -> Self::Frame<'_>;
 }
