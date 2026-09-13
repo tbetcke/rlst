@@ -1,6 +1,6 @@
 //! External-crate regression tests for direct tensor contraction.
 
-use rlst::{DynArray, StridedDynArray, c64};
+use rlst::{DynArray, StridedDynArray, ZeroDimArray, c64};
 use std::cell::Cell;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
@@ -36,9 +36,6 @@ fn assert_product<const A: usize, const B: usize, const C: usize>(
 ) {
     let mut expected_shape = a_shape[..A - 1].to_vec();
     expected_shape.extend_from_slice(&b_shape[1..]);
-    if expected_shape.is_empty() {
-        expected_shape.push(1);
-    }
     assert_eq!(c_shape.as_slice(), expected_shape);
     assert_eq!(a_shape[A - 1], b_shape[0]);
     for output_index in coordinates(c_shape) {
@@ -97,7 +94,6 @@ fn check_dynamic<const A: usize, const B: usize, const C: usize>(
 
 #[test]
 fn every_vector_matrix_and_rank_three_pairing() {
-    check_dynamic([4], [4], [1]);
     check_dynamic([4], [4, 3], [3]);
     check_dynamic([4], [4, 3, 2], [3, 2]);
     check_dynamic([2, 4], [4], [2]);
@@ -115,7 +111,6 @@ fn arbitrary_rank_and_asymmetric_axes() {
 
 #[test]
 fn empty_outputs_and_zero_length_contractions() {
-    check_dynamic([0], [0], [1]);
     check_dynamic([2, 0], [0, 3], [2, 3]);
     check_dynamic([2, 3, 0], [0, 4, 2], [2, 3, 4, 2]);
     check_dynamic([0, 4], [4, 3], [0, 3]);
@@ -189,13 +184,12 @@ fn complex_product_does_not_conjugate() {
     b[[0]] = c64::new(2.0, -1.0);
     b[[1]] = c64::new(1.0, 4.0);
     let expected = a[[0]] * b[[0]] + a[[1]] * b[[1]];
-    let allocated: DynArray<c64, 1> = rlst::dot_direct!(a, b);
-    assert_eq!(allocated.shape(), [1]);
-    assert_eq!(allocated[[0]], expected);
-    let mut output = rlst::rlst_static_array!(c64, [1]);
-    output.fill_with_value(c64::new(99.0, 88.0));
+    let allocated: ZeroDimArray<c64> = rlst::dot_direct!(a, b);
+    assert_eq!(allocated.shape(), []);
+    assert_eq!(*allocated.scalar(), expected);
+    let mut output = ZeroDimArray::from_scalar(c64::new(99.0, 88.0));
     rlst::dot_direct_into!(output, a, b);
-    assert_eq!(output[[0]], expected);
+    assert_eq!(*output.scalar(), expected);
 }
 
 #[test]
@@ -259,7 +253,7 @@ fn argument_expressions_are_evaluated_once_and_arrays_remain_owned() {
     let mut b = DynArray::<f64, 1>::from_shape([3]);
     a.fill_with_value(2.0);
     b.fill_with_value(3.0);
-    let mut c = DynArray::<f64, 1>::from_shape([1]);
+    let mut c = rlst::rlst_dynamic_array!(f64, []);
     rlst::dot_direct_into!(
         {
             c_calls.set(c_calls.get() + 1);
@@ -275,8 +269,8 @@ fn argument_expressions_are_evaluated_once_and_arrays_remain_owned() {
         }
     );
     assert_eq!((a_calls.get(), b_calls.get(), c_calls.get()), (1, 1, 1));
-    assert_eq!(c[[0]], 18.0);
-    let allocated: DynArray<f64, 1> = rlst::dot_direct!(
+    assert_eq!(*c.scalar(), 18.0);
+    let allocated: ZeroDimArray<f64> = rlst::dot_direct!(
         {
             a_calls.set(a_calls.get() + 1);
             a.r()
@@ -287,7 +281,39 @@ fn argument_expressions_are_evaluated_once_and_arrays_remain_owned() {
         }
     );
     assert_eq!((a_calls.get(), b_calls.get()), (2, 2));
-    assert_eq!(allocated[[0]], 18.0);
+    assert_eq!(*allocated.scalar(), 18.0);
     rlst::dot_direct_into!(c, a, b);
-    assert_eq!((a[[0]], b[[0]], c[[0]]), (2.0, 3.0, 18.0));
+    assert_eq!((a[[0]], b[[0]], *c.scalar()), (2.0, 3.0, 18.0));
+}
+
+#[test]
+fn empty_vector_reduction_overwrites_scalar_with_zero() {
+    let a = DynArray::<f64, 1>::from_shape([0]);
+    let b = DynArray::<f64, 1>::from_shape([0]);
+    let allocated: ZeroDimArray<f64> = rlst::dot_direct!(a.r(), b.r());
+    assert_eq!(allocated.shape(), []);
+    assert_eq!(*allocated.scalar(), 0.0);
+    let mut output = ZeroDimArray::from_scalar(f64::NAN);
+    rlst::dot_direct_into!(output.r_mut(), a.r(), b.r());
+    assert_eq!(*output.scalar(), 0.0);
+}
+
+#[test]
+fn vector_reduction_rejects_length_one_output_before_writing() {
+    let a = DynArray::<f64, 1>::from_shape([3]);
+    let mut output = DynArray::<f64, 1>::from_shape([1]);
+    output[[0]] = 17.0;
+    assert!(
+        catch_unwind(AssertUnwindSafe(|| {
+            rlst::dot_direct_into!(output, a, a);
+        }))
+        .is_err()
+    );
+    assert_eq!(output[[0]], 17.0);
+    assert!(
+        catch_unwind(|| {
+            let _: DynArray<f64, 1> = rlst::dot_direct!(a, a);
+        })
+        .is_err()
+    );
 }

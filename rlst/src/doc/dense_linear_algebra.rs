@@ -375,14 +375,14 @@
 //!
 //! | A shape | B shape | Result shape |
 //! | --- | --- | --- |
-//! | `[k]` | `[k]` | `[1]` |
+//! | `[k]` | `[k]` | `[]` |
 //! | `[m, k]` | `[k]` | `[m]` |
 //! | `[k]` | `[k, n]` | `[n]` |
 //! | `[m, k]` | `[k, n]` | `[m, n]` |
 //! | `[p, q, k]` | `[k, r, s]` | `[p, q, r, s]` |
 //!
-//! A vector-vector product uses a length-one vector, not a rank-zero scalar array;
-//! read its scalar value with `result[[0]]`. Both inputs must have at least one axis.
+//! A vector-vector product returns a [`ZeroDimArray`](crate::ZeroDimArray);
+//! read its scalar value with `*result.scalar()`. Both inputs must have at least one axis.
 //! Arbitrary positive input ranks are supported. Supply an output type annotation
 //! when Rust cannot infer the result rank:
 //!
@@ -399,7 +399,15 @@
 //! assert_eq!(a.shape(), [2, 3, 4]);
 //! ```
 //!
-//! `dot_direct!(a, b)` allocates a dynamic output using
+//! ```
+//! let mut a = rlst::rlst_dynamic_array!(f64, [3]);
+//! a.fill_with_value(2.0);
+//! let result: rlst::ZeroDimArray<f64> = rlst::dot_direct!(a.r(), a.r());
+//! assert_eq!(result.shape(), []);
+//! assert_eq!(*result.scalar(), 12.0);
+//! ```
+//!
+//! `dot_direct!(a, b)` uses the same rank-dependent storage as
 //! [`rlst_dynamic_array!`](crate::rlst_dynamic_array), then delegates to
 //! `dot_direct_into!(c, a, b)`. The latter returns `()`, overwrites every output
 //! element, and neither allocates nor resizes the destination. Its shape and rank

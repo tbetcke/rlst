@@ -75,6 +75,30 @@ pub mod dynamic {
 /// Implementation support for the direct tensor multiplication macros.
 #[doc(hidden)]
 pub mod direct {
+    use crate::{Array, BaseItem, UnsafeRandomAccessMut, ZeroDimArray};
+
+    /// Mutable output access for indexed arrays and dedicated scalar storage.
+    pub trait Output<const R: usize>: BaseItem {
+        /// Access an output element after validating its index.
+        ///
+        /// # Safety
+        /// `index` must be within the output shape.
+        unsafe fn output_mut(&mut self, index: [usize; R]) -> &mut Self::Item;
+    }
+
+    impl<Impl: UnsafeRandomAccessMut<R>, const R: usize> Output<R> for Array<Impl, R> {
+        unsafe fn output_mut(&mut self, index: [usize; R]) -> &mut Self::Item {
+            // SAFETY: the caller guarantees a valid index.
+            unsafe { self.get_unchecked_mut(index) }
+        }
+    }
+
+    impl<Item: Copy + Default> Output<0> for ZeroDimArray<Item> {
+        unsafe fn output_mut(&mut self, _index: [usize; 0]) -> &mut Item {
+            self.scalar_mut()
+        }
+    }
+
     /// Validate contraction ranks, dimensions, and size arithmetic before any writes.
     pub fn shape<const M: usize, const N: usize, const R: usize>(
         a: [usize; M],
@@ -86,8 +110,7 @@ pub mod direct {
         );
         let rank = (M - 1)
             .checked_add(N - 1)
-            .expect("direct multiplication rank overflow")
-            .max(1);
+            .expect("direct multiplication rank overflow");
         assert_eq!(R, rank, "direct multiplication output rank mismatch");
         assert_eq!(a[M - 1], b[0], "direct multiplication contraction mismatch");
 
@@ -112,15 +135,6 @@ pub mod direct {
         (output, rows, a[M - 1], cols)
     }
 
-    /// Allocate through the public allocation macro in a scope with stable path hygiene.
-    pub fn allocate<Item: Copy + Default, const R: usize>(
-        shape: [usize; R],
-    ) -> crate::DynArray<Item, R> {
-        // The proc macro hardcodes `rlst` and reparses identifier tokens from text.
-        use crate as rlst;
-        crate::rlst_dynamic_array!(Item, shape)
-    }
-
     /// Obtain the additive identity without requiring downstream imports of `num`.
     pub fn zero<Item: num::Zero>() -> Item {
         Item::zero()
@@ -130,7 +144,7 @@ pub mod direct {
 /// Contract the last axis of `a` with the first axis of `b`, overwriting `c`.
 ///
 /// The output shape concatenates the remaining axes of `a` and `b`. Two vectors
-/// produce shape `[1]`. All ranks must be positive; there is no fixed rank limit.
+/// produce shape `[]`. Input ranks must be positive; there is no fixed rank limit.
 /// The output rank is inferred independently from `c`.
 ///
 /// Arguments are evaluated and borrowed once, including temporary `r()` and
@@ -153,6 +167,7 @@ pub mod direct {
 #[macro_export]
 macro_rules! dot_direct_into {
     ($c:expr, $a:expr, $b:expr $(,)?) => {{
+        use $crate::dense::macros::direct::Output as _;
         let c = &mut $c;
         let a = &$a;
         let b = &$b;
@@ -175,7 +190,7 @@ macro_rules! dot_direct_into {
                 for _ in 0..rows {
                     // SAFETY: validated output shape and bounded mixed-radix indices.
                     unsafe {
-                        *c.get_unchecked_mut(ci) = $crate::dense::macros::direct::zero();
+                        *c.output_mut(ci) = $crate::dense::macros::direct::zero();
                     }
                     // Advance axis zero first, wrapping all free A axes after
                     // the final row so the next sweep starts at zero.
@@ -197,7 +212,7 @@ macro_rules! dot_direct_into {
                         // SAFETY: all indices are within the validated shapes.
                         // The exclusive output borrow prevents aliasing with inputs.
                         unsafe {
-                            *c.get_unchecked_mut(ci) += a.get_value_unchecked(ai) * right;
+                            *c.output_mut(ci) += a.get_value_unchecked(ai) * right;
                         }
                         // Carry the shared free A/output indices together.
                         for axis in 0..last {
@@ -229,13 +244,15 @@ macro_rules! dot_direct_into {
 
 /// Allocate a direct contraction of the last axis of `a` with the first of `b`.
 ///
-/// Uses [`rlst_dynamic_array!`](crate::rlst_dynamic_array) for allocation and
+/// Uses the same rank-dependent storage as [`rlst_dynamic_array!`](crate::rlst_dynamic_array) and
 /// [`dot_direct_into!`](crate::dot_direct_into) for multiplication. Arguments are
 /// evaluated and borrowed once. The output concatenates the remaining input axes,
-/// with shape `[1]` for two vectors; multiplication does not conjugate either input.
+/// with a [`ZeroDimArray`](crate::ZeroDimArray) of shape `[]` for two vectors;
+/// multiplication does not conjugate either input.
 ///
 /// Stable Rust requires the independent output rank to be inferred from context,
-/// for example an explicit `DynArray<_, R>` annotation. There is no rank cap.
+/// for example an explicit `DynArray<_, R>` or `ZeroDimArray<_>` annotation.
+/// There is no rank cap.
 ///
 /// # Panics
 /// Panics for zero input ranks, incompatible contracted dimensions or output rank,
@@ -253,9 +270,13 @@ macro_rules! dot_direct {
         let a = &$a;
         let b = &$b;
         let (shape, _, _, _) = $crate::dense::macros::direct::shape(a.shape(), b.shape());
-        let mut output = $crate::dense::macros::direct::allocate(shape);
-        $crate::dot_direct_into!(output, a, b);
-        output
+        // Dispatch at the call site so a known zero rank selects scalar storage.
+        use $crate::dense::macros::dynamic::Allocate as _;
+        $crate::dense::macros::dynamic::build(shape, |request| {
+            let mut output = (&&request).allocate();
+            $crate::dot_direct_into!(output, a, b);
+            output
+        })
     }};
 }
 
