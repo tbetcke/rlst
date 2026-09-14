@@ -1,5 +1,33 @@
 # Changelog
 
+## v0.8.0 (unreleased)
+
+Changes since v0.7.0. All workspace crates (`rlst`, `rlst-proc-macro`, and
+`rlst-suitesparse`) use development version `0.8.0-dev`.
+
+### Frames of elements — migration required
+
+The previously unimplemented `Frame` trait has been replaced by `FrameImpl<'a>`.
+`ElementFrame<'a, Implementation>` is the public wrapper and forwards storage,
+application, and QR operations to its implementation. `GenericFrameImpl` stores
+owned elements; `ArrayFrameImpl` uses a column-major matrix. Both support growth,
+linear combinations, and rank-adaptive pivoted QR. The former reference-based
+`get`, `get_mut`, and iterator requirements have been replaced by owned
+`element` extraction and `set_element`; array-backed wrappers provide zero-copy
+matrix and column views. `push` borrows and copies an element and returns a result.
+
+The initial development types `ElementFrame<'a, Space>` and `ArrayFrame<'a, Item>`
+are now `GenericFrameImpl<'a, Space>` and `ArrayFrameImpl<'a, Item>`. Explicit
+construction uses `ElementFrame::new(GenericFrameImpl::new(&space))` or
+`ElementFrame::new(ArrayFrameImpl::new(&space))`. `FrameSpace` selects a
+`FrameImpl<'a>` associated type and its `frame` method returns the wrapped
+implementation. `imp`, `imp_mut`, and `into_imp` provide implementation access.
+
+Implementations opt into `FrameApply` and `FrameQr` for application and QR.
+The wrapper provides inherent methods and implements the corresponding traits
+by delegation; its QR result contains a wrapped Q with the same implementation
+type. See the abstract linear algebra guide for construction and QR examples.
+
 ## v0.7.0
 
 Changes since [v0.6.1](https://codeberg.org/rlst/rlst/releases/tag/v0.6.1),
@@ -145,4 +173,3 @@ All workspace crates (`rlst`, `rlst-proc-macro`, and `rlst-suitesparse`) use ver
 - Improved the `eval` routines. They now work in most situations where generic
   arrays are provided.
 - Small bug fixes, some CI improvements, etc.
-

@@ -115,6 +115,15 @@ where
     }
 }
 
+impl<Item> crate::IndexableSpace for ArrayVectorSpace<Item>
+where
+    Self: LinearSpace,
+{
+    fn dimension(&self) -> usize {
+        self.dimension
+    }
+}
+
 impl<Item> InnerProductSpace for ArrayVectorSpace<Item>
 where
     Item: Copy
@@ -130,6 +139,9 @@ where
         + std::ops::MulAssign<Item>,
 {
     fn inner_product(&self, x: &Element<Self>, other: &Element<Self>) -> Self::F {
+        if x.imp().shape() == [0] && other.imp().shape() == [0] {
+            return Item::zero();
+        }
         x.imp().inner(other.imp()).unwrap()
     }
 }

@@ -7,6 +7,7 @@ pub mod interface;
 // pub mod linalg;
 pub mod algorithms;
 pub mod element;
+pub mod frame;
 pub mod space;
 
 // pub use abstract_operator::*;
