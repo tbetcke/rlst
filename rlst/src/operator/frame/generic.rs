@@ -2,9 +2,10 @@
 
 use super::index_error;
 use crate::operator::element::Element;
+use crate::traits::linear_space::combine_columns;
 use crate::{
-    Array, FrameApply, FrameImpl, FrameRefAccess, InnerProductSpace, LinearSpace, RlstError,
-    RlstResult, Shape, UnsafeRandom1DAccessByValue,
+    Array, FrameApply, FrameImpl, FrameRefAccess, InnerProductSpace, LinearSpace, RlstResult,
+    Shape, UnsafeRandom1DAccessByValue,
 };
 
 /// An element-backed frame for an arbitrary linear space.
@@ -27,10 +28,7 @@ impl<'a, Space: LinearSpace> FrameRefAccess<'a> for GenericFrameImpl<'a, Space> 
     fn element_ref(&self, index: usize) -> Option<&Element<'a, Space>> {
         self.elements.get(index)
     }
-    fn element_mut<'s>(&'s mut self, index: usize) -> Option<&'s mut Element<'a, Space>>
-    where
-        'a: 's,
-    {
+    fn element_mut<'s>(&'s mut self, index: usize) -> Option<&'s mut Element<'a, Space>> {
         self.elements.get_mut(index)
     }
     fn iter<'s>(&'s self) -> impl ExactSizeIterator<Item = &'s Element<'a, Space>>
@@ -87,19 +85,13 @@ impl<'a, Space: LinearSpace> FrameApply<'a> for GenericFrameImpl<'a, Space> {
     where
         A: Shape<1> + UnsafeRandom1DAccessByValue<Item = Space::F>,
     {
-        if coefficients.shape()[0] != self.elements.len() {
-            return Err(RlstError::SingleDimensionError {
-                expected: self.elements.len(),
-                actual: coefficients.shape()[0],
-            });
-        }
-        // Borrow the stored elements instead of copying them through `element`,
-        // and accumulate in place instead of forming a scaled temporary.
-        let mut result = self.space.zero();
-        for (coefficient, basis) in coefficients.iter_value().zip(self.elements.iter()) {
-            self.space.axpy_inplace(&coefficient, basis, &mut result);
-        }
-        Ok(result)
+        // Borrow the stored elements instead of copying them through `element`.
+        combine_columns(
+            self.space,
+            self.elements.len(),
+            coefficients,
+            self.elements.iter(),
+        )
     }
 
     fn adjoint_apply(&self, x: &Element<Space>) -> RlstResult<Vec<Space::F>>

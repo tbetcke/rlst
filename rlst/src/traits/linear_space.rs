@@ -135,9 +135,7 @@ pub trait FrameRefAccess<'a>: FrameImpl<'a> {
     fn element_ref(&self, index: usize) -> Option<&Element<'a, Self::Space>>;
 
     /// Mutably borrow a column, or return `None` out of bounds.
-    fn element_mut<'s>(&'s mut self, index: usize) -> Option<&'s mut Element<'a, Self::Space>>
-    where
-        'a: 's;
+    fn element_mut<'s>(&'s mut self, index: usize) -> Option<&'s mut Element<'a, Self::Space>>;
 
     /// Iterate over the columns without copying them.
     fn iter<'s>(&'s self) -> impl ExactSizeIterator<Item = &'s Element<'a, Self::Space>>
@@ -150,6 +148,35 @@ pub trait FrameRefAccess<'a>: FrameImpl<'a> {
     ) -> impl ExactSizeIterator<Item = &'s mut Element<'a, Self::Space>>
     where
         'a: 's;
+}
+
+/// Accumulate `sum_i coefficients[i] * columns[i]` in place.
+///
+/// Shared by the [`FrameApply::apply`] default and element-backed frames so the
+/// shape check and the allocation-free accumulation live in one place.
+/// `columns` may yield owned elements or references to stored ones.
+pub(crate) fn combine_columns<'a, S, A, C>(
+    space: &'a S,
+    len: usize,
+    coefficients: &crate::Array<A, 1>,
+    columns: impl IntoIterator<Item = C>,
+) -> crate::RlstResult<Element<'a, S>>
+where
+    S: LinearSpace,
+    A: crate::Shape<1> + crate::UnsafeRandom1DAccessByValue<Item = S::F>,
+    C: std::borrow::Borrow<Element<'a, S>>,
+{
+    if coefficients.shape()[0] != len {
+        return Err(crate::RlstError::SingleDimensionError {
+            expected: len,
+            actual: coefficients.shape()[0],
+        });
+    }
+    let mut result = space.zero();
+    for (coefficient, column) in coefficients.iter_value().zip(columns) {
+        space.axpy_inplace(&coefficient, column.borrow(), &mut result);
+    }
+    Ok(result)
 }
 
 /// Linear combinations of frame columns.
@@ -169,18 +196,12 @@ pub trait FrameApply<'a>: FrameImpl<'a> {
         A: crate::Shape<1>
             + crate::UnsafeRandom1DAccessByValue<Item = <Self::Space as LinearSpace>::F>,
     {
-        if coefficients.shape()[0] != self.len() {
-            return Err(crate::RlstError::SingleDimensionError {
-                expected: self.len(),
-                actual: coefficients.shape()[0],
-            });
-        }
-        let space = self.space();
-        let mut result = space.zero();
-        for (index, coefficient) in coefficients.iter_value().enumerate() {
-            space.axpy_inplace(&coefficient, &self.element(index).unwrap(), &mut result);
-        }
-        Ok(result)
+        combine_columns(
+            self.space(),
+            self.len(),
+            coefficients,
+            (0..self.len()).map(|index| self.element(index).unwrap()),
+        )
     }
 
     /// Compute the inner products of `x` with every column.
@@ -225,14 +246,14 @@ pub trait FrameApply<'a>: FrameImpl<'a> {
         // `apply` validates the coefficients, so a shape error returns before
         // `output` is touched.
         let mut result = self.apply(coefficients)?;
-        space.scale_inplace(&alpha, &mut result);
         if num::Zero::is_zero(&beta) {
             // Do not read the previous output at all, so a zero `beta` discards
             // non-finite values instead of propagating them.
+            space.scale_inplace(&alpha, &mut result);
             *output.imp_mut() = result.into_imp();
         } else {
             space.scale_inplace(&beta, output);
-            space.sum_inplace(output, &result);
+            space.axpy_inplace(&alpha, &result, output);
         }
         Ok(())
     }

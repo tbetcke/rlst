@@ -38,10 +38,7 @@ impl<'a> FrameRefAccess<'a> for ObservedFrameImpl<'a> {
         self.ref_calls.set(self.ref_calls.get() + 1);
         self.inner.element_ref(index)
     }
-    fn element_mut<'s>(&'s mut self, index: usize) -> Option<&'s mut Element<'a, Self::Space>>
-    where
-        'a: 's,
-    {
+    fn element_mut<'s>(&'s mut self, index: usize) -> Option<&'s mut Element<'a, Self::Space>> {
         self.ref_calls.set(self.ref_calls.get() + 1);
         self.inner.element_mut(index)
     }

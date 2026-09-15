@@ -615,8 +615,8 @@ mod test {
                 -x[0] + 4.0 * x[1] + 2.0 * x[2],
                 x[1] + 5.0 * x[2],
             ];
-            for i in 0..3 {
-                y.imp_mut()[i] = alpha * result[i] + beta * y.imp()[i];
+            for (out, value) in y.imp_mut().iter_mut().zip(result) {
+                *out = alpha * value + beta * *out;
             }
         }
     }

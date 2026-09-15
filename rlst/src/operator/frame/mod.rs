@@ -276,10 +276,7 @@ impl<'a, I: FrameRefAccess<'a>> ElementFrame<'a, I> {
     ///
     /// Mutating a column through this reference must preserve the space's
     /// invariants; see [`FrameRefAccess`].
-    pub fn element_mut<'s>(&'s mut self, index: usize) -> Option<&'s mut Element<'a, I::Space>>
-    where
-        'a: 's,
-    {
+    pub fn element_mut<'s>(&'s mut self, index: usize) -> Option<&'s mut Element<'a, I::Space>> {
         self.imp.element_mut(index)
     }
 
@@ -308,10 +305,7 @@ impl<'a, I: FrameRefAccess<'a>> FrameRefAccess<'a> for ElementFrame<'a, I> {
     fn element_ref(&self, index: usize) -> Option<&Element<'a, Self::Space>> {
         self.imp.element_ref(index)
     }
-    fn element_mut<'s>(&'s mut self, index: usize) -> Option<&'s mut Element<'a, Self::Space>>
-    where
-        'a: 's,
-    {
+    fn element_mut<'s>(&'s mut self, index: usize) -> Option<&'s mut Element<'a, Self::Space>> {
         self.imp.element_mut(index)
     }
     fn iter<'s>(&'s self) -> impl ExactSizeIterator<Item = &'s Element<'a, Self::Space>>
