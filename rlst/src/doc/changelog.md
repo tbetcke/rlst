@@ -25,9 +25,13 @@ custom space needs no code of its own to be used with one. `imp`, `imp_mut`, and
 `into_imp` provide implementation access.
 
 Implementations opt into `FrameApply` and `FrameQr` for application and QR.
-The wrapper provides inherent methods and implements the corresponding traits
-by delegation; its QR result contains a wrapped Q with the same implementation
-type. See the abstract linear algebra guide for construction and QR examples.
+`FrameApply::adjoint_apply` returns the inner products of an element with every
+column, so that `adjoint_apply` followed by `apply_into` projects an element onto
+the span of the frame; `ArrayFrameImpl` computes it with one dense matrix-vector
+product. The wrapper provides inherent methods and implements the corresponding
+traits by delegation; its QR result contains a wrapped Q with the same
+implementation type. See the abstract linear algebra guide for construction and
+QR examples.
 
 ### GMRES for abstract operators
 
@@ -39,15 +43,17 @@ absolute residual for a zero right-hand side. The residual is recomputed from
 the operator at the end of every restart cycle, so the returned value is the
 true residual rather than the estimate from the Givens recursion.
 
-The Krylov basis is stored in an `ElementFrame`, which makes this the first
-consumer of the frame machinery. By default that is a `GenericFrameImpl` holding
-one element per basis vector, so GMRES requires nothing of a space beyond
-`InnerProductSpace`. `set_storage` replaces it with any other frame; passing
-`ElementFrame::new(ArrayFrameImpl::new(&space))` keeps the basis as one dense
-matrix, applying it with a single BLAS matrix-vector product. A supplied frame is
-scratch space and is cleared at the start of every restart cycle.
-`set_restart` bounds the size
-of that basis; by default GMRES does not restart. Two callbacks are available:
+The Krylov basis is stored in an `ElementFrame` and orthogonalized with two
+passes of classical Gram-Schmidt through the frame's `adjoint_apply` and
+`apply_into`, so no basis vector is copied. By default the frame is a
+`GenericFrameImpl` holding one element per basis vector, so GMRES requires
+nothing of a space beyond `InnerProductSpace` and no LAPACK linkage.
+`set_storage` replaces it with any other frame borrowing the right-hand side's
+space; passing `ElementFrame::new(ArrayFrameImpl::new(rhs.space()))` keeps the
+basis as one dense matrix and runs the orthogonalization and the solution update
+as BLAS matrix-vector products. A supplied frame is scratch space and is cleared
+at the start of every restart cycle. `set_restart` bounds the size of that
+basis; by default GMRES does not restart. Two callbacks are available:
 `set_callable` receives the iteration count and the current residual from the
 Givens recursion at no extra cost, while `set_element_callable` reconstructs the
 approximation and the residual element for every call at the cost of one extra

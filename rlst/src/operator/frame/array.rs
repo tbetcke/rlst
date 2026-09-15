@@ -5,7 +5,8 @@ use std::ops::Neg;
 use crate::operator::{element::Element, interface::array_vector_space::ArrayVectorSpace};
 use crate::{
     Array, AsMatrixApply, DynArray, FrameApply, FrameImpl, Gemm, IndexableSpace, LinearSpace,
-    RlstError, RlstNum, RlstResult, Shape, SliceArray, SliceArrayMut, UnsafeRandom1DAccessByValue,
+    MultInto, RlstError, RlstNum, RlstResult, Shape, SliceArray, SliceArrayMut, TransMode,
+    UnsafeRandom1DAccessByValue,
 };
 
 /// A growable column-major matrix of elements of an [`ArrayVectorSpace`].
@@ -65,6 +66,33 @@ impl<'a, Item: RlstNum + Neg<Output = Item>> ArrayFrameImpl<'a, Item> {
             &mut self.data.data_mut().unwrap()[m * index..m * (index + 1)],
             [m],
         ))
+    }
+
+    /// Compute the inner products of `x` with every active column, `V^H x`.
+    ///
+    /// The conjugate is taken on the columns. Rejects elements of the wrong dimension.
+    pub fn inner_products(
+        &self,
+        x: &Element<ArrayVectorSpace<Item>>,
+    ) -> RlstResult<Vec<<ArrayVectorSpace<Item> as LinearSpace>::F>>
+    where
+        Item: Gemm,
+    {
+        self.validate(x)?;
+        let mut result = vec![Item::zero(); self.len];
+        // Avoid empty native calls; the result is already zero.
+        if self.len == 0 || self.space.dimension() == 0 {
+            return Ok(result);
+        }
+        SliceArrayMut::from_shape(&mut result, [self.len]).mult_into(
+            TransMode::ConjTrans,
+            TransMode::NoTrans,
+            Item::one(),
+            self.matrix(),
+            x.imp().r(),
+            Item::zero(),
+        );
+        Ok(result)
     }
 
     fn validate(&self, elem: &Element<ArrayVectorSpace<Item>>) -> RlstResult<()> {
@@ -148,6 +176,16 @@ impl<'a, Item: RlstNum + Neg<Output = Item> + Gemm> FrameApply<'a> for ArrayFram
         let mut result = self.space.zero();
         self.apply_into(Item::one(), coefficients, Item::zero(), &mut result)?;
         Ok(result)
+    }
+
+    fn adjoint_apply(
+        &self,
+        x: &Element<Self::Space>,
+    ) -> RlstResult<Vec<<Self::Space as LinearSpace>::F>>
+    where
+        Self::Space: crate::InnerProductSpace,
+    {
+        self.inner_products(x)
     }
 
     fn apply_into<A>(

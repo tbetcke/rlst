@@ -7,17 +7,16 @@
 //!
 //! The Krylov basis is stored in an [`ElementFrame`]. By default this is a
 //! [`GenericFrameImpl`], which owns one element per basis vector and works for
-//! every inner-product space. Pass `ElementFrame::new(ArrayFrameImpl::new(&space))`
+//! every inner-product space. Pass `ElementFrame::new(ArrayFrameImpl::new(rhs.space()))`
 //! to [`GmresIteration::set_storage`] to keep the basis as one dense matrix
-//! instead, updating the solution with a single matrix-vector product.
-
-use std::ops::Mul;
+//! instead, so that orthogonalization and the solution update become dense
+//! matrix-vector products.
 
 use num::{Float, One, Zero};
 
 use crate::{
-    DynArray, ElementFrame, FrameApply, FrameImpl, GenericFrameImpl, Inner, InnerProductSpace,
-    Lapack, Norm, NormedSpace, RlstScalar, SolveTriangular, UpLo,
+    DynArray, ElementFrame, FrameApply, GenericFrameImpl, InnerProductSpace, Norm, NormedSpace,
+    RlstScalar, SliceArray,
     abstract_operator::OperatorBase,
     operator::{abstract_operator::Operator, element::Element},
 };
@@ -36,7 +35,7 @@ pub struct GmresIteration<
     Scalar: RlstScalar,
     Space: InnerProductSpace<F = Scalar>,
     OpImpl: OperatorBase<Domain = Space, Range = Space>,
-    Storage: FrameImpl<'a, Space = Space> = GenericFrameImpl<'a, Space>,
+    Storage: FrameApply<'a, Space = Space> = GenericFrameImpl<'a, Space>,
 > {
     operator: &'a Operator<OpImpl>,
     rhs: &'a Element<'a, Space>,
@@ -54,7 +53,7 @@ pub struct GmresIteration<
 
 impl<
     'a,
-    Scalar: RlstScalar + Lapack,
+    Scalar: RlstScalar,
     Space: InnerProductSpace<F = Scalar>,
     OpImpl: OperatorBase<Domain = Space, Range = Space>,
 > GmresIteration<'a, Scalar, Space, OpImpl, GenericFrameImpl<'a, Space>>
@@ -91,7 +90,7 @@ where
 
 impl<
     'a,
-    Scalar: RlstScalar + Lapack,
+    Scalar: RlstScalar,
     Space: InnerProductSpace<F = Scalar>,
     OpImpl: OperatorBase<Domain = Space, Range = Space>,
     Storage: FrameApply<'a, Space = Space>,
@@ -104,9 +103,9 @@ where
     ///
     /// The frame is scratch space: it is cleared at the start of every restart
     /// cycle, so elements it already holds are discarded while its allocated
-    /// capacity is reused. Array-backed spaces keep the basis as one dense
-    /// matrix with
-    /// `set_storage(ElementFrame::new(ArrayFrameImpl::new(&space)))`.
+    /// capacity is reused. The frame must borrow the space of the right-hand
+    /// side; array-backed spaces keep the basis as one dense matrix with
+    /// `set_storage(ElementFrame::new(ArrayFrameImpl::new(rhs.space())))`.
     pub fn set_storage<NewStorage: FrameApply<'a, Space = Space>>(
         self,
         storage: ElementFrame<'a, NewStorage>,
@@ -214,6 +213,11 @@ where
     /// or non-finite Hessenberg column, it terminates without applying an
     /// invalid update and returns the current residual. The callables are
     /// invoked only after successful steps.
+    ///
+    /// # Panics
+    ///
+    /// Panics if a frame supplied through [`Self::set_storage`] rejects an
+    /// element of the right-hand side's space.
     pub fn run(mut self) -> Scalar::Real {
         fn print_success<T: RlstScalar>(it_count: usize, rel_res: T) {
             println!(
@@ -228,10 +232,8 @@ where
         }
 
         let zero_real = <Scalar::Real as Zero>::zero();
+        let one_real = <Scalar::Real as One>::one();
 
-        // This syntax is only necessary because the type inference becomes confused for some reason.
-        // If I write `let rhs_norm = self.rhs.norm()` the compiler thinks that `self.rhs` is a space and
-        // not an element.
         let rhs_norm = Norm::norm(self.rhs);
 
         let mut res = self.rhs.clone();
@@ -272,43 +274,33 @@ where
             let beta = residual;
 
             // Columns of the Hessenberg matrix after all Givens rotations have
-            // been applied. Column `k` holds `k + 2` entries.
+            // been applied. Column `k` holds `k + 1` entries, the last being the pivot.
             let mut hessenberg = Vec::<Vec<Scalar>>::new();
             // Rotated right-hand side of the least-squares problem.
             let mut g = vec![Scalar::from_real(beta), <Scalar as Zero>::zero()];
             let mut cosines = Vec::<Scalar>::new();
             let mut sines = Vec::<Scalar>::new();
 
+            // The normalized residual is the first basis vector. `res` is
+            // rebuilt from the operator at the end of the cycle.
             frame.clear();
-            let mut basis_vector = res.clone();
-            basis_vector *= Scalar::from_real(<Scalar::Real as One>::one() / beta);
+            let mut basis_vector = res;
+            basis_vector *= Scalar::from_real(one_real / beta);
             frame
                 .push(&basis_vector)
                 .expect("GMRES: the frame rejected a Krylov basis vector.");
 
             let cycle_length = restart.min(self.max_iter - total_iter);
-            // Number of completed Hessenberg columns in this cycle.
-            let mut columns = 0usize;
             let mut breakdown = false;
 
+            // Invariant: the frame holds exactly `hessenberg.len() + 1`
+            // basis vectors at the top of each step, and exactly
+            // `hessenberg.len()` once the cycle ends.
             for step in 0..cycle_length {
-                let basis_vector = frame
-                    .element(step)
-                    .expect("GMRES: the frame lost a Krylov basis vector.");
                 let mut candidate = self.operator.dot(&basis_vector);
-
-                // Modified Gram-Schmidt orthogonalization against the basis so far.
-                let mut column = vec![<Scalar as Zero>::zero(); step + 2];
-                for (index, entry) in column.iter_mut().enumerate().take(step + 1) {
-                    let previous = frame
-                        .element(index)
-                        .expect("GMRES: the frame lost a Krylov basis vector.");
-                    let coefficient = candidate.inner(&previous);
-                    *entry = coefficient;
-                    candidate -= (&previous).mul(coefficient);
-                }
+                let mut column = Self::orthogonalize(frame, &mut candidate);
                 let candidate_norm = Norm::norm(&candidate);
-                column[step + 1] = Scalar::from_real(candidate_norm);
+                column.push(Scalar::from_real(candidate_norm));
 
                 // Apply the previous rotations to the new column.
                 for index in 0..step {
@@ -325,12 +317,15 @@ where
                 // Eliminate the subdiagonal entry of the new column.
                 let (cosine, sine, pivot) = givens_rotation(column[step], column[step + 1]);
                 if pivot == zero_real || !pivot.is_finite() {
-                    // A degenerate column carries no usable update.
+                    // A degenerate column carries no usable update. Drop the
+                    // basis vector it belongs to so the frame matches the
+                    // Hessenberg columns.
+                    frame.pop();
                     breakdown = true;
                     break;
                 }
                 column[step] = Scalar::from_real(pivot);
-                column[step + 1] = <Scalar as Zero>::zero();
+                column.pop();
                 cosines.push(cosine);
                 sines.push(sine);
                 hessenberg.push(column);
@@ -340,7 +335,6 @@ where
                 g[step + 1] = carried;
                 g.push(<Scalar as Zero>::zero());
 
-                columns = step + 1;
                 total_iter += 1;
 
                 let estimate = report(g[step + 1].abs(), rhs_norm, use_absolute_residual);
@@ -348,13 +342,15 @@ where
                 if let Some(callable) = self.callable.as_mut() {
                     callable(total_iter, estimate);
                 }
-                if self.element_callable.is_some()
-                    && let Some(coefficients) =
-                        least_squares_coefficients(&hessenberg, &g, columns, frame.len())
-                {
+                if let Some(callable) = self.element_callable.as_mut() {
                     let mut current = (*self.x).clone();
                     frame
-                        .apply_into(One::one(), &coefficients, One::one(), &mut current)
+                        .apply_into(
+                            One::one(),
+                            &least_squares_coefficients(&hessenberg, &g),
+                            One::one(),
+                            &mut current,
+                        )
                         .expect("GMRES: the frame rejected the coefficient vector.");
                     let mut current_residual = self.rhs.clone();
                     self.operator.apply(
@@ -363,9 +359,7 @@ where
                         One::one(),
                         &mut current_residual,
                     );
-                    if let Some(callable) = self.element_callable.as_mut() {
-                        callable(&current, &current_residual);
-                    }
+                    callable(&current, &current_residual);
                 }
 
                 if estimate < self.tol {
@@ -379,17 +373,24 @@ where
                     break;
                 }
 
-                candidate *= Scalar::from_real(<Scalar::Real as One>::one() / candidate_norm);
-                frame
-                    .push(&candidate)
-                    .expect("GMRES: the frame rejected a Krylov basis vector.");
+                // The last step of a cycle needs no further basis vector.
+                if step + 1 < cycle_length {
+                    candidate *= Scalar::from_real(one_real / candidate_norm);
+                    frame
+                        .push(&candidate)
+                        .expect("GMRES: the frame rejected a Krylov basis vector.");
+                    basis_vector = candidate;
+                }
             }
 
-            if let Some(coefficients) =
-                least_squares_coefficients(&hessenberg, &g, columns, frame.len())
-            {
+            if !hessenberg.is_empty() {
                 frame
-                    .apply_into(One::one(), &coefficients, One::one(), self.x)
+                    .apply_into(
+                        One::one(),
+                        &least_squares_coefficients(&hessenberg, &g),
+                        One::one(),
+                        self.x,
+                    )
                     .expect("GMRES: the frame rejected the coefficient vector.");
             }
 
@@ -407,7 +408,8 @@ where
                 return reported_residual;
             }
 
-            if breakdown || columns == 0 || residual == zero_real || !residual.is_finite() {
+            if breakdown || hessenberg.is_empty() || residual == zero_real || !residual.is_finite()
+            {
                 if self.print_debug {
                     print_fail(total_iter, reported_residual);
                 }
@@ -419,6 +421,41 @@ where
             print_fail(total_iter, reported_residual);
         }
         reported_residual
+    }
+
+    /// Orthogonalize `candidate` against the frame and return the projection
+    /// coefficients, one per basis vector.
+    ///
+    /// Two passes of classical Gram-Schmidt (CGS2) are used because they work
+    /// on the whole frame at once through [`FrameApply::adjoint_apply`] and
+    /// [`FrameApply::apply_into`], so array-backed frames run two dense
+    /// matrix-vector products per pass and no basis vector is copied.
+    fn orthogonalize(
+        frame: &ElementFrame<'a, Storage>,
+        candidate: &mut Element<Space>,
+    ) -> Vec<Scalar> {
+        let mut coefficients = Vec::new();
+        for pass in 0..2 {
+            let projection = frame
+                .adjoint_apply(candidate)
+                .expect("GMRES: the frame rejected a Krylov candidate.");
+            frame
+                .apply_into(
+                    -<Scalar as One>::one(),
+                    &SliceArray::from_shape(&projection, [projection.len()]),
+                    One::one(),
+                    candidate,
+                )
+                .expect("GMRES: the frame rejected the coefficient vector.");
+            if pass == 0 {
+                coefficients = projection;
+            } else {
+                for (total, correction) in coefficients.iter_mut().zip(projection) {
+                    *total += correction;
+                }
+            }
+        }
+        coefficients
     }
 }
 
@@ -462,37 +499,26 @@ fn apply_rotation<Scalar: RlstScalar>(
     )
 }
 
-/// Solve the rotated least-squares problem and pad the result to `frame_len`.
+/// Solve the rotated least-squares problem by back substitution.
 ///
-/// `hessenberg` holds the rotated Hessenberg columns and `g` the rotated
-/// right-hand side. The result is the coefficient vector of the correction with
-/// respect to the whole Krylov basis, which may contain one more element than
-/// there are Hessenberg columns. Returns `None` when there is nothing to solve
-/// or the triangular solve fails.
-fn least_squares_coefficients<Scalar: RlstScalar + Lapack>(
+/// `hessenberg` holds the rotated Hessenberg columns, each ending in its
+/// nonzero pivot, and `g` the rotated right-hand side. The result is the
+/// coefficient vector of the correction with respect to the Krylov basis,
+/// which has one entry per column.
+fn least_squares_coefficients<Scalar: RlstScalar>(
     hessenberg: &[Vec<Scalar>],
     g: &[Scalar],
-    columns: usize,
-    frame_len: usize,
-) -> Option<DynArray<Scalar, 1>> {
-    if columns == 0 {
-        return None;
-    }
-
-    let mut triangular = DynArray::<Scalar, 2>::from_shape([columns, columns]);
-    for column in 0..columns {
-        for row in 0..=column {
-            triangular[[row, column]] = hessenberg[column][row];
+) -> DynArray<Scalar, 1> {
+    let columns = hessenberg.len();
+    let mut coefficients = DynArray::<Scalar, 1>::from_shape([columns]);
+    for row in (0..columns).rev() {
+        let mut value = g[row];
+        for column in row + 1..columns {
+            value -= hessenberg[column][row] * coefficients[[column]];
         }
+        coefficients[[row]] = value / hessenberg[row][row];
     }
-    let rhs = DynArray::<Scalar, 1>::from_shape_and_vec([columns], g[..columns].to_vec());
-    let solution = triangular.solve_triangular(UpLo::Upper, &rhs).ok()?;
-
-    let mut coefficients = DynArray::<Scalar, 1>::from_shape([frame_len]);
-    for index in 0..columns {
-        coefficients[[index]] = solution[[index]];
-    }
-    Some(coefficients)
+    coefficients
 }
 
 #[cfg(test)]
@@ -729,14 +755,10 @@ mod test {
             })
             .run();
 
-        // The dense frame borrows a space instance of its own, which must have
-        // the dimension the operator works with.
-        let space = ArrayVectorSpace::<f64>::new(dim);
         let mut x_dense = zero_element(op.domain());
         let dense_solution = RefCell::new(Vec::<f64>::new());
         let dense_residual = GmresIteration::new(&op, &rhs, &mut x_dense)
-            .set_storage(ElementFrame::new(ArrayFrameImpl::new(&space)))
-            .set_restart(3)
+            .set_storage(ElementFrame::new(ArrayFrameImpl::new(rhs.space())))
             .set_tol(tol)
             .set_element_callable(|current, _| {
                 let mut solution = dense_solution.borrow_mut();
@@ -766,10 +788,9 @@ mod test {
         rhs.imp_mut()[[0]] = 1.0;
         let mut x = zero_element(op.domain());
 
-        let space = ArrayVectorSpace::<f64>::new(dim);
-        let mut storage = ElementFrame::new(ArrayFrameImpl::new(&space));
-        storage.push(&space.zero()).unwrap();
-        storage.push(&space.zero()).unwrap();
+        let mut storage = ElementFrame::new(ArrayFrameImpl::new(rhs.space()));
+        storage.push(&rhs.space().zero()).unwrap();
+        storage.push(&rhs.space().zero()).unwrap();
         assert_eq!(storage.len(), 2);
 
         let residual = GmresIteration::new(&op, &rhs, &mut x)
@@ -828,8 +849,51 @@ mod test {
 
         assert!(residual < tol);
         let estimates = estimates.borrow();
-        assert!(!estimates.is_empty());
+        // Full GMRES converges within `dim` steps; a restart length of two
+        // needs more cycles, so the total must exceed the restart length.
+        assert!(estimates.len() > 2);
         assert!(estimates.iter().all(|value| value.is_finite()));
+
+        // Restarting with matrix storage reaches the same tolerance.
+        let mut x_dense = zero_element(op.domain());
+        let dense_residual = GmresIteration::new(&op, &rhs, &mut x_dense)
+            .set_storage(ElementFrame::new(ArrayFrameImpl::new(rhs.space())))
+            .set_restart(2)
+            .set_tol(tol)
+            .run();
+        assert!(dense_residual < tol);
+    }
+
+    #[test]
+    fn max_iter_bounds_the_total_number_of_steps() {
+        let dim = 10;
+        let mat = non_symmetric_matrix(dim);
+        let op = Operator::from(&mat);
+        let mut rng = ChaCha8Rng::seed_from_u64(4);
+        let mut rhs = zero_element(op.range());
+        rhs.imp_mut().fill_from_equally_distributed(&mut rng);
+        let last_count = Cell::new(0);
+        let calls = Cell::new(0);
+
+        for restart in [None, Some(2)] {
+            let mut x = zero_element(op.domain());
+            let mut gmres = GmresIteration::new(&op, &rhs, &mut x)
+                .set_max_iter(5)
+                .set_tol(1E-300)
+                .set_callable(|count, _| {
+                    last_count.set(count);
+                    calls.set(calls.get() + 1);
+                });
+            if let Some(restart) = restart {
+                gmres = gmres.set_restart(restart);
+            }
+            let residual = gmres.run();
+
+            assert!(residual.is_finite());
+            assert_eq!(calls.get(), 5, "restart {restart:?}");
+            assert_eq!(last_count.get(), 5, "restart {restart:?}");
+            calls.set(0);
+        }
     }
 
     #[test]

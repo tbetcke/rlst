@@ -160,6 +160,19 @@ impl<'a, I: FrameApply<'a>> ElementFrame<'a, I> {
         self.imp.apply(coefficients)
     }
 
+    /// Compute the inner products of `x` with every column, `V^H x`.
+    ///
+    /// Delegates to the implementation's [`FrameApply::adjoint_apply`].
+    pub fn adjoint_apply(
+        &self,
+        x: &Element<I::Space>,
+    ) -> RlstResult<Vec<<I::Space as LinearSpace>::F>>
+    where
+        I::Space: InnerProductSpace,
+    {
+        self.imp.adjoint_apply(x)
+    }
+
     /// Compute `output = alpha * self * coefficients + beta * output`.
     ///
     /// Delegates to the implementation's [`FrameApply::apply_into`], preserving
@@ -181,6 +194,16 @@ impl<'a, I: FrameApply<'a>> ElementFrame<'a, I> {
 }
 
 impl<'a, I: FrameApply<'a>> FrameApply<'a> for ElementFrame<'a, I> {
+    fn adjoint_apply(
+        &self,
+        x: &Element<Self::Space>,
+    ) -> RlstResult<Vec<<Self::Space as LinearSpace>::F>>
+    where
+        Self::Space: InnerProductSpace,
+    {
+        self.imp.adjoint_apply(x)
+    }
+
     fn apply<A>(&self, coefficients: &Array<A, 1>) -> RlstResult<Element<'a, Self::Space>>
     where
         A: Shape<1> + UnsafeRandom1DAccessByValue<Item = <Self::Space as LinearSpace>::F>,

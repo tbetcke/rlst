@@ -2,7 +2,7 @@
 
 use super::index_error;
 use crate::operator::element::Element;
-use crate::{FrameApply, FrameImpl, LinearSpace, RlstResult};
+use crate::{FrameApply, FrameImpl, InnerProductSpace, LinearSpace, RlstResult};
 
 /// An element-backed frame for an arbitrary linear space.
 pub struct GenericFrameImpl<'a, Space: LinearSpace> {
@@ -60,4 +60,16 @@ impl<'a, Space: LinearSpace> FrameImpl<'a> for GenericFrameImpl<'a, Space> {
     }
 }
 
-impl<'a, Space: LinearSpace> FrameApply<'a> for GenericFrameImpl<'a, Space> {}
+impl<'a, Space: LinearSpace> FrameApply<'a> for GenericFrameImpl<'a, Space> {
+    fn adjoint_apply(&self, x: &Element<Space>) -> RlstResult<Vec<Space::F>>
+    where
+        Space: InnerProductSpace,
+    {
+        // Borrow the stored elements instead of copying them through `element`.
+        Ok(self
+            .elements
+            .iter()
+            .map(|basis| self.space.inner_product(x, basis))
+            .collect())
+    }
+}

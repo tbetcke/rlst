@@ -118,7 +118,10 @@
 //! results can outlive the original frame, but cannot outlive the space.
 //!
 //! Implementations supporting [`FrameApply`](crate::FrameApply) enable the wrapper's
-//! `apply` and `apply_into` methods, accepting strided coefficient arrays and lazy
+//! `apply`, `apply_into`, and `adjoint_apply` methods. `adjoint_apply` returns the
+//! inner products of an element with every column, so `adjoint_apply` followed by
+//! `apply_into` projects an element onto the span of the frame without copying
+//! columns. `apply` and `apply_into` accept strided coefficient arrays and lazy
 //! expressions. Dense application uses BLAS with a `Gemm` scalar,
 //! borrowing the active matrix and packing only the coefficients. Generic
 //! application uses the space's operations.
@@ -257,10 +260,11 @@
 //! subspace. The basis is stored in an [ElementFrame](crate::ElementFrame), by
 //! default a [GenericFrameImpl](crate::GenericFrameImpl) holding one element per
 //! basis vector, which works for every inner-product space. `set_storage` takes a
-//! frame to use instead, so an array-backed space can keep the basis as a single
-//! dense matrix and update the solution with one matrix-vector product, as in the
-//! example below. The supplied frame is scratch space: it is cleared at the start
-//! of every restart cycle.
+//! frame borrowing the right-hand side's space to use instead, so an array-backed
+//! space can keep the basis as a single dense matrix and run the orthogonalization
+//! and the solution update as dense matrix-vector products, as in the example
+//! below. The supplied frame is scratch space: it is cleared at the start of every
+//! restart cycle.
 //!
 //! The builder mirrors `CG`, and `run` reports the residual in exactly the same
 //! way. In addition, `set_restart` bounds the size of the Krylov basis. Without
@@ -275,7 +279,6 @@
 //! use rand::prelude::*;
 //! use rlst::{ArrayFrameImpl, DynArray, ElementFrame};
 //! use rlst::operator::abstract_operator::Operator;
-//! use rlst::operator::interface::array_vector_space::ArrayVectorSpace;
 //! use rlst::operator::space::zero_element;
 //! use rlst::operator::algorithms::gmres::GmresIteration;
 //! use rlst::traits::abstract_operator::OperatorBase;
@@ -296,9 +299,8 @@
 //! rhs.imp_mut().fill_from_equally_distributed(&mut rng);
 //! let mut x = zero_element(op.domain());
 //! // Keep the Krylov basis in one dense matrix instead of separate elements.
-//! let space = ArrayVectorSpace::<f64>::new(dim);
 //! let gmres = GmresIteration::new(&op, &rhs, &mut x)
-//!     .set_storage(ElementFrame::new(ArrayFrameImpl::new(&space)))
+//!     .set_storage(ElementFrame::new(ArrayFrameImpl::new(rhs.space())))
 //!     .set_callable(|_, residual| residuals.push(residual))
 //!     .set_restart(10)
 //!     .set_tol(tol)

@@ -139,6 +139,27 @@ pub trait FrameApply<'a>: FrameImpl<'a> {
         Ok(result)
     }
 
+    /// Compute the inner products of `x` with every column.
+    ///
+    /// Entry `i` of the result is `inner_product(x, column_i)`, so in complex
+    /// spaces the conjugate is taken on the column and the result is `V^H x`
+    /// for the column matrix `V`. Together with [`Self::apply_into`] this
+    /// projects an element onto the span of the columns without copying them.
+    /// The default uses the space's inner product; array frames override it
+    /// with a dense matrix-vector product.
+    fn adjoint_apply(
+        &self,
+        x: &Element<Self::Space>,
+    ) -> crate::RlstResult<Vec<<Self::Space as LinearSpace>::F>>
+    where
+        Self::Space: InnerProductSpace,
+    {
+        let space = self.space();
+        Ok((0..self.len())
+            .map(|index| space.inner_product(x, &self.element(index).unwrap()))
+            .collect())
+    }
+
     /// Compute `output = alpha * self * coefficients + beta * output`.
     ///
     /// A zero `beta` replaces the output without reading its previous value.

@@ -289,6 +289,50 @@ fn application_strides_expressions_and_alpha_beta() {
 }
 
 #[test]
+fn adjoint_apply_conjugates_columns_and_matches_between_storages() {
+    let space = ArrayVectorSpace::<c64>::new(2);
+    let mut dense = ElementFrame::new(ArrayFrameImpl::new(&space));
+    let mut generic = ElementFrame::new(GenericFrameImpl::new(&space));
+    let x = {
+        let mut x = space.zero();
+        x.imp_mut()[[0]] = c64::new(1.0, 2.0);
+        x.imp_mut()[[1]] = c64::new(-3.0, 0.5);
+        x
+    };
+
+    // An empty frame yields an empty coefficient vector.
+    assert!(dense.adjoint_apply(&x).unwrap().is_empty());
+    assert!(generic.adjoint_apply(&x).unwrap().is_empty());
+
+    let columns = [
+        [c64::new(0.0, 1.0), c64::new(2.0, 0.0)],
+        [c64::new(1.0, -1.0), c64::new(0.0, 0.0)],
+        [c64::new(0.5, 0.5), c64::new(-1.0, 2.0)],
+    ];
+    for values in columns {
+        let mut element = space.zero();
+        element.imp_mut()[[0]] = values[0];
+        element.imp_mut()[[1]] = values[1];
+        dense.push(&element).unwrap();
+        generic.push(&element).unwrap();
+    }
+
+    let dense_result = dense.adjoint_apply(&x).unwrap();
+    let generic_result = generic.adjoint_apply(&x).unwrap();
+    assert_eq!(dense_result.len(), 3);
+    assert_eq!(generic_result.len(), 3);
+    for (index, values) in columns.iter().enumerate() {
+        let expected = x.imp()[[0]] * values[0].conj() + x.imp()[[1]] * values[1].conj();
+        assert!((dense_result[index] - expected).norm() < 1e-12);
+        assert!((generic_result[index] - expected).norm() < 1e-12);
+    }
+
+    // Wrong dimensions are rejected by the dense frame.
+    let other = ArrayVectorSpace::<c64>::new(3);
+    assert!(dense.adjoint_apply(&other.zero()).is_err());
+}
+
+#[test]
 fn dense_rejects_incompatible_elements_without_mutating() {
     let space = ArrayVectorSpace::<f64>::new(2);
     let other = ArrayVectorSpace::<f64>::new(3);
