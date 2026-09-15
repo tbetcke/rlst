@@ -1,8 +1,9 @@
 use crate::dense::array::StridedSliceArray;
 use crate::operator::{element::Element, interface::array_vector_space::ArrayVectorSpace};
 use crate::{
-    DynArray, ElementFrame, FrameApply, FrameQr, FrameQrOptions, Gemm, GenericFrameImpl,
-    InnerProductSpace, Lapack, LinearSpace, Norm, RandScalar, RlstScalar, SliceArray, c32, c64,
+    ArrayFrameImpl, DynArray, ElementFrame, FrameApply, FrameQr, FrameQrOptions, FrameSpace, Gemm,
+    GenericFrameImpl, InnerProductSpace, Lapack, LinearSpace, Norm, RandScalar, RlstScalar,
+    SliceArray, c32, c64,
 };
 
 // A non-array implementation with a non-Euclidean inner product. Its operations
@@ -55,6 +56,13 @@ impl<Item: RlstScalar> InnerProductSpace for WeightedSpace<Item> {
         (0..4)
             .map(|i| self.weights[i] * x.imp()[i] * y.imp()[i].conj())
             .sum()
+    }
+}
+
+impl<Item: RlstScalar> FrameSpace for WeightedSpace<Item> {
+    type FrameImpl<'a> = GenericFrameImpl<'a, Self>;
+    fn frame(&self) -> ElementFrame<'_, Self::FrameImpl<'_>> {
+        ElementFrame::new(GenericFrameImpl::new(self))
     }
 }
 
@@ -172,7 +180,7 @@ fn qr_complex_single() {
 #[test]
 fn dense_storage_growth_and_views() {
     let space = ArrayVectorSpace::<f64>::new(3);
-    let mut frame = space.array_frame();
+    let mut frame: ElementFrame<'_, ArrayFrameImpl<'_, f64>> = space.frame();
     frame.reserve(2);
     let mut element = space.zero();
     for j in 0..9 {
@@ -213,7 +221,7 @@ fn generic_storage_owns_values_and_preserves_space_lifetime() {
     let mut element = space.zero();
     let extracted;
     {
-        let mut frame = ElementFrame::new(GenericFrameImpl::new(&space));
+        let mut frame = space.frame();
         frame.reserve(4);
         element.imp_mut()[0] = 2.0;
         frame.push(&element).unwrap();
@@ -379,7 +387,7 @@ fn qr_reorthogonalizes_ill_conditioned_columns() {
 #[test]
 fn qr_pivots_and_preserves_input() {
     let space = ArrayVectorSpace::<f64>::new(3);
-    let mut dense = space.array_frame();
+    let mut dense = space.frame();
     let mut generic = ElementFrame::new(GenericFrameImpl::new(&space));
     for values in [
         [1.0, 0.0, 0.0],
@@ -463,59 +471,4 @@ fn qr_results_borrow_space_not_input_frame() {
     let generic_result = generic_qr.q.apply(&generic_qr.r.r().col(0)).unwrap();
     assert!((&dense_result - &element).norm() < 1e-12);
     assert!((&generic_result - &element).norm() < 1e-12);
-}
-
-#[test]
-fn erasure_reaches_the_matrix_backed_application_override() {
-    let space = ArrayVectorSpace::<f64>::new(2);
-    let mut erased = space.frame();
-    let mut generic = ElementFrame::new(GenericFrameImpl::new(&space));
-    let mut element = space.zero();
-    element.imp_mut()[[0]] = 2.0;
-    erased.push(&element).unwrap();
-    generic.push(&element).unwrap();
-    let coefficients = SliceArray::from_shape(&[3.0], [1]);
-    assert_eq!(erased.apply(&coefficients).unwrap().imp()[[0]], 6.0);
-    assert_eq!(generic.apply(&coefficients).unwrap().imp()[[0]], 6.0);
-
-    // Only the matrix-backed implementation validates the output element, so a
-    // malformed output distinguishes the preserved override from the default
-    // that erasure must not reinstate.
-    let mut malformed = Element::new(&space, DynArray::from_shape([3]));
-    assert!(
-        erased
-            .apply_into(1.0, &coefficients, 0.0, &mut malformed)
-            .is_err()
-    );
-    assert!(
-        generic
-            .apply_into(1.0, &coefficients, 0.0, &mut malformed)
-            .is_ok()
-    );
-}
-
-#[test]
-fn erased_qr_reconstructs_columns_and_outlives_the_frame() {
-    let space = ArrayVectorSpace::<f64>::new(3);
-    let columns = [[1.0, 0.0, 0.0], [1.0, 2.0, 0.0]];
-    let originals: Vec<_> = columns
-        .iter()
-        .map(|values| {
-            let mut element = space.zero();
-            element.imp_mut().fill_from_iter(values.iter().copied());
-            element
-        })
-        .collect();
-    let qr = {
-        let mut erased = space.frame();
-        for element in &originals {
-            erased.push(element).unwrap();
-        }
-        erased.qr_pivoted(FrameQrOptions::default()).unwrap()
-    };
-    assert_eq!(qr.rank(), 2);
-    for (j, &original) in qr.permutation.iter().enumerate() {
-        let reconstructed = qr.q.apply(&qr.r.r().col(j)).unwrap();
-        assert!((&reconstructed - &originals[original]).norm() < 1e-12);
-    }
 }

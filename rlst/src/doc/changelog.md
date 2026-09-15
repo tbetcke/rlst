@@ -19,31 +19,14 @@ matrix and column views. `push` borrows and copies an element and returns a resu
 The initial development types `ElementFrame<'a, Space>` and `ArrayFrame<'a, Item>`
 are now `GenericFrameImpl<'a, Space>` and `ArrayFrameImpl<'a, Item>`. Explicit
 construction uses `ElementFrame::new(GenericFrameImpl::new(&space))` or
-`ElementFrame::new(ArrayFrameImpl::new(&space))`. `imp`, `imp_mut`, and
-`into_imp` provide implementation access.
+`ElementFrame::new(ArrayFrameImpl::new(&space))`. `FrameSpace` selects a
+`FrameImpl<'a>` associated type and its `frame` method returns the wrapped
+implementation. `imp`, `imp_mut`, and `into_imp` provide implementation access.
 
 Implementations opt into `FrameApply` and `FrameQr` for application and QR.
 The wrapper provides inherent methods and implements the corresponding traits
 by delegation; its QR result contains a wrapped Q with the same implementation
 type. See the abstract linear algebra guide for construction and QR examples.
-
-The `FrameSpace` trait has been removed. `frame` is now a method of
-`InnerProductSpace` with a default implementation, so every inner-product space
-over an `RlstScalar` field has it without writing any code; spaces that
-previously implemented `FrameSpace` with `GenericFrameImpl` should delete that
-impl. A space selects different storage by overriding the method, as
-`ArrayVectorSpace` does, and generic code such as GMRES reaches that override
-without Rust specialization. To make one signature serve every space, `frame`
-returns `ElementFrame<'_, SpaceFrame<'_, Self>>`, where the new `SpaceFrame`
-erases the backend behind the new object-safe `DynFrame` trait and forwards to
-it, preserving BLAS application and LAPACK QR at the cost of one virtual call
-per frame operation. Backend-specific inherent methods such as `matrix` and
-`column` are not available through the erased frame: construct the backend
-directly with `ElementFrame::new(ArrayFrameImpl::new(&space))`, which has no
-scalar bounds, or use the new `ArrayVectorSpace::array_frame`. The
-`InnerProductSpace` implementation for `ArrayVectorSpace<Item>` now requires
-`Item: Lapack + Gemm`, which admits the same scalars as the previous
-`RlstScalar` bound.
 
 ### GMRES for abstract operators
 
@@ -56,10 +39,8 @@ the operator at the end of every restart cycle, so the returned value is the
 true residual rather than the estimate from the Givens recursion.
 
 The Krylov basis is stored in an `ElementFrame` obtained from the space through
-`InnerProductSpace::frame`, which makes this the first consumer of the frame
-machinery. Any inner-product space works, including distributed ones, and
-array-backed spaces keep the basis as a single dense matrix. `set_restart`
-bounds the size
+`FrameSpace::frame`, which makes this the first consumer of the frame machinery
+and requires the space to implement `FrameSpace`. `set_restart` bounds the size
 of that basis; by default GMRES does not restart. Two callbacks are available:
 `set_callable` receives the iteration count and the current residual from the
 Givens recursion at no extra cost, while `set_element_callable` reconstructs the

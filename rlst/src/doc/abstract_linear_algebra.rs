@@ -60,13 +60,13 @@
 //! stores owned elements of arbitrary linear spaces; [`ArrayFrameImpl`](crate::ArrayFrameImpl)
 //! uses a column-major matrix for an
 //! [`ArrayVectorSpace`](crate::operator::interface::array_vector_space::ArrayVectorSpace).
-//! [`InnerProductSpace::frame`](crate::InnerProductSpace::frame) returns an
-//! `ElementFrame` wrapping the space's preferred implementation.
+//! [`FrameSpace::frame`](crate::FrameSpace::frame) selects the preferred implementation
+//! and returns an `ElementFrame` wrapping it.
 //!
 //! ```
 //! # extern crate blas_src;
 //! # extern crate lapack_src;
-//! use rlst::{FrameQrOptions, InnerProductSpace, LinearSpace, SliceArray};
+//! use rlst::{FrameQrOptions, FrameSpace, LinearSpace, SliceArray};
 //! use rlst::operator::interface::array_vector_space::ArrayVectorSpace;
 //!
 //! let space = ArrayVectorSpace::<f64>::new(3);
@@ -106,16 +106,11 @@
 //! assert_eq!(dense.matrix().shape(), [3, 0]);
 //! ```
 //!
-//! Every inner-product space over an [`RlstScalar`](crate::RlstScalar) field has
-//! `frame` without writing any code: the default stores owned elements in a
-//! `GenericFrameImpl`. A space with better storage overrides the method, as
-//! `ArrayVectorSpace` does, and generic algorithms then use that storage. The
-//! backend behind `frame` is erased into a [`SpaceFrame`](crate::SpaceFrame), so
-//! backend-specific methods such as the matrix views need the backend itself:
-//! construct it as above, or use `ArrayVectorSpace::array_frame`. Direct
-//! construction has no scalar bounds and works for any space. The wrapper's `imp`
-//! and `imp_mut` methods borrow the implementation; `into_imp` transfers ownership
-//! back without copying storage.
+//! Custom spaces can implement `FrameSpace` with
+//! `type FrameImpl<'a> = GenericFrameImpl<'a, Self> where Self: 'a` and return
+//! `ElementFrame::new(GenericFrameImpl::new(self))` from `frame`. Direct construction
+//! also works without this trait. The wrapper's `imp` and `imp_mut` methods borrow
+//! the implementation; `into_imp` transfers ownership back without copying storage.
 //!
 //! `push` and `set_element` copy values; `element` returns an owned copy that
 //! borrows the space, not the frame. Array frames additionally offer `matrix`,
@@ -261,8 +256,8 @@
 //! require the operator to be self-adjoint. It builds an orthonormal Krylov basis
 //! with Arnoldi's method and minimizes the residual over the resulting affine
 //! subspace. The basis is stored in an [ElementFrame](crate::ElementFrame) that the
-//! space provides through [InnerProductSpace::frame](crate::InnerProductSpace::frame),
-//! so array-backed spaces keep it as a single dense matrix.
+//! space provides through [FrameSpace::frame](crate::FrameSpace::frame), so
+//! array-backed spaces keep it as a single dense matrix.
 //!
 //! The builder mirrors `CG`, and `run` reports the residual in exactly the same
 //! way. In addition, `set_restart` bounds the size of the Krylov basis. Without

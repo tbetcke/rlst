@@ -48,8 +48,7 @@ pub mod threading;
 pub mod operator;
 
 pub use operator::frame::{
-    ArrayFrameImpl, DynFrame, ElementFrame, ErasedQrDecomposition, FrameQr, FrameQrDecomposition,
-    FrameQrOptions, GenericFrameImpl, SpaceFrame,
+    ArrayFrameImpl, ElementFrame, FrameQr, FrameQrDecomposition, FrameQrOptions, GenericFrameImpl,
 };
 
 // Re-exports

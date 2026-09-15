@@ -3,8 +3,8 @@ use std::cell::Cell;
 use crate::operator::{element::Element, interface::array_vector_space::ArrayVectorSpace};
 use crate::{
     Array, ArrayFrameImpl, ElementFrame, FrameApply, FrameImpl, FrameQr, FrameQrDecomposition,
-    FrameQrOptions, GenericFrameImpl, InnerProductSpace, LinearSpace, Norm, RlstResult, Shape,
-    SliceArray, SpaceFrame, UnsafeRandom1DAccessByValue,
+    FrameQrOptions, FrameSpace, GenericFrameImpl, LinearSpace, Norm, RlstResult, Shape, SliceArray,
+    UnsafeRandom1DAccessByValue,
 };
 
 // Use a third implementation to ensure dispatch is truly generic. The counters
@@ -178,152 +178,10 @@ fn implementation_access_and_extraction_preserve_storage() {
 #[test]
 fn storage_does_not_require_application_or_inner_products() {
     let space = ArrayVectorSpace::<i64>::new(2);
-    let mut frame = ElementFrame::new(ArrayFrameImpl::new(&space));
+    let mut frame = space.frame();
     let mut element = space.zero();
     element.imp_mut()[[1]] = 9;
     frame.push(&element).unwrap();
     assert_eq!(frame.pop().unwrap().imp()[[1]], 9);
     assert!(frame.is_empty());
-}
-
-// A space with no array backing, whose frame storage counts the calls that
-// reach it. Overriding `frame` is the only way a space selects storage.
-struct CountingSpace {
-    pushes: Cell<usize>,
-}
-
-impl LinearSpace for CountingSpace {
-    type F = f64;
-    type Impl = [f64; 2];
-
-    fn zero(&self) -> Element<'_, Self> {
-        Element::new(self, [0.0; 2])
-    }
-    fn add(&self, x: &Element<Self>, y: &Element<Self>) -> Element<'_, Self> {
-        Element::new(self, std::array::from_fn(|i| x.imp()[i] + y.imp()[i]))
-    }
-    fn sub(&self, x: &Element<Self>, y: &Element<Self>) -> Element<'_, Self> {
-        Element::new(self, std::array::from_fn(|i| x.imp()[i] - y.imp()[i]))
-    }
-    fn scalar_mul(&self, scalar: &f64, x: &Element<Self>) -> Element<'_, Self> {
-        Element::new(self, x.imp().map(|v| v * *scalar))
-    }
-    fn neg(&self, x: &Element<Self>) -> Element<'_, Self> {
-        self.scalar_mul(&-1.0, x)
-    }
-    fn sum_inplace(&self, x: &mut Element<Self>, y: &Element<Self>) {
-        for i in 0..2 {
-            x.imp_mut()[i] += y.imp()[i];
-        }
-    }
-    fn sub_inplace(&self, x: &mut Element<Self>, y: &Element<Self>) {
-        for i in 0..2 {
-            x.imp_mut()[i] -= y.imp()[i];
-        }
-    }
-    fn scale_inplace(&self, scalar: &f64, x: &mut Element<Self>) {
-        for value in x.imp_mut() {
-            *value *= *scalar;
-        }
-    }
-    fn copy_from(&self, x: &Element<Self>) -> Element<'_, Self> {
-        Element::new(self, *x.imp())
-    }
-}
-
-impl InnerProductSpace for CountingSpace {
-    fn inner_product(&self, x: &Element<Self>, y: &Element<Self>) -> f64 {
-        (0..2).map(|i| x.imp()[i] * y.imp()[i]).sum()
-    }
-
-    fn frame(&self) -> ElementFrame<'_, SpaceFrame<'_, Self>> {
-        ElementFrame::new(SpaceFrame::new(CountingFrameImpl {
-            inner: GenericFrameImpl::new(self),
-        }))
-    }
-}
-
-struct CountingFrameImpl<'a> {
-    inner: GenericFrameImpl<'a, CountingSpace>,
-}
-
-impl<'a> FrameImpl<'a> for CountingFrameImpl<'a> {
-    type Space = CountingSpace;
-
-    fn space(&self) -> &'a Self::Space {
-        self.inner.space()
-    }
-    fn element(&self, index: usize) -> Option<Element<'a, Self::Space>> {
-        self.inner.element(index)
-    }
-    fn set_element(&mut self, index: usize, elem: &Element<Self::Space>) -> RlstResult<()> {
-        self.inner.set_element(index, elem)
-    }
-    fn len(&self) -> usize {
-        self.inner.len()
-    }
-    fn capacity(&self) -> usize {
-        self.inner.capacity()
-    }
-    fn reserve(&mut self, additional: usize) {
-        self.inner.reserve(additional);
-    }
-    fn push(&mut self, elem: &Element<Self::Space>) -> RlstResult<()> {
-        let space = self.inner.space();
-        space.pushes.set(space.pushes.get() + 1);
-        self.inner.push(elem)
-    }
-    fn pop(&mut self) -> Option<Element<'a, Self::Space>> {
-        self.inner.pop()
-    }
-    fn clear(&mut self) {
-        self.inner.clear();
-    }
-}
-
-impl<'a> FrameApply<'a> for CountingFrameImpl<'a> {}
-
-impl<'a> FrameQr<'a> for CountingFrameImpl<'a> {
-    fn qr_pivoted(
-        &self,
-        options: FrameQrOptions<f64>,
-    ) -> RlstResult<FrameQrDecomposition<Self, f64>> {
-        let result = self.inner.qr_pivoted(options)?;
-        Ok(FrameQrDecomposition {
-            q: Self { inner: result.q },
-            r: result.r,
-            permutation: result.permutation,
-        })
-    }
-}
-
-// Generic over the space, exactly as an iterative solver is: nothing here can
-// name the backend the space selected.
-fn push_through_generic_code<S: InnerProductSpace<F = f64>>(space: &S) -> usize {
-    let mut frame = space.frame();
-    let element = space.zero();
-    frame.push(&element).unwrap();
-    frame.push(&element).unwrap();
-    frame.len()
-}
-
-#[test]
-fn frame_override_is_reached_from_generic_code() {
-    let space = CountingSpace {
-        pushes: Cell::new(0),
-    };
-    assert_eq!(push_through_generic_code(&space), 2);
-    // The default implementation would never touch these counters.
-    assert_eq!(space.pushes.get(), 2);
-}
-
-#[test]
-fn default_frame_needs_no_space_implementation() {
-    // ArrayVectorSpace overrides `frame`; a space that does not gets element
-    // storage without writing anything.
-    let space = CountingSpace {
-        pushes: Cell::new(0),
-    };
-    let generic = ElementFrame::new(GenericFrameImpl::new(&space));
-    assert!(generic.is_empty());
 }

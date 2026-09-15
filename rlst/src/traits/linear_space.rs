@@ -63,27 +63,6 @@ pub trait InnerProductSpace: LinearSpace {
     /// In spaces over complex numbers it is assumed that the complex conjugate
     /// is taken with respect to the second argument.
     fn inner_product(&self, x: &Element<Self>, y: &Element<Self>) -> Self::F;
-
-    /// Construct an empty frame borrowing this space.
-    ///
-    /// Every space has this method; the default stores owned elements in a
-    /// [`GenericFrameImpl`](crate::GenericFrameImpl). A space with better
-    /// storage overrides it, as
-    /// [`ArrayVectorSpace`](crate::operator::interface::array_vector_space::ArrayVectorSpace)
-    /// does with a column-major matrix, and generic algorithms then use that
-    /// storage without Rust specialization.
-    ///
-    /// The backend is erased behind [`SpaceFrame`](crate::SpaceFrame), so
-    /// backend-specific inherent methods such as matrix views are not available
-    /// here. Construct the backend directly for those, for instance with
-    /// `ElementFrame::new(ArrayFrameImpl::new(&space))`; that route has no
-    /// scalar bounds and stays available to any space.
-    fn frame(&self) -> crate::ElementFrame<'_, crate::SpaceFrame<'_, Self>>
-    where
-        Self::F: crate::RlstScalar,
-    {
-        crate::ElementFrame::new(crate::SpaceFrame::new(crate::GenericFrameImpl::new(self)))
-    }
 }
 
 /// Normed space
@@ -187,4 +166,18 @@ pub trait FrameApply<'a>: FrameImpl<'a> {
         *output.imp_mut() = result.into_imp();
         Ok(())
     }
+}
+
+/// Select a space's preferred frame storage without Rust specialization.
+///
+/// Custom spaces can opt in by selecting
+/// [`GenericFrameImpl`](crate::GenericFrameImpl). There is deliberately
+/// no blanket implementation, so array spaces can select matrix storage.
+pub trait FrameSpace: LinearSpace {
+    /// Preferred frame implementation.
+    type FrameImpl<'a>: FrameImpl<'a, Space = Self>
+    where
+        Self: 'a;
+    /// Construct an empty frame borrowing this space.
+    fn frame(&self) -> crate::ElementFrame<'_, Self::FrameImpl<'_>>;
 }

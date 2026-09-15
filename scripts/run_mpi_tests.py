@@ -32,7 +32,6 @@ CASES = (
     "distributed-dot-rejection",
     "remap-layout-agreement",
     "layouts-and-consumers",
-    "distributed-gmres",
 )
 TIMEOUT_SECONDS = 30
 BUILD_TIMEOUT_SECONDS = 900

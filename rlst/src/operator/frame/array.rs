@@ -4,8 +4,9 @@ use std::ops::Neg;
 
 use crate::operator::{element::Element, interface::array_vector_space::ArrayVectorSpace};
 use crate::{
-    Array, AsMatrixApply, DynArray, FrameApply, FrameImpl, Gemm, IndexableSpace, LinearSpace,
-    RlstError, RlstNum, RlstResult, Shape, SliceArray, SliceArrayMut, UnsafeRandom1DAccessByValue,
+    Array, AsMatrixApply, DynArray, ElementFrame, FrameApply, FrameImpl, FrameSpace, Gemm,
+    IndexableSpace, LinearSpace, RlstError, RlstNum, RlstResult, Shape, SliceArray, SliceArrayMut,
+    UnsafeRandom1DAccessByValue,
 };
 
 /// A growable column-major matrix of elements of an [`ArrayVectorSpace`].
@@ -184,5 +185,12 @@ impl<'a, Item: RlstNum + Neg<Output = Item> + Gemm> FrameApply<'a> for ArrayFram
         self.matrix()
             .apply(alpha, &coefficients, beta, output.imp_mut());
         Ok(())
+    }
+}
+
+impl<Item: RlstNum + Neg<Output = Item>> FrameSpace for ArrayVectorSpace<Item> {
+    type FrameImpl<'a> = ArrayFrameImpl<'a, Item>;
+    fn frame(&self) -> ElementFrame<'_, Self::FrameImpl<'_>> {
+        ElementFrame::new(ArrayFrameImpl::new(self))
     }
 }

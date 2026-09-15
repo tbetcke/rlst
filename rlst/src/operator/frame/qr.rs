@@ -4,8 +4,7 @@ use super::{ArrayFrameImpl, GenericFrameImpl};
 use crate::dense::linalg::lapack::qr::{EnablePivoting, QMode};
 use crate::operator::element::Element;
 use crate::{
-    DynArray, FrameImpl, Gemm, InnerProductSpace, Lapack, Norm, Qr, RlstError, RlstResult,
-    RlstScalar,
+    DynArray, FrameImpl, InnerProductSpace, Lapack, Norm, Qr, RlstError, RlstResult, RlstScalar,
 };
 use num::{Float, One, Zero};
 
@@ -188,7 +187,7 @@ where
     }
 }
 
-impl<'a, Item: Lapack + Gemm> FrameQr<'a> for ArrayFrameImpl<'a, Item> {
+impl<'a, Item: Lapack> FrameQr<'a> for ArrayFrameImpl<'a, Item> {
     fn qr_pivoted(
         &self,
         options: FrameQrOptions<Item::Real>,
