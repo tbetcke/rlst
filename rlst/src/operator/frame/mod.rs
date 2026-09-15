@@ -2,8 +2,14 @@
 //!
 //! [`ElementFrame`] forwards operations to a [`FrameImpl`]. [`GenericFrameImpl`]
 //! stores owned elements of any linear space; [`ArrayFrameImpl`] stores columns
-//! in one column-major matrix. Use [`crate::FrameSpace::frame`] to select a
-//! space's preferred implementation. QR never modifies the input frame.
+//! in one column-major matrix. Frames are built outside any space by wrapping
+//! the chosen implementation with [`ElementFrame::new`]. QR never modifies the
+//! input frame.
+//!
+//! Element-backed implementations additionally support
+//! [`FrameRefAccess`], which borrows the stored columns
+//! and allows in-place mutation. Packed storages have no stored element to
+//! borrow and expose array views instead.
 
 mod array;
 mod generic;
@@ -17,8 +23,8 @@ use std::{marker::PhantomData, ops::Neg};
 
 use crate::operator::element::Element;
 use crate::{
-    Array, FrameApply, FrameImpl, InnerProductSpace, LinearSpace, RlstError, RlstNum, RlstResult,
-    RlstScalar, Shape, SliceArray, SliceArrayMut, UnsafeRandom1DAccessByValue,
+    Array, FrameApply, FrameImpl, FrameRefAccess, InnerProductSpace, LinearSpace, RlstError,
+    RlstNum, RlstResult, RlstScalar, Shape, SliceArray, SliceArrayMut, UnsafeRandom1DAccessByValue,
 };
 
 #[cfg(test)]
@@ -159,6 +165,19 @@ impl<'a, I: FrameApply<'a>> ElementFrame<'a, I> {
         self.imp.apply(coefficients)
     }
 
+    /// Compute the inner products of `x` with every column, `V^H x`.
+    ///
+    /// Delegates to the implementation's [`FrameApply::adjoint_apply`].
+    pub fn adjoint_apply(
+        &self,
+        x: &Element<I::Space>,
+    ) -> RlstResult<Vec<<I::Space as LinearSpace>::F>>
+    where
+        I::Space: InnerProductSpace,
+    {
+        self.imp.adjoint_apply(x)
+    }
+
     /// Compute `output = alpha * self * coefficients + beta * output`.
     ///
     /// Delegates to the implementation's [`FrameApply::apply_into`], preserving
@@ -180,6 +199,16 @@ impl<'a, I: FrameApply<'a>> ElementFrame<'a, I> {
 }
 
 impl<'a, I: FrameApply<'a>> FrameApply<'a> for ElementFrame<'a, I> {
+    fn adjoint_apply(
+        &self,
+        x: &Element<Self::Space>,
+    ) -> RlstResult<Vec<<Self::Space as LinearSpace>::F>>
+    where
+        Self::Space: InnerProductSpace,
+    {
+        self.imp.adjoint_apply(x)
+    }
+
     fn apply<A>(&self, coefficients: &Array<A, 1>) -> RlstResult<Element<'a, Self::Space>>
     where
         A: Shape<1> + UnsafeRandom1DAccessByValue<Item = <Self::Space as LinearSpace>::F>,
@@ -237,10 +266,59 @@ where
     }
 }
 
-impl<'a, Space: LinearSpace> ElementFrame<'a, GenericFrameImpl<'a, Space>> {
+impl<'a, I: FrameRefAccess<'a>> ElementFrame<'a, I> {
+    /// Borrow a column without copying it, or return `None` out of bounds.
+    pub fn element_ref(&self, index: usize) -> Option<&Element<'a, I::Space>> {
+        self.imp.element_ref(index)
+    }
+
+    /// Mutably borrow a column, or return `None` out of bounds.
+    ///
+    /// Mutating a column through this reference must preserve the space's
+    /// invariants; see [`FrameRefAccess`].
+    pub fn element_mut<'s>(&'s mut self, index: usize) -> Option<&'s mut Element<'a, I::Space>> {
+        self.imp.element_mut(index)
+    }
+
     /// Iterate over stored elements without copying them.
-    pub fn iter(&self) -> impl ExactSizeIterator<Item = &Element<'a, Space>> {
+    pub fn iter<'s>(&'s self) -> impl ExactSizeIterator<Item = &'s Element<'a, I::Space>>
+    where
+        'a: 's,
+    {
         self.imp.iter()
+    }
+
+    /// Mutably iterate over stored elements.
+    ///
+    /// The same invariant contract applies as for [`Self::element_mut`].
+    pub fn iter_mut<'s>(
+        &'s mut self,
+    ) -> impl ExactSizeIterator<Item = &'s mut Element<'a, I::Space>>
+    where
+        'a: 's,
+    {
+        self.imp.iter_mut()
+    }
+}
+
+impl<'a, I: FrameRefAccess<'a>> FrameRefAccess<'a> for ElementFrame<'a, I> {
+    fn element_ref(&self, index: usize) -> Option<&Element<'a, Self::Space>> {
+        self.imp.element_ref(index)
+    }
+    fn element_mut<'s>(&'s mut self, index: usize) -> Option<&'s mut Element<'a, Self::Space>> {
+        self.imp.element_mut(index)
+    }
+    fn iter<'s>(&'s self) -> impl ExactSizeIterator<Item = &'s Element<'a, Self::Space>>
+    where
+        'a: 's,
+    {
+        self.imp.iter()
+    }
+    fn iter_mut<'s>(&'s mut self) -> impl ExactSizeIterator<Item = &'s mut Element<'a, Self::Space>>
+    where
+        'a: 's,
+    {
+        self.imp.iter_mut()
     }
 }
 

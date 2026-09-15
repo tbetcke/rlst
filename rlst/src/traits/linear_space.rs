@@ -39,6 +39,16 @@ pub trait LinearSpace: Sized {
 
     /// Create a new element by copying an existing  one.
     fn copy_from(&self, x: &Element<Self>) -> Element<'_, Self>;
+
+    /// Compute `y += alpha * x`.
+    ///
+    /// The default implementation forms the scaled element first and is
+    /// therefore not allocation-free. Implementations whose elements are backed
+    /// by arrays should override this with a fused update; nothing else is
+    /// required of an implementation, and the default is always correct.
+    fn axpy_inplace(&self, alpha: &Self::F, x: &Element<Self>, y: &mut Element<Self>) {
+        self.sum_inplace(y, &self.scalar_mul(alpha, x));
+    }
 }
 
 /// A dual space
@@ -107,6 +117,68 @@ pub trait FrameImpl<'a> {
     fn clear(&mut self);
 }
 
+/// Borrowing access to the columns of an element-backed frame.
+///
+/// Implementations that store their columns as [`Element`]s can hand out
+/// references to them. Packed storages such as
+/// [`ArrayFrameImpl`](crate::ArrayFrameImpl) keep their columns in one matrix
+/// and have no stored element to borrow, so they do not implement this trait
+/// and offer array views instead.
+///
+/// The mutating accessors expose the stored element directly and can replace it
+/// with an incompatible value, for example one of a different dimension.
+/// Callers must preserve the space's invariants, as for
+/// [`Element::new`](crate::operator::element::Element::new) and
+/// [`Element::imp_mut`](crate::operator::element::Element::imp_mut).
+pub trait FrameRefAccess<'a>: FrameImpl<'a> {
+    /// Borrow a column, or return `None` out of bounds.
+    fn element_ref(&self, index: usize) -> Option<&Element<'a, Self::Space>>;
+
+    /// Mutably borrow a column, or return `None` out of bounds.
+    fn element_mut<'s>(&'s mut self, index: usize) -> Option<&'s mut Element<'a, Self::Space>>;
+
+    /// Iterate over the columns without copying them.
+    fn iter<'s>(&'s self) -> impl ExactSizeIterator<Item = &'s Element<'a, Self::Space>>
+    where
+        'a: 's;
+
+    /// Mutably iterate over the columns.
+    fn iter_mut<'s>(
+        &'s mut self,
+    ) -> impl ExactSizeIterator<Item = &'s mut Element<'a, Self::Space>>
+    where
+        'a: 's;
+}
+
+/// Accumulate `sum_i coefficients[i] * columns[i]` in place.
+///
+/// Shared by the [`FrameApply::apply`] default and element-backed frames so the
+/// shape check and the allocation-free accumulation live in one place.
+/// `columns` may yield owned elements or references to stored ones.
+pub(crate) fn combine_columns<'a, S, A, C>(
+    space: &'a S,
+    len: usize,
+    coefficients: &crate::Array<A, 1>,
+    columns: impl IntoIterator<Item = C>,
+) -> crate::RlstResult<Element<'a, S>>
+where
+    S: LinearSpace,
+    A: crate::Shape<1> + crate::UnsafeRandom1DAccessByValue<Item = S::F>,
+    C: std::borrow::Borrow<Element<'a, S>>,
+{
+    if coefficients.shape()[0] != len {
+        return Err(crate::RlstError::SingleDimensionError {
+            expected: len,
+            actual: coefficients.shape()[0],
+        });
+    }
+    let mut result = space.zero();
+    for (coefficient, column) in coefficients.iter_value().zip(columns) {
+        space.axpy_inplace(&coefficient, column.borrow(), &mut result);
+    }
+    Ok(result)
+}
+
 /// Linear combinations of frame columns.
 ///
 /// The default operations use only the underlying space. Array frames override
@@ -124,19 +196,33 @@ pub trait FrameApply<'a>: FrameImpl<'a> {
         A: crate::Shape<1>
             + crate::UnsafeRandom1DAccessByValue<Item = <Self::Space as LinearSpace>::F>,
     {
-        if coefficients.shape()[0] != self.len() {
-            return Err(crate::RlstError::SingleDimensionError {
-                expected: self.len(),
-                actual: coefficients.shape()[0],
-            });
-        }
+        combine_columns(
+            self.space(),
+            self.len(),
+            coefficients,
+            (0..self.len()).map(|index| self.element(index).unwrap()),
+        )
+    }
+
+    /// Compute the inner products of `x` with every column.
+    ///
+    /// Entry `i` of the result is `inner_product(x, column_i)`, so in complex
+    /// spaces the conjugate is taken on the column and the result is `V^H x`
+    /// for the column matrix `V`. Together with [`Self::apply_into`] this
+    /// projects an element onto the span of the columns without copying them.
+    /// The default uses the space's inner product; array frames override it
+    /// with a dense matrix-vector product.
+    fn adjoint_apply(
+        &self,
+        x: &Element<Self::Space>,
+    ) -> crate::RlstResult<Vec<<Self::Space as LinearSpace>::F>>
+    where
+        Self::Space: InnerProductSpace,
+    {
         let space = self.space();
-        let mut result = space.zero();
-        for (index, coefficient) in coefficients.iter_value().enumerate() {
-            let scaled = space.scalar_mul(&coefficient, &self.element(index).unwrap());
-            space.sum_inplace(&mut result, &scaled);
-        }
-        Ok(result)
+        Ok((0..self.len())
+            .map(|index| space.inner_product(x, &self.element(index).unwrap()))
+            .collect())
     }
 
     /// Compute `output = alpha * self * coefficients + beta * output`.
@@ -157,27 +243,18 @@ pub trait FrameApply<'a>: FrameImpl<'a> {
         <Self::Space as LinearSpace>::F: num::Zero,
     {
         let space = self.space();
+        // `apply` validates the coefficients, so a shape error returns before
+        // `output` is touched.
         let mut result = self.apply(coefficients)?;
-        space.scale_inplace(&alpha, &mut result);
-        if !num::Zero::is_zero(&beta) {
-            let previous = space.scalar_mul(&beta, output);
-            space.sum_inplace(&mut result, &previous);
+        if num::Zero::is_zero(&beta) {
+            // Do not read the previous output at all, so a zero `beta` discards
+            // non-finite values instead of propagating them.
+            space.scale_inplace(&alpha, &mut result);
+            *output.imp_mut() = result.into_imp();
+        } else {
+            space.scale_inplace(&beta, output);
+            space.axpy_inplace(&alpha, &result, output);
         }
-        *output.imp_mut() = result.into_imp();
         Ok(())
     }
-}
-
-/// Select a space's preferred frame storage without Rust specialization.
-///
-/// Custom spaces can opt in by selecting
-/// [`GenericFrameImpl`](crate::GenericFrameImpl). There is deliberately
-/// no blanket implementation, so array spaces can select matrix storage.
-pub trait FrameSpace: LinearSpace {
-    /// Preferred frame implementation.
-    type FrameImpl<'a>: FrameImpl<'a, Space = Self>
-    where
-        Self: 'a;
-    /// Construct an empty frame borrowing this space.
-    fn frame(&self) -> crate::ElementFrame<'_, Self::FrameImpl<'_>>;
 }

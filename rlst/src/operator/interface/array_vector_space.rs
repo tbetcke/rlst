@@ -113,6 +113,16 @@ where
     ) -> crate::operator::element::Element<'_, Self> {
         Element::new(self, x.imp().eval())
     }
+
+    /// Compute `y += alpha * x` without forming the scaled element.
+    fn axpy_inplace(
+        &self,
+        alpha: &Self::F,
+        x: &crate::operator::element::Element<Self>,
+        y: &mut crate::operator::element::Element<Self>,
+    ) {
+        *y.imp_mut() += x.imp().r().scalar_mul(*alpha);
+    }
 }
 
 impl<Item> crate::IndexableSpace for ArrayVectorSpace<Item>

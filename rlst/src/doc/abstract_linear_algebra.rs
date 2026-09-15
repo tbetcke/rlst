@@ -60,17 +60,17 @@
 //! stores owned elements of arbitrary linear spaces; [`ArrayFrameImpl`](crate::ArrayFrameImpl)
 //! uses a column-major matrix for an
 //! [`ArrayVectorSpace`](crate::operator::interface::array_vector_space::ArrayVectorSpace).
-//! [`FrameSpace::frame`](crate::FrameSpace::frame) selects the preferred implementation
-//! and returns an `ElementFrame` wrapping it.
+//! A frame is built outside any space by wrapping the chosen implementation with
+//! `ElementFrame::new`, so nothing has to be implemented on the space itself.
 //!
 //! ```
 //! # extern crate blas_src;
 //! # extern crate lapack_src;
-//! use rlst::{FrameQrOptions, FrameSpace, LinearSpace, SliceArray};
+//! use rlst::{ArrayFrameImpl, ElementFrame, FrameQrOptions, LinearSpace, SliceArray};
 //! use rlst::operator::interface::array_vector_space::ArrayVectorSpace;
 //!
 //! let space = ArrayVectorSpace::<f64>::new(3);
-//! let mut frame = space.frame();
+//! let mut frame = ElementFrame::new(ArrayFrameImpl::new(&space));
 //! let mut element = space.zero();
 //! element.imp_mut()[[0]] = 1.0;
 //! frame.push(&element)?;
@@ -106,11 +106,10 @@
 //! assert_eq!(dense.matrix().shape(), [3, 0]);
 //! ```
 //!
-//! Custom spaces can implement `FrameSpace` with
-//! `type FrameImpl<'a> = GenericFrameImpl<'a, Self> where Self: 'a` and return
-//! `ElementFrame::new(GenericFrameImpl::new(self))` from `frame`. Direct construction
-//! also works without this trait. The wrapper's `imp` and `imp_mut` methods borrow
-//! the implementation; `into_imp` transfers ownership back without copying storage.
+//! `GenericFrameImpl` works for every linear space and has no scalar bounds, so a
+//! custom space needs no code of its own to be used with a frame. The wrapper's
+//! `imp` and `imp_mut` methods borrow the implementation; `into_imp` transfers
+//! ownership back without copying storage.
 //!
 //! `push` and `set_element` copy values; `element` returns an owned copy that
 //! borrows the space, not the frame. Array frames additionally offer `matrix`,
@@ -118,11 +117,48 @@
 //! `reserve` grows capacity and `clear` retains it. Extracted elements and QR
 //! results can outlive the original frame, but cannot outlive the space.
 //!
+//! ## Borrowing frame columns
+//!
+//! Element-backed implementations also support
+//! [`FrameRefAccess`](crate::FrameRefAccess), which borrows the stored columns
+//! instead of copying them: `element_ref`, `element_mut`, `iter`, and `iter_mut`.
+//! Array frames store their columns packed in one matrix and have no stored
+//! element to borrow, so they do not implement this trait and expose `column`
+//! and `column_mut` instead.
+//!
+//! ```
+//! use rlst::operator::interface::array_vector_space::ArrayVectorSpace;
+//! use rlst::{ElementFrame, GenericFrameImpl, LinearSpace};
+//!
+//! let space = ArrayVectorSpace::<f64>::new(3);
+//! let mut frame = ElementFrame::new(GenericFrameImpl::new(&space));
+//! frame.push(&space.zero())?;
+//!
+//! // Borrow a column and mutate it in place, without copying it out.
+//! frame.element_mut(0).unwrap().imp_mut()[[1]] = 5.0;
+//! assert_eq!(frame.element_ref(0).unwrap().imp()[[1]], 5.0);
+//! for element in frame.iter_mut() {
+//!     *element *= 2.0;
+//! }
+//! assert_eq!(frame.iter().next().unwrap().imp()[[1]], 10.0);
+//! # Ok::<(), rlst::RlstError>(())
+//! ```
+//!
+//! The mutating accessors hand out the stored element itself, so a caller can
+//! replace it with an incompatible value. Preserving the space's invariants is
+//! the caller's responsibility, exactly as for `Element::new` and
+//! `Element::imp_mut`.
+//!
 //! Implementations supporting [`FrameApply`](crate::FrameApply) enable the wrapper's
-//! `apply` and `apply_into` methods, accepting strided coefficient arrays and lazy
+//! `apply`, `apply_into`, and `adjoint_apply` methods. `adjoint_apply` returns the
+//! inner products of an element with every column, so `adjoint_apply` followed by
+//! `apply_into` projects an element onto the span of the frame without copying
+//! columns. `apply` and `apply_into` accept strided coefficient arrays and lazy
 //! expressions. Dense application uses BLAS with a `Gemm` scalar,
 //! borrowing the active matrix and packing only the coefficients. Generic
-//! application uses the space's operations.
+//! application uses the space's operations, borrowing each column and
+//! accumulating through [`LinearSpace::axpy_inplace`](crate::LinearSpace::axpy_inplace)
+//! rather than copying columns or forming scaled temporaries.
 //! `apply_into(alpha, coefficients, beta, output)` computes
 //! `output = alpha * frame * coefficients + beta * output`; a zero `beta`
 //! discards the old output. Dense frames validate element dimensions. Generic
@@ -198,7 +234,8 @@
 //! # Solving operator equations
 //!
 //! To solve abstract operator equations of the form `Ax = y`, where `A` is an operator, `y` is an object in the range space and `x` is an unnknown
-//! object in the domain space, we can use iterative solvers. RLST currently only supports Conjugate Gradients with more solvers to be added.
+//! object in the domain space, we can use iterative solvers. RLST provides Conjugate Gradients for self-adjoint positive definite operators
+//! and GMRES for general operators, with more solvers to be added.
 //! The following provides a complete worked out example of how to solve operator equations with `CG`. Note that `CG` requires that the operator
 //! is self-adjoint and positive definite; using it for other operators can
 //! break down or fail to converge. `run` mutates `x` and returns
@@ -247,3 +284,71 @@
 //! system or when a zero/non-finite search-direction denominator causes
 //! pre-update termination. An exact zero right-hand side and zero initial guess
 //! therefore return `0` immediately.
+//!
+//! ## GMRES
+//!
+//! The Generalized Minimal Residual Method
+//! ([GmresIteration](crate::operator::algorithms::gmres::GmresIteration)) does not
+//! require the operator to be self-adjoint. It builds an orthonormal Krylov basis
+//! with Arnoldi's method and minimizes the residual over the resulting affine
+//! subspace. The basis is stored in an [ElementFrame](crate::ElementFrame), by
+//! default a [GenericFrameImpl](crate::GenericFrameImpl) holding one element per
+//! basis vector, which works for every inner-product space. `set_storage` takes a
+//! frame borrowing the right-hand side's space to use instead, so an array-backed
+//! space can keep the basis as a single dense matrix and run the orthogonalization
+//! and the solution update as dense matrix-vector products, as in the example
+//! below. The supplied frame is scratch space: it is cleared at the start of every
+//! restart cycle.
+//!
+//! The builder mirrors `CG`, and `run` reports the residual in exactly the same
+//! way. In addition, `set_restart` bounds the size of the Krylov basis. Without
+//! it GMRES does not restart, so the basis can grow to `max_iter` elements and
+//! the work per iteration grows with the iteration count. Restarting bounds both,
+//! but restarted GMRES can stagnate on problems that full GMRES solves.
+//!
+//! ```
+//! # extern crate blas_src;
+//! # extern crate lapack_src;
+//! use rand_chacha::ChaCha8Rng;
+//! use rand::prelude::*;
+//! use rlst::{ArrayFrameImpl, DynArray, ElementFrame};
+//! use rlst::operator::abstract_operator::Operator;
+//! use rlst::operator::space::zero_element;
+//! use rlst::operator::algorithms::gmres::GmresIteration;
+//! use rlst::traits::abstract_operator::OperatorBase;
+//! let dim = 20;
+//! let tol = 1E-8;
+//! let mut residuals = Vec::<f64>::new();
+//! let mut rng = ChaCha8Rng::seed_from_u64(0);
+//! // A non-symmetric, diagonally dominant matrix.
+//! let mut mat = DynArray::<f64, 2>::from_shape([dim, dim]);
+//! for row in 0..dim {
+//!     for col in 0..dim {
+//!         mat[[row, col]] = rng.random_range(-0.1..=0.1);
+//!     }
+//!     mat[[row, row]] += 4.0;
+//! }
+//! let op = Operator::from(&mat);
+//! let mut rhs = zero_element(op.range());
+//! rhs.imp_mut().fill_from_equally_distributed(&mut rng);
+//! let mut x = zero_element(op.domain());
+//! // Keep the Krylov basis in one dense matrix instead of separate elements.
+//! let gmres = GmresIteration::new(&op, &rhs, &mut x)
+//!     .set_storage(ElementFrame::new(ArrayFrameImpl::new(rhs.space())))
+//!     .set_callable(|_, residual| residuals.push(residual))
+//!     .set_restart(10)
+//!     .set_tol(tol)
+//!     .print_debug();
+//! let res = gmres.run();
+//! assert!(res < tol);
+//! ```
+//!
+//! The callback of `set_callable` receives the number of Arnoldi steps taken so
+//! far and the current residual, both obtained from the Givens recursion at no
+//! extra cost. Unlike `CG`, GMRES does not carry the approximation and the
+//! residual along, so they are only available through the separate
+//! `set_element_callable`, which reconstructs them for every call at the cost of
+//! one additional linear combination of the Krylov basis and one operator
+//! application per iteration. Both callbacks follow the same schedule as the `CG`
+//! callback: they run after each successful step, before convergence is checked,
+//! and not for an already-converged initial guess or a pre-update breakdown.

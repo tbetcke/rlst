@@ -114,8 +114,7 @@ where
             finite(coefficient.abs())?;
             *total += coefficient;
             finite(total.abs())?;
-            let scaled = q.space.scalar_mul(&coefficient, basis);
-            q.space.sum_inplace(&mut projection, &scaled);
+            q.space.axpy_inplace(&coefficient, basis, &mut projection);
         }
         q.space.sub_inplace(&mut residual, &projection);
     }

@@ -2,7 +2,11 @@
 
 use super::index_error;
 use crate::operator::element::Element;
-use crate::{FrameApply, FrameImpl, LinearSpace, RlstResult};
+use crate::traits::linear_space::combine_columns;
+use crate::{
+    Array, FrameApply, FrameImpl, FrameRefAccess, InnerProductSpace, LinearSpace, RlstResult,
+    Shape, UnsafeRandom1DAccessByValue,
+};
 
 /// An element-backed frame for an arbitrary linear space.
 pub struct GenericFrameImpl<'a, Space: LinearSpace> {
@@ -18,10 +22,26 @@ impl<'a, Space: LinearSpace> GenericFrameImpl<'a, Space> {
             elements: Vec::new(),
         }
     }
+}
 
-    /// Iterate over stored elements without copying them.
-    pub fn iter(&self) -> impl ExactSizeIterator<Item = &Element<'a, Space>> {
+impl<'a, Space: LinearSpace> FrameRefAccess<'a> for GenericFrameImpl<'a, Space> {
+    fn element_ref(&self, index: usize) -> Option<&Element<'a, Space>> {
+        self.elements.get(index)
+    }
+    fn element_mut<'s>(&'s mut self, index: usize) -> Option<&'s mut Element<'a, Space>> {
+        self.elements.get_mut(index)
+    }
+    fn iter<'s>(&'s self) -> impl ExactSizeIterator<Item = &'s Element<'a, Space>>
+    where
+        'a: 's,
+    {
         self.elements.iter()
+    }
+    fn iter_mut<'s>(&'s mut self) -> impl ExactSizeIterator<Item = &'s mut Element<'a, Space>>
+    where
+        'a: 's,
+    {
+        self.elements.iter_mut()
     }
 }
 
@@ -60,4 +80,29 @@ impl<'a, Space: LinearSpace> FrameImpl<'a> for GenericFrameImpl<'a, Space> {
     }
 }
 
-impl<'a, Space: LinearSpace> FrameApply<'a> for GenericFrameImpl<'a, Space> {}
+impl<'a, Space: LinearSpace> FrameApply<'a> for GenericFrameImpl<'a, Space> {
+    fn apply<A>(&self, coefficients: &Array<A, 1>) -> RlstResult<Element<'a, Space>>
+    where
+        A: Shape<1> + UnsafeRandom1DAccessByValue<Item = Space::F>,
+    {
+        // Borrow the stored elements instead of copying them through `element`.
+        combine_columns(
+            self.space,
+            self.elements.len(),
+            coefficients,
+            self.elements.iter(),
+        )
+    }
+
+    fn adjoint_apply(&self, x: &Element<Space>) -> RlstResult<Vec<Space::F>>
+    where
+        Space: InnerProductSpace,
+    {
+        // Borrow the stored elements instead of copying them through `element`.
+        Ok(self
+            .elements
+            .iter()
+            .map(|basis| self.space.inner_product(x, basis))
+            .collect())
+    }
+}

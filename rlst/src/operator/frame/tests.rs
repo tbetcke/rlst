@@ -1,8 +1,8 @@
 use crate::dense::array::StridedSliceArray;
 use crate::operator::{element::Element, interface::array_vector_space::ArrayVectorSpace};
 use crate::{
-    ArrayFrameImpl, DynArray, ElementFrame, FrameApply, FrameQr, FrameQrOptions, FrameSpace, Gemm,
-    GenericFrameImpl, InnerProductSpace, Lapack, LinearSpace, Norm, RandScalar, RlstScalar,
+    ArrayFrameImpl, DynArray, ElementFrame, FrameApply, FrameQr, FrameQrOptions, FrameRefAccess,
+    Gemm, GenericFrameImpl, InnerProductSpace, Lapack, LinearSpace, Norm, RandScalar, RlstScalar,
     SliceArray, c32, c64,
 };
 
@@ -59,13 +59,6 @@ impl<Item: RlstScalar> InnerProductSpace for WeightedSpace<Item> {
     }
 }
 
-impl<Item: RlstScalar> FrameSpace for WeightedSpace<Item> {
-    type FrameImpl<'a> = GenericFrameImpl<'a, Self>;
-    fn frame(&self) -> ElementFrame<'_, Self::FrameImpl<'_>> {
-        ElementFrame::new(GenericFrameImpl::new(self))
-    }
-}
-
 fn verify_qr<'a, F, Item>(frame: &F, options: FrameQrOptions<Item::Real>, rank: usize, tol: f64)
 where
     F: FrameQr<'a> + FrameApply<'a>,
@@ -117,7 +110,7 @@ where
     let space = WeightedSpace {
         weights: [Item::from_real(Item::real(2.0)); 4],
     };
-    let mut generic = space.frame();
+    let mut generic = ElementFrame::new(GenericFrameImpl::new(&space));
     let columns = [
         [Item::one(), Item::zero(), Item::zero(), Item::zero()],
         [
@@ -143,7 +136,7 @@ where
 
     for (m, n) in [(7, 3), (3, 7), (4, 4)] {
         let space = ArrayVectorSpace::<Item>::new(m);
-        let mut dense = space.frame();
+        let mut dense = ElementFrame::new(ArrayFrameImpl::new(&space));
         for j in 0..n {
             let mut element = space.zero();
             element.imp_mut().fill_from_seed_equally_distributed(j + 10);
@@ -180,7 +173,7 @@ fn qr_complex_single() {
 #[test]
 fn dense_storage_growth_and_views() {
     let space = ArrayVectorSpace::<f64>::new(3);
-    let mut frame: ElementFrame<'_, ArrayFrameImpl<'_, f64>> = space.frame();
+    let mut frame = ElementFrame::new(ArrayFrameImpl::new(&space));
     frame.reserve(2);
     let mut element = space.zero();
     for j in 0..9 {
@@ -221,7 +214,7 @@ fn generic_storage_owns_values_and_preserves_space_lifetime() {
     let mut element = space.zero();
     let extracted;
     {
-        let mut frame = space.frame();
+        let mut frame = ElementFrame::new(GenericFrameImpl::new(&space));
         frame.reserve(4);
         element.imp_mut()[0] = 2.0;
         frame.push(&element).unwrap();
@@ -269,6 +262,11 @@ fn exercise_application<'a, F: FrameApply<'a, Space = ArrayVectorSpace<c64>>>(fr
         .apply_into(alpha, &coefficients, beta, &mut element)
         .unwrap();
     assert_eq!(element.imp()[[0]], alpha * expected + beta * previous);
+    let previous = element.imp()[[0]];
+    frame
+        .apply_into(c64::new(0.0, 0.0), &coefficients, beta, &mut element)
+        .unwrap();
+    assert_eq!(element.imp()[[0]], beta * previous);
     let bad = DynArray::<c64, 1>::from_shape([1]);
     let previous = element.imp()[[0]];
     assert!(frame.apply_into(alpha, &bad, beta, &mut element).is_err());
@@ -291,15 +289,59 @@ fn exercise_application<'a, F: FrameApply<'a, Space = ArrayVectorSpace<c64>>>(fr
 #[test]
 fn application_strides_expressions_and_alpha_beta() {
     let space = ArrayVectorSpace::<c64>::new(2);
-    exercise_application(&mut space.frame());
+    exercise_application(&mut ElementFrame::new(ArrayFrameImpl::new(&space)));
     exercise_application(&mut ElementFrame::new(GenericFrameImpl::new(&space)));
+}
+
+#[test]
+fn adjoint_apply_conjugates_columns_and_matches_between_storages() {
+    let space = ArrayVectorSpace::<c64>::new(2);
+    let mut dense = ElementFrame::new(ArrayFrameImpl::new(&space));
+    let mut generic = ElementFrame::new(GenericFrameImpl::new(&space));
+    let x = {
+        let mut x = space.zero();
+        x.imp_mut()[[0]] = c64::new(1.0, 2.0);
+        x.imp_mut()[[1]] = c64::new(-3.0, 0.5);
+        x
+    };
+
+    // An empty frame yields an empty coefficient vector.
+    assert!(dense.adjoint_apply(&x).unwrap().is_empty());
+    assert!(generic.adjoint_apply(&x).unwrap().is_empty());
+
+    let columns = [
+        [c64::new(0.0, 1.0), c64::new(2.0, 0.0)],
+        [c64::new(1.0, -1.0), c64::new(0.0, 0.0)],
+        [c64::new(0.5, 0.5), c64::new(-1.0, 2.0)],
+    ];
+    for values in columns {
+        let mut element = space.zero();
+        element.imp_mut()[[0]] = values[0];
+        element.imp_mut()[[1]] = values[1];
+        dense.push(&element).unwrap();
+        generic.push(&element).unwrap();
+    }
+
+    let dense_result = dense.adjoint_apply(&x).unwrap();
+    let generic_result = generic.adjoint_apply(&x).unwrap();
+    assert_eq!(dense_result.len(), 3);
+    assert_eq!(generic_result.len(), 3);
+    for (index, values) in columns.iter().enumerate() {
+        let expected = x.imp()[[0]] * values[0].conj() + x.imp()[[1]] * values[1].conj();
+        assert!((dense_result[index] - expected).norm() < 1e-12);
+        assert!((generic_result[index] - expected).norm() < 1e-12);
+    }
+
+    // Wrong dimensions are rejected by the dense frame.
+    let other = ArrayVectorSpace::<c64>::new(3);
+    assert!(dense.adjoint_apply(&other.zero()).is_err());
 }
 
 #[test]
 fn dense_rejects_incompatible_elements_without_mutating() {
     let space = ArrayVectorSpace::<f64>::new(2);
     let other = ArrayVectorSpace::<f64>::new(3);
-    let mut frame = space.frame();
+    let mut frame = ElementFrame::new(ArrayFrameImpl::new(&space));
     assert!(frame.push(&other.zero()).is_err());
     let malformed = Element::new(&space, DynArray::from_shape([3]));
     assert!(frame.push(&malformed).is_err());
@@ -319,7 +361,7 @@ fn dense_rejects_incompatible_elements_without_mutating() {
 fn qr_empty_zero_dimensional_and_zero_columns() {
     for m in [0, 3] {
         let space = ArrayVectorSpace::<f64>::new(m);
-        let mut dense = space.frame();
+        let mut dense = ElementFrame::new(ArrayFrameImpl::new(&space));
         let mut generic = ElementFrame::new(GenericFrameImpl::new(&space));
         for n in 0..4 {
             verify_qr(&dense, FrameQrOptions::default(), 0, 1e-12);
@@ -335,7 +377,7 @@ fn qr_empty_zero_dimensional_and_zero_columns() {
 fn qr_truncation_and_relative_scale() {
     for scale in [1e-8, 1.0, 1e8] {
         let space = ArrayVectorSpace::<f64>::new(3);
-        let mut dense = space.frame();
+        let mut dense = ElementFrame::new(ArrayFrameImpl::new(&space));
         let mut generic = ElementFrame::new(GenericFrameImpl::new(&space));
         for values in [
             [scale, 0.0, 0.0],
@@ -374,7 +416,7 @@ fn qr_reorthogonalizes_ill_conditioned_columns() {
     // Lauchli matrix: a single classical pass loses orthogonality for these
     // nearly parallel columns. CGS2 should retain all three directions.
     let space = WeightedSpace { weights: [1.0; 4] };
-    let mut frame = space.frame();
+    let mut frame = ElementFrame::new(GenericFrameImpl::new(&space));
     for j in 1..4 {
         let mut values = [0.0; 4];
         values[0] = 1.0;
@@ -387,7 +429,7 @@ fn qr_reorthogonalizes_ill_conditioned_columns() {
 #[test]
 fn qr_pivots_and_preserves_input() {
     let space = ArrayVectorSpace::<f64>::new(3);
-    let mut dense = space.frame();
+    let mut dense = ElementFrame::new(ArrayFrameImpl::new(&space));
     let mut generic = ElementFrame::new(GenericFrameImpl::new(&space));
     for values in [
         [1.0, 0.0, 0.0],
@@ -418,7 +460,7 @@ fn qr_pivots_and_preserves_input() {
 #[test]
 fn qr_rejects_invalid_tolerances_and_nonfinite_data() {
     let space = ArrayVectorSpace::<f64>::new(1);
-    let mut dense = space.frame();
+    let mut dense = ElementFrame::new(ArrayFrameImpl::new(&space));
     let mut generic = ElementFrame::new(GenericFrameImpl::new(&space));
     for options in [
         FrameQrOptions {
@@ -458,7 +500,7 @@ fn qr_results_borrow_space_not_input_frame() {
     let mut element = space.zero();
     element.imp_mut()[[1]] = 2.0;
     let (dense_qr, generic_qr) = {
-        let mut dense = space.frame();
+        let mut dense = ElementFrame::new(ArrayFrameImpl::new(&space));
         let mut generic = ElementFrame::new(GenericFrameImpl::new(&space));
         dense.push(&element).unwrap();
         generic.push(&element).unwrap();
@@ -471,4 +513,85 @@ fn qr_results_borrow_space_not_input_frame() {
     let generic_result = generic_qr.q.apply(&generic_qr.r.r().col(0)).unwrap();
     assert!((&dense_result - &element).norm() < 1e-12);
     assert!((&generic_result - &element).norm() < 1e-12);
+}
+
+#[test]
+fn reference_access_borrows_and_mutates_columns() {
+    let space = WeightedSpace { weights: [1.0; 4] };
+    let mut frame = ElementFrame::new(GenericFrameImpl::new(&space));
+    assert_eq!(frame.iter().len(), 0);
+    assert!(frame.element_ref(0).is_none());
+    assert!(frame.element_mut(0).is_none());
+
+    let mut element = space.zero();
+    for j in 0..3 {
+        element.imp_mut()[0] = j as f64;
+        frame.push(&element).unwrap();
+    }
+
+    // Borrowed columns see the stored values in column order.
+    assert_eq!(frame.iter().len(), frame.len());
+    let borrowed: Vec<f64> = frame.iter().map(|elem| elem.imp()[0]).collect();
+    assert_eq!(borrowed, vec![0.0, 1.0, 2.0]);
+    assert_eq!(frame.element_ref(1).unwrap().imp()[0], 1.0);
+    assert!(frame.element_ref(3).is_none());
+    assert!(frame.element_mut(3).is_none());
+
+    // Mutation through a borrowed column is visible through every accessor.
+    frame.element_mut(1).unwrap().imp_mut()[0] = 42.0;
+    assert_eq!(frame.element_ref(1).unwrap().imp()[0], 42.0);
+    assert_eq!(frame.element(1).unwrap().imp()[0], 42.0);
+
+    assert_eq!(frame.iter_mut().len(), 3);
+    for elem in frame.iter_mut() {
+        elem.imp_mut()[0] *= 2.0;
+    }
+    let doubled: Vec<f64> = frame.iter().map(|elem| elem.imp()[0]).collect();
+    assert_eq!(doubled, vec![0.0, 84.0, 4.0]);
+
+    // The backend itself exposes the same accessors as the wrapper.
+    assert_eq!(frame.imp().element_ref(2).unwrap().imp()[0], 4.0);
+    frame.imp_mut().element_mut(2).unwrap().imp_mut()[0] = -1.0;
+    assert_eq!(frame.element_ref(2).unwrap().imp()[0], -1.0);
+
+    frame.clear();
+    assert_eq!(frame.iter().len(), 0);
+    assert!(frame.element_ref(0).is_none());
+}
+
+#[test]
+fn axpy_inplace_default_and_override_agree() {
+    // `WeightedSpace` uses the default implementation, `ArrayVectorSpace` the
+    // fused override; both must match `y + alpha * x`.
+    let weighted = WeightedSpace { weights: [1.0; 4] };
+    let mut y = weighted.zero();
+    y.imp_mut()[0] = 5.0;
+    y.imp_mut()[1] = -2.0;
+    let mut x = weighted.zero();
+    x.imp_mut()[0] = 3.0;
+    x.imp_mut()[1] = 1.0;
+    weighted.axpy_inplace(&2.0, &x, &mut y);
+    assert_eq!(y.imp()[0], 11.0);
+    assert_eq!(y.imp()[1], 0.0);
+    weighted.axpy_inplace(&0.0, &x, &mut y);
+    assert_eq!(y.imp()[0], 11.0);
+
+    let space = ArrayVectorSpace::<c64>::new(2);
+    let mut y = space.zero();
+    y.imp_mut()[[0]] = c64::new(5.0, 1.0);
+    let mut x = space.zero();
+    x.imp_mut()[[0]] = c64::new(3.0, -2.0);
+    let alpha = c64::new(2.0, 1.0);
+    let expected = c64::new(5.0, 1.0) + alpha * c64::new(3.0, -2.0);
+    space.axpy_inplace(&alpha, &x, &mut y);
+    assert_eq!(y.imp()[[0]], expected);
+    space.axpy_inplace(&c64::new(0.0, 0.0), &x, &mut y);
+    assert_eq!(y.imp()[[0]], expected);
+
+    // A zero-dimensional space must not panic.
+    let empty = ArrayVectorSpace::<f64>::new(0);
+    let x = empty.zero();
+    let mut y = empty.zero();
+    empty.axpy_inplace(&1.0, &x, &mut y);
+    assert_eq!(y.imp().shape(), [0]);
 }
