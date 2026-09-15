@@ -6,17 +6,17 @@
 //! over the resulting affine subspace.
 //!
 //! The Krylov basis is stored in an [`ElementFrame`](crate::ElementFrame)
-//! provided by the space through [`FrameSpace::frame`], so array-backed spaces
-//! store the basis as one dense matrix and update the solution with a single
-//! matrix-vector product.
+//! provided by the space through [`InnerProductSpace::frame`],
+//! so array-backed spaces store the basis as one dense matrix and update the
+//! solution with a single matrix-vector product.
 
 use std::ops::Mul;
 
 use num::{Float, One, Zero};
 
 use crate::{
-    DynArray, FrameApply, FrameSpace, Inner, InnerProductSpace, Lapack, Norm, NormedSpace,
-    RlstScalar, SolveTriangular, UpLo,
+    DynArray, Inner, InnerProductSpace, Lapack, Norm, NormedSpace, RlstScalar, SolveTriangular,
+    UpLo,
     abstract_operator::OperatorBase,
     operator::{abstract_operator::Operator, element::Element},
 };
@@ -33,7 +33,7 @@ use crate::{
 pub struct GmresIteration<
     'a,
     Scalar: RlstScalar,
-    Space: InnerProductSpace<F = Scalar> + FrameSpace,
+    Space: InnerProductSpace<F = Scalar>,
     OpImpl: OperatorBase<Domain = Space, Range = Space>,
 > {
     operator: &'a Operator<OpImpl>,
@@ -52,12 +52,11 @@ pub struct GmresIteration<
 impl<
     'a,
     Scalar: RlstScalar + Lapack,
-    Space: InnerProductSpace<F = Scalar> + FrameSpace,
+    Space: InnerProductSpace<F = Scalar>,
     OpImpl: OperatorBase<Domain = Space, Range = Space>,
 > GmresIteration<'a, Scalar, Space, OpImpl>
 where
     Space: NormedSpace<Output = Scalar::Real>,
-    Space::FrameImpl<'a>: FrameApply<'a>,
 {
     /// Create a new GMRES iteration.
     ///
@@ -461,13 +460,125 @@ mod test {
     use rand_chacha::ChaCha8Rng;
 
     use crate::{
+        InnerProductSpace, LinearSpace, Norm,
         abstract_operator::OperatorBase,
         base_types::c64,
         dense::array::DynArray,
         operator::{
-            abstract_operator::Operator, algorithms::gmres::GmresIteration, space::zero_element,
+            abstract_operator::Operator, algorithms::gmres::GmresIteration, element::Element,
+            space::zero_element,
         },
     };
+
+    /// A space that is not array-backed and selects no frame storage of its own.
+    ///
+    /// It therefore exercises the default frame, which needs no code in the
+    /// space at all.
+    struct TripleSpace;
+
+    impl LinearSpace for TripleSpace {
+        type F = f64;
+        type Impl = [f64; 3];
+
+        fn zero(&self) -> Element<'_, Self> {
+            Element::new(self, [0.0; 3])
+        }
+        fn add(&self, x: &Element<Self>, y: &Element<Self>) -> Element<'_, Self> {
+            Element::new(self, std::array::from_fn(|i| x.imp()[i] + y.imp()[i]))
+        }
+        fn sub(&self, x: &Element<Self>, y: &Element<Self>) -> Element<'_, Self> {
+            Element::new(self, std::array::from_fn(|i| x.imp()[i] - y.imp()[i]))
+        }
+        fn scalar_mul(&self, scalar: &f64, x: &Element<Self>) -> Element<'_, Self> {
+            Element::new(self, x.imp().map(|value| value * *scalar))
+        }
+        fn neg(&self, x: &Element<Self>) -> Element<'_, Self> {
+            self.scalar_mul(&-1.0, x)
+        }
+        fn sum_inplace(&self, x: &mut Element<Self>, y: &Element<Self>) {
+            for i in 0..3 {
+                x.imp_mut()[i] += y.imp()[i];
+            }
+        }
+        fn sub_inplace(&self, x: &mut Element<Self>, y: &Element<Self>) {
+            for i in 0..3 {
+                x.imp_mut()[i] -= y.imp()[i];
+            }
+        }
+        fn scale_inplace(&self, scalar: &f64, x: &mut Element<Self>) {
+            for value in x.imp_mut() {
+                *value *= *scalar;
+            }
+        }
+        fn copy_from(&self, x: &Element<Self>) -> Element<'_, Self> {
+            Element::new(self, *x.imp())
+        }
+    }
+
+    impl InnerProductSpace for TripleSpace {
+        fn inner_product(&self, x: &Element<Self>, y: &Element<Self>) -> f64 {
+            (0..3).map(|i| x.imp()[i] * y.imp()[i]).sum()
+        }
+    }
+
+    /// A non-symmetric operator on [`TripleSpace`].
+    struct Shift;
+
+    impl OperatorBase for Shift {
+        type Domain = TripleSpace;
+        type Range = TripleSpace;
+
+        fn domain(&self) -> &Self::Domain {
+            &TripleSpace
+        }
+        fn range(&self) -> &Self::Range {
+            &TripleSpace
+        }
+        fn apply(
+            &self,
+            alpha: f64,
+            x: &Element<Self::Domain>,
+            beta: f64,
+            y: &mut Element<Self::Range>,
+        ) {
+            let x = *x.imp();
+            let result = [
+                3.0 * x[0] + x[1],
+                -x[0] + 4.0 * x[1] + 2.0 * x[2],
+                x[1] + 5.0 * x[2],
+            ];
+            for i in 0..3 {
+                y.imp_mut()[i] = alpha * result[i] + beta * y.imp()[i];
+            }
+        }
+    }
+
+    #[test]
+    fn solves_on_a_space_that_selects_no_frame_storage() {
+        let op = Operator::new(Shift);
+        let mut rhs = zero_element(op.range());
+        rhs.imp_mut()[0] = 1.0;
+        rhs.imp_mut()[2] = -2.0;
+        let mut x = zero_element(op.domain());
+
+        let solution = Cell::new([f64::NAN; 3]);
+        let residual = GmresIteration::new(&op, &rhs, &mut x)
+            .set_tol(1e-12)
+            .set_element_callable(|current, _| solution.set(*current.imp()))
+            .run();
+
+        assert!(residual < 1e-12);
+        // `run` recomputes the residual from the operator, and the captured
+        // approximation satisfies the equations independently of that.
+        let mut applied = zero_element(op.range());
+        Shift.apply(
+            1.0,
+            &Element::new(&TripleSpace, solution.get()),
+            0.0,
+            &mut applied,
+        );
+        assert!((&applied - &rhs).norm() < 1e-10);
+    }
 
     /// A well-conditioned non-symmetric matrix with a fixed random perturbation.
     fn non_symmetric_matrix(dim: usize) -> DynArray<f64, 2> {

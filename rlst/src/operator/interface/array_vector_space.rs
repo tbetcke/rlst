@@ -8,8 +8,8 @@
 use std::{marker::PhantomData, ops::Neg};
 
 use crate::{
-    EvaluateArray, InnerProductSpace, LinearSpace, RlstScalar, dense::array::DynArray,
-    operator::element::Element,
+    ArrayFrameImpl, ElementFrame, EvaluateArray, Gemm, InnerProductSpace, Lapack, LinearSpace,
+    RlstNum, RlstScalar, SpaceFrame, dense::array::DynArray, operator::element::Element,
 };
 
 /// Finite-dimensional vector space backed by dynamic one-dimensional arrays.
@@ -29,6 +29,17 @@ impl<Item> ArrayVectorSpace<Item> {
             dimension,
             _marker: PhantomData,
         }
+    }
+}
+
+impl<Item: RlstNum + Neg<Output = Item>> ArrayVectorSpace<Item> {
+    /// Construct an empty matrix-backed frame borrowing this space.
+    ///
+    /// [`InnerProductSpace::frame`] returns the same storage with the backend
+    /// erased. Use this method instead when the zero-copy matrix and column
+    /// views of [`ArrayFrameImpl`] are needed.
+    pub fn array_frame(&self) -> ElementFrame<'_, ArrayFrameImpl<'_, Item>> {
+        ElementFrame::new(ArrayFrameImpl::new(self))
     }
 }
 
@@ -126,22 +137,21 @@ where
 
 impl<Item> InnerProductSpace for ArrayVectorSpace<Item>
 where
-    Item: Copy
-        + Default
-        + RlstScalar
-        + 'static
-        + std::ops::Add<Output = Item>
-        + std::ops::Sub<Output = Item>
-        + std::ops::Neg<Output = Item>
-        + std::ops::AddAssign<Item>
-        + std::ops::SubAssign<Item>
-        + std::ops::Mul<Item, Output = Item>
-        + std::ops::MulAssign<Item>,
+    Item: RlstScalar + Lapack + Gemm,
 {
     fn inner_product(&self, x: &Element<Self>, other: &Element<Self>) -> Self::F {
         if x.imp().shape() == [0] && other.imp().shape() == [0] {
             return Item::zero();
         }
         x.imp().inner(other.imp()).unwrap()
+    }
+
+    /// Select matrix storage, so that linear combinations use BLAS and QR uses
+    /// LAPACK. See [`Self::array_frame`] for the unerased backend.
+    fn frame(&self) -> ElementFrame<'_, SpaceFrame<'_, Self>>
+    where
+        Self::F: RlstScalar,
+    {
+        ElementFrame::new(SpaceFrame::new(ArrayFrameImpl::new(self)))
     }
 }

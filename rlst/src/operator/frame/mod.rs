@@ -2,14 +2,17 @@
 //!
 //! [`ElementFrame`] forwards operations to a [`FrameImpl`]. [`GenericFrameImpl`]
 //! stores owned elements of any linear space; [`ArrayFrameImpl`] stores columns
-//! in one column-major matrix. Use [`crate::FrameSpace::frame`] to select a
-//! space's preferred implementation. QR never modifies the input frame.
+//! in one column-major matrix. Use [`crate::InnerProductSpace::frame`] to obtain a
+//! space's preferred implementation, erased behind [`SpaceFrame`]. QR never
+//! modifies the input frame.
 
 mod array;
+mod dynamic;
 mod generic;
 mod qr;
 
 pub use array::ArrayFrameImpl;
+pub use dynamic::{DynFrame, ErasedQrDecomposition, SpaceFrame};
 pub use generic::GenericFrameImpl;
 pub use qr::{FrameQr, FrameQrDecomposition, FrameQrOptions};
 

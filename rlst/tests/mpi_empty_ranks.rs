@@ -5,6 +5,14 @@
 //! means that a pre-fix panic or deadlock cannot prevent the remaining contracts
 //! from being reported.
 
+// The GMRES case solves a small least-squares problem with LAPACK, so this
+// executable links the platform BLAS/LAPACK like the crate's own tests.
+extern crate blas_src;
+extern crate lapack_src;
+
+#[cfg(target_os = "linux")]
+extern crate openblas_src;
+
 use std::{cmp::Ordering, env, panic::AssertUnwindSafe, rc::Rc};
 
 use mpi::{
@@ -21,7 +29,10 @@ use rlst::distributed_tools::{
     index_embedding::IndexEmbedding,
     parallel_sort::{AsUnique, parsort},
 };
-use rlst::{AsMatrixApply, FromAijDistributed, InnerProductSpace, LinearSpace, TotalCmp};
+use rlst::{
+    AsMatrixApply, FromAijDistributed, InnerProductSpace, LinearSpace, TotalCmp,
+    abstract_operator::OperatorBase,
+};
 
 #[derive(Copy, Clone, Default, Equivalence, Debug, Eq, PartialEq)]
 struct SortRecord {
@@ -1154,6 +1165,57 @@ fn layouts_and_consumers<C: CommunicatorCollectives>(comm: &C) {
     );
 }
 
+/// Contract: GMRES solves on a distributed space whose ranks may hold no rows.
+///
+/// The space selects no frame storage of its own, so this also covers the
+/// default frame reached from generic solver code.
+fn distributed_gmres<C: CommunicatorCollectives>(comm: &C) {
+    let rank = comm.rank() as usize;
+    // Every row lives on rank 0, so all other ranks participate with empty
+    // local vectors throughout the iteration.
+    let layout = Rc::new(IndexLayout::from_local_counts(
+        if rank == 0 { 3 } else { 0 },
+        comm,
+    ));
+    // A non-symmetric, diagonally dominant matrix: CG would not apply.
+    let (rows, cols, values) = if rank == 0 {
+        (
+            vec![0, 0, 1, 1, 2, 2],
+            vec![0, 1, 1, 2, 1, 2],
+            vec![3.0, 1.0, 4.0, 2.0, 1.0, 5.0],
+        )
+    } else {
+        (vec![], vec![], vec![])
+    };
+    let matrix = rlst::sparse::distributed_csr_mat::DistributedCsrMatrix::from_aij(
+        layout.clone(),
+        layout.clone(),
+        &rows,
+        &cols,
+        &values,
+    );
+    let op = rlst::operator::abstract_operator::Operator::from(&matrix);
+    let mut rhs = rlst::operator::space::zero_element(op.range());
+    if rank == 0 {
+        rhs.imp_mut()
+            .local
+            .data_mut()
+            .unwrap()
+            .copy_from_slice(&[1.0, 0.0, -2.0]);
+    }
+    let mut x = rlst::operator::space::zero_element(op.domain());
+
+    let residual = rlst::operator::algorithms::gmres::GmresIteration::new(&op, &rhs, &mut x)
+        .set_tol(1E-10)
+        .run();
+
+    collective_assert(
+        comm,
+        residual < 1E-10,
+        "GMRES must converge on a distributed space, including ranks with no local rows",
+    );
+}
+
 fn main() {
     let universe = mpi::initialize().expect("MPI must initialize once per executable");
     let world = universe.world();
@@ -1174,6 +1236,7 @@ fn main() {
         "distributed-dot-rejection" => distributed_dot_rejection(&world),
         "remap-layout-agreement" => remap_layout_agreement(&world),
         "layouts-and-consumers" => layouts_and_consumers(&world),
+        "distributed-gmres" => distributed_gmres(&world),
         _ => panic!("unknown RLST_MPI_EMPTY_CASE={case}"),
     }
 }
