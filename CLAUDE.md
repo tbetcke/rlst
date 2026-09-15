@@ -172,10 +172,12 @@ that file.
   `operator/algorithms/conjugate_gradients.rs` for the pattern to follow (`new(op, rhs, &mut x)`,
   chained `set_tol` / `set_max_iter` / callback setters, `run` mutating `x` and returning a
   residual measure rather than a convergence flag). New iterative solvers belong in
-  `operator/algorithms/` alongside it.
+  `operator/algorithms/` alongside it. `GmresIteration` in `operator/algorithms/gmres.rs` follows
+  the same pattern for general (non-self-adjoint) operators and adds `set_restart`.
 - `ElementFrame` is a growable collection of columns in one space, backed by a `FrameImpl`
   (`GenericFrameImpl` for arbitrary spaces, `ArrayFrameImpl` for array-backed ones), with pivoted
-  QR in `operator/frame/qr.rs`.
+  QR in `operator/frame/qr.rs`. `GmresIteration` stores its Krylov basis in one, obtained from the
+  space via `FrameSpace::frame`.
 
 ## Tests and documentation
 

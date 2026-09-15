@@ -28,6 +28,25 @@ The wrapper provides inherent methods and implements the corresponding traits
 by delegation; its QR result contains a wrapped Q with the same implementation
 type. See the abstract linear algebra guide for construction and QR examples.
 
+### GMRES for abstract operators
+
+Added `GmresIteration` in `operator::algorithms::gmres`, a generalized minimal
+residual solver for operator equations whose operator need not be self-adjoint.
+It follows the same builder shape as `CgIteration`, and `run` reports the
+residual by the same rules: the relative residual `||b-Ax||/||b||`, or the
+absolute residual for a zero right-hand side. The residual is recomputed from
+the operator at the end of every restart cycle, so the returned value is the
+true residual rather than the estimate from the Givens recursion.
+
+The Krylov basis is stored in an `ElementFrame` obtained from the space through
+`FrameSpace::frame`, which makes this the first consumer of the frame machinery
+and requires the space to implement `FrameSpace`. `set_restart` bounds the size
+of that basis; by default GMRES does not restart. Two callbacks are available:
+`set_callable` receives the iteration count and the current residual from the
+Givens recursion at no extra cost, while `set_element_callable` reconstructs the
+approximation and the residual element for every call at the cost of one extra
+linear combination and one extra operator application per iteration.
+
 ## v0.7.0
 
 Changes since [v0.6.1](https://codeberg.org/rlst/rlst/releases/tag/v0.6.1),

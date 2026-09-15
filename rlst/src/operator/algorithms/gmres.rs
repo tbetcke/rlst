@@ -1,0 +1,726 @@
+//! The Generalized Minimal Residual Method.
+//!
+//! The Generalized Minimal Residual Method (GMRES) solves operator equations
+//! `Ax=b` for a general operator `A` that need not be self-adjoint. It builds an
+//! orthonormal Krylov basis with Arnoldi's method and minimizes the residual
+//! over the resulting affine subspace.
+//!
+//! The Krylov basis is stored in an [`ElementFrame`](crate::ElementFrame)
+//! provided by the space through [`FrameSpace::frame`], so array-backed spaces
+//! store the basis as one dense matrix and update the solution with a single
+//! matrix-vector product.
+
+use std::ops::Mul;
+
+use num::{Float, One, Zero};
+
+use crate::{
+    DynArray, FrameApply, FrameSpace, Inner, InnerProductSpace, Lapack, Norm, NormedSpace,
+    RlstScalar, SolveTriangular, UpLo,
+    abstract_operator::OperatorBase,
+    operator::{abstract_operator::Operator, element::Element},
+};
+
+/// Builder and in-place iteration for the generalized minimal residual method.
+///
+/// GMRES applies to a general operator mapping an inner-product space to
+/// itself. [`Self::run`] mutates the supplied initial guess and returns a
+/// residual measure, not a convergence flag.
+///
+/// Without restarting, the Krylov basis grows by one element per iteration and
+/// the work per iteration grows linearly, so long runs should set a restart
+/// length with [`Self::set_restart`].
+pub struct GmresIteration<
+    'a,
+    Scalar: RlstScalar,
+    Space: InnerProductSpace<F = Scalar> + FrameSpace,
+    OpImpl: OperatorBase<Domain = Space, Range = Space>,
+> {
+    operator: &'a Operator<OpImpl>,
+    rhs: &'a Element<'a, Space>,
+    x: &'a mut Element<'a, Space>,
+    max_iter: usize,
+    restart: Option<usize>,
+    tol: Scalar::Real,
+    #[allow(clippy::type_complexity)]
+    callable: Option<Box<dyn FnMut(usize, Scalar::Real) + 'a>>,
+    #[allow(clippy::type_complexity)]
+    element_callable: Option<Box<dyn FnMut(&Element<Space>, &Element<Space>) + 'a>>,
+    print_debug: bool,
+}
+
+impl<
+    'a,
+    Scalar: RlstScalar + Lapack,
+    Space: InnerProductSpace<F = Scalar> + FrameSpace,
+    OpImpl: OperatorBase<Domain = Space, Range = Space>,
+> GmresIteration<'a, Scalar, Space, OpImpl>
+where
+    Space: NormedSpace<Output = Scalar::Real>,
+    Space::FrameImpl<'a>: FrameApply<'a>,
+{
+    /// Create a new GMRES iteration.
+    ///
+    /// This function takes an operator `op`, a right-hand side `rhs`, and an element `x` of the
+    /// function space as starting approximation. Typically, `x` can be chosen to be the zero
+    /// element of the space. Defaults are tolerance `1E-6`, 1000 iterations, and no restarting.
+    pub fn new(
+        op: &'a Operator<OpImpl>,
+        rhs: &'a Element<'a, Space>,
+        x: &'a mut Element<'a, Space>,
+    ) -> Self {
+        Self {
+            operator: op,
+            rhs,
+            x,
+            max_iter: 1000,
+            restart: None,
+            tol: num::cast(1E-6).unwrap(),
+            callable: None,
+            element_callable: None,
+            print_debug: false,
+        }
+    }
+
+    /// Set the tolerance for convergence.
+    ///
+    /// For a nonzero right-hand side, convergence is measured by the relative
+    /// residual `||b - Ax|| / ||b||`. For a zero right-hand side, the absolute
+    /// residual `||b - Ax||` is used instead. The default tolerance is 1E-6.
+    pub fn set_tol(mut self, tol: Scalar::Real) -> Self {
+        self.tol = tol;
+        self
+    }
+
+    /// Set maximum number of iterations.
+    ///
+    /// The default maximum number of iterations is 1000. The limit counts
+    /// Arnoldi steps across all restart cycles.
+    pub fn set_max_iter(mut self, max_iter: usize) -> Self {
+        self.max_iter = max_iter;
+        self
+    }
+
+    /// Set the restart length.
+    ///
+    /// After `restart` Arnoldi steps the Krylov basis is discarded and the
+    /// iteration starts again from the current approximation. This bounds
+    /// memory and per-iteration work at the cost of slower convergence, and
+    /// restarted GMRES can stagnate on problems that full GMRES solves. By
+    /// default GMRES does not restart, so the basis may grow to `max_iter`
+    /// elements. A restart length of zero is treated as one.
+    pub fn set_restart(mut self, restart: usize) -> Self {
+        self.restart = Some(restart);
+        self
+    }
+
+    /// Define a callable.
+    ///
+    /// A callable is a function `FnMut(usize, Scalar::Real)` that is executed
+    /// in each step of the iteration. The first parameter is the number of
+    /// Arnoldi steps performed so far and the second parameter is the current
+    /// residual, normalized as described in [`Self::set_tol`]. Both values come
+    /// from the Givens recursion at no additional cost. The callable runs after
+    /// each successful step, before convergence is checked. It is not called for
+    /// an already-converged initial guess or a pre-update breakdown.
+    ///
+    /// Use [`Self::set_element_callable`] to inspect the approximation and the
+    /// residual themselves.
+    pub fn set_callable(mut self, callable: impl FnMut(usize, Scalar::Real) + 'a) -> Self {
+        self.callable = Some(Box::new(callable));
+        self
+    }
+
+    /// Define a callable that receives the current approximation and residual.
+    ///
+    /// A callable is a function `FnMut(&Element, &Element)` whose first
+    /// parameter is the current approximation `x` and whose second parameter is
+    /// the current residual `b - Ax`. It follows the same schedule as
+    /// [`Self::set_callable`] and both callables can be set at the same time.
+    ///
+    /// Unlike conjugate gradients, GMRES does not carry the approximation and
+    /// the residual along. They are reconstructed for every call, which costs
+    /// one additional triangular solve, one linear combination of the Krylov
+    /// basis, and one operator application per iteration. Prefer
+    /// [`Self::set_callable`] when only the residual norm is needed.
+    pub fn set_element_callable(
+        mut self,
+        callable: impl FnMut(&Element<Space>, &Element<Space>) + 'a,
+    ) -> Self {
+        self.element_callable = Some(Box::new(callable));
+        self
+    }
+
+    /// Enable debug printing
+    ///
+    /// Print debug information on `stdout`.
+    pub fn print_debug(mut self) -> Self {
+        self.print_debug = true;
+        self
+    }
+
+    /// Run the GMRES iteration.
+    ///
+    /// Returns the final relative residual, or the absolute residual when the
+    /// right-hand side is zero. The residual is recomputed from the operator at
+    /// the end of every restart cycle, so the returned value is the true
+    /// residual and not the estimate from the Givens recursion. The caller
+    /// determines convergence by comparing this value with the configured
+    /// tolerance; exhausting `max_iter` is not otherwise signaled. An exact
+    /// initial solution returns immediately. If GMRES encounters a degenerate
+    /// or non-finite Hessenberg column, it terminates without applying an
+    /// invalid update and returns the current residual. The callables are
+    /// invoked only after successful steps.
+    pub fn run(mut self) -> Scalar::Real {
+        fn print_success<T: RlstScalar>(it_count: usize, rel_res: T) {
+            println!(
+                "GMRES converged in {it_count} iterations with relative residual {rel_res:+E}."
+            );
+        }
+
+        fn print_fail<T: RlstScalar>(it_count: usize, rel_res: T) {
+            println!(
+                "GMRES did not converge in {it_count} iterations. Final relative residual is {rel_res:+E}.",
+            );
+        }
+
+        let zero_real = <Scalar::Real as Zero>::zero();
+
+        // This syntax is only necessary because the type inference becomes confused for some reason.
+        // If I write `let rhs_norm = self.rhs.norm()` the compiler thinks that `self.rhs` is a space and
+        // not an element.
+        let rhs_norm = Norm::norm(self.rhs);
+
+        let mut res = self.rhs.clone();
+        self.operator
+            .apply(-<Scalar as One>::one(), self.x, One::one(), &mut res);
+        let mut residual = Norm::norm(&res);
+
+        // Handle an exact solution before normalizing. In particular, this
+        // avoids `0 / 0` for a zero right-hand side and zero initial guess.
+        if residual == zero_real {
+            if self.print_debug {
+                print_success(0, residual);
+            }
+            return residual;
+        }
+
+        let use_absolute_residual = rhs_norm == zero_real;
+        let mut reported_residual = report(residual, rhs_norm, use_absolute_residual);
+
+        if reported_residual < self.tol {
+            if self.print_debug {
+                print_success(0, reported_residual);
+            }
+            return reported_residual;
+        }
+
+        let restart = self.restart.unwrap_or(self.max_iter).max(1);
+
+        // The frame grows geometrically as basis vectors are pushed. Reserving
+        // the whole restart length up front would allocate for `max_iter`
+        // elements even when the iteration converges after a few steps.
+        let mut frame = self.rhs.space().frame();
+
+        let mut total_iter = 0usize;
+
+        while total_iter < self.max_iter {
+            // `res` holds `b - Ax` and `residual` its norm, both for the current `x`.
+            let beta = residual;
+
+            // Columns of the Hessenberg matrix after all Givens rotations have
+            // been applied. Column `k` holds `k + 2` entries.
+            let mut hessenberg = Vec::<Vec<Scalar>>::new();
+            // Rotated right-hand side of the least-squares problem.
+            let mut g = vec![Scalar::from_real(beta), <Scalar as Zero>::zero()];
+            let mut cosines = Vec::<Scalar>::new();
+            let mut sines = Vec::<Scalar>::new();
+
+            frame.clear();
+            let mut basis_vector = res.clone();
+            basis_vector *= Scalar::from_real(<Scalar::Real as One>::one() / beta);
+            frame
+                .push(&basis_vector)
+                .expect("GMRES: the frame rejected a Krylov basis vector.");
+
+            let cycle_length = restart.min(self.max_iter - total_iter);
+            // Number of completed Hessenberg columns in this cycle.
+            let mut columns = 0usize;
+            let mut breakdown = false;
+
+            for step in 0..cycle_length {
+                let basis_vector = frame
+                    .element(step)
+                    .expect("GMRES: the frame lost a Krylov basis vector.");
+                let mut candidate = self.operator.dot(&basis_vector);
+
+                // Modified Gram-Schmidt orthogonalization against the basis so far.
+                let mut column = vec![<Scalar as Zero>::zero(); step + 2];
+                for (index, entry) in column.iter_mut().enumerate().take(step + 1) {
+                    let previous = frame
+                        .element(index)
+                        .expect("GMRES: the frame lost a Krylov basis vector.");
+                    let coefficient = candidate.inner(&previous);
+                    *entry = coefficient;
+                    candidate -= (&previous).mul(coefficient);
+                }
+                let candidate_norm = Norm::norm(&candidate);
+                column[step + 1] = Scalar::from_real(candidate_norm);
+
+                // Apply the previous rotations to the new column.
+                for index in 0..step {
+                    let (upper, lower) = apply_rotation(
+                        cosines[index],
+                        sines[index],
+                        column[index],
+                        column[index + 1],
+                    );
+                    column[index] = upper;
+                    column[index + 1] = lower;
+                }
+
+                // Eliminate the subdiagonal entry of the new column.
+                let (cosine, sine, pivot) = givens_rotation(column[step], column[step + 1]);
+                if pivot == zero_real || !pivot.is_finite() {
+                    // A degenerate column carries no usable update.
+                    breakdown = true;
+                    break;
+                }
+                column[step] = Scalar::from_real(pivot);
+                column[step + 1] = <Scalar as Zero>::zero();
+                cosines.push(cosine);
+                sines.push(sine);
+                hessenberg.push(column);
+
+                let (updated, carried) = apply_rotation(cosine, sine, g[step], g[step + 1]);
+                g[step] = updated;
+                g[step + 1] = carried;
+                g.push(<Scalar as Zero>::zero());
+
+                columns = step + 1;
+                total_iter += 1;
+
+                let estimate = report(g[step + 1].abs(), rhs_norm, use_absolute_residual);
+
+                if let Some(callable) = self.callable.as_mut() {
+                    callable(total_iter, estimate);
+                }
+                if self.element_callable.is_some()
+                    && let Some(coefficients) =
+                        least_squares_coefficients(&hessenberg, &g, columns, frame.len())
+                {
+                    let mut current = (*self.x).clone();
+                    frame
+                        .apply_into(One::one(), &coefficients, One::one(), &mut current)
+                        .expect("GMRES: the frame rejected the coefficient vector.");
+                    let mut current_residual = self.rhs.clone();
+                    self.operator.apply(
+                        -<Scalar as One>::one(),
+                        &current,
+                        One::one(),
+                        &mut current_residual,
+                    );
+                    if let Some(callable) = self.element_callable.as_mut() {
+                        callable(&current, &current_residual);
+                    }
+                }
+
+                if estimate < self.tol {
+                    break;
+                }
+
+                if candidate_norm == zero_real || !candidate_norm.is_finite() {
+                    // The Krylov space is invariant; the current least-squares
+                    // solution is the best this cycle can produce.
+                    breakdown = true;
+                    break;
+                }
+
+                candidate *= Scalar::from_real(<Scalar::Real as One>::one() / candidate_norm);
+                frame
+                    .push(&candidate)
+                    .expect("GMRES: the frame rejected a Krylov basis vector.");
+            }
+
+            if let Some(coefficients) =
+                least_squares_coefficients(&hessenberg, &g, columns, frame.len())
+            {
+                frame
+                    .apply_into(One::one(), &coefficients, One::one(), self.x)
+                    .expect("GMRES: the frame rejected the coefficient vector.");
+            }
+
+            // Recompute the true residual rather than trusting the estimate.
+            res = self.rhs.clone();
+            self.operator
+                .apply(-<Scalar as One>::one(), self.x, One::one(), &mut res);
+            residual = Norm::norm(&res);
+            reported_residual = report(residual, rhs_norm, use_absolute_residual);
+
+            if reported_residual < self.tol {
+                if self.print_debug {
+                    print_success(total_iter, reported_residual);
+                }
+                return reported_residual;
+            }
+
+            if breakdown || columns == 0 || residual == zero_real || !residual.is_finite() {
+                if self.print_debug {
+                    print_fail(total_iter, reported_residual);
+                }
+                return reported_residual;
+            }
+        }
+
+        if self.print_debug {
+            print_fail(total_iter, reported_residual);
+        }
+        reported_residual
+    }
+}
+
+/// Normalize a residual norm the way [`GmresIteration::set_tol`] describes.
+fn report<Real: Float>(residual: Real, rhs_norm: Real, use_absolute_residual: bool) -> Real {
+    if use_absolute_residual {
+        residual
+    } else {
+        residual / rhs_norm
+    }
+}
+
+/// Compute a Givens rotation that eliminates `lower` against `upper`.
+///
+/// The returned `(cosine, sine, pivot)` satisfy
+/// `conj(cosine) * upper + conj(sine) * lower == pivot` and
+/// `-sine * upper + cosine * lower == 0`. A zero or non-finite pivot leaves the
+/// rotation as the identity and is reported to the caller through `pivot`.
+fn givens_rotation<Scalar: RlstScalar>(
+    upper: Scalar,
+    lower: Scalar,
+) -> (Scalar, Scalar, Scalar::Real) {
+    let pivot = upper.abs().hypot(lower.abs());
+    if pivot == <Scalar::Real as Zero>::zero() || !pivot.is_finite() {
+        (<Scalar as One>::one(), <Scalar as Zero>::zero(), pivot)
+    } else {
+        (upper.div_real(pivot), lower.div_real(pivot), pivot)
+    }
+}
+
+/// Apply the rotation defined by `cosine` and `sine` to a pair of entries.
+fn apply_rotation<Scalar: RlstScalar>(
+    cosine: Scalar,
+    sine: Scalar,
+    upper: Scalar,
+    lower: Scalar,
+) -> (Scalar, Scalar) {
+    (
+        cosine.conj() * upper + sine.conj() * lower,
+        cosine * lower - sine * upper,
+    )
+}
+
+/// Solve the rotated least-squares problem and pad the result to `frame_len`.
+///
+/// `hessenberg` holds the rotated Hessenberg columns and `g` the rotated
+/// right-hand side. The result is the coefficient vector of the correction with
+/// respect to the whole Krylov basis, which may contain one more element than
+/// there are Hessenberg columns. Returns `None` when there is nothing to solve
+/// or the triangular solve fails.
+fn least_squares_coefficients<Scalar: RlstScalar + Lapack>(
+    hessenberg: &[Vec<Scalar>],
+    g: &[Scalar],
+    columns: usize,
+    frame_len: usize,
+) -> Option<DynArray<Scalar, 1>> {
+    if columns == 0 {
+        return None;
+    }
+
+    let mut triangular = DynArray::<Scalar, 2>::from_shape([columns, columns]);
+    for column in 0..columns {
+        for row in 0..=column {
+            triangular[[row, column]] = hessenberg[column][row];
+        }
+    }
+    let rhs = DynArray::<Scalar, 1>::from_shape_and_vec([columns], g[..columns].to_vec());
+    let solution = triangular.solve_triangular(UpLo::Upper, &rhs).ok()?;
+
+    let mut coefficients = DynArray::<Scalar, 1>::from_shape([frame_len]);
+    for index in 0..columns {
+        coefficients[[index]] = solution[[index]];
+    }
+    Some(coefficients)
+}
+
+#[cfg(test)]
+mod test {
+    use std::cell::{Cell, RefCell};
+
+    use approx::assert_relative_eq;
+    use rand::{RngExt, SeedableRng};
+    use rand_chacha::ChaCha8Rng;
+
+    use crate::{
+        abstract_operator::OperatorBase,
+        base_types::c64,
+        dense::array::DynArray,
+        operator::{
+            abstract_operator::Operator, algorithms::gmres::GmresIteration, space::zero_element,
+        },
+    };
+
+    /// A well-conditioned non-symmetric matrix with a fixed random perturbation.
+    fn non_symmetric_matrix(dim: usize) -> DynArray<f64, 2> {
+        let mut rng = ChaCha8Rng::seed_from_u64(0);
+        let mut mat = DynArray::<f64, 2>::from_shape([dim, dim]);
+        for row in 0..dim {
+            for col in 0..dim {
+                mat[[row, col]] = rng.random_range(-0.1..=0.1);
+            }
+            mat[[row, row]] += 4.0;
+        }
+        mat
+    }
+
+    #[test]
+    fn zero_rhs_and_zero_guess_converges_without_iteration() {
+        let mut mat = DynArray::<f64, 2>::from_shape([2, 2]);
+        mat[[0, 0]] = 1.0;
+        mat[[1, 1]] = 1.0;
+        let op = Operator::from(&mat);
+        let rhs = zero_element(op.range());
+        let mut x = zero_element(op.domain());
+        let callback_count = Cell::new(0);
+
+        let residual = GmresIteration::new(&op, &rhs, &mut x)
+            .set_callable(|_, _| callback_count.set(callback_count.get() + 1))
+            .run();
+
+        assert_eq!(residual, 0.0);
+        assert!(residual.is_finite());
+        assert_eq!(callback_count.get(), 0);
+    }
+
+    #[test]
+    fn zero_rhs_uses_absolute_residual() {
+        let mut mat = DynArray::<f64, 2>::from_shape([2, 2]);
+        mat[[0, 0]] = 1.0;
+        mat[[1, 1]] = 1.0;
+        let op = Operator::from(&mat);
+        let rhs = zero_element(op.range());
+        let mut x = zero_element(op.domain());
+        x.imp_mut()[[0]] = 2.0;
+        x.imp_mut()[[1]] = -1.0;
+        let callback_count = Cell::new(0);
+        let final_x_0 = Cell::new(f64::NAN);
+        let final_x_1 = Cell::new(f64::NAN);
+
+        let residual = GmresIteration::new(&op, &rhs, &mut x)
+            .set_tol(1E-12)
+            .set_callable(|_, _| callback_count.set(callback_count.get() + 1))
+            .set_element_callable(|current, _| {
+                final_x_0.set(current.imp()[[0]]);
+                final_x_1.set(current.imp()[[1]]);
+            })
+            .run();
+
+        assert!(residual.is_finite());
+        assert!(residual < 1E-12);
+        assert_eq!(callback_count.get(), 1);
+        assert_relative_eq!(final_x_0.get(), 0.0, epsilon = 1E-12);
+        assert_relative_eq!(final_x_1.get(), 0.0, epsilon = 1E-12);
+    }
+
+    #[test]
+    fn non_symmetric_system_is_solved_exactly() {
+        // A skew-symmetric operator. Conjugate gradients cannot solve this.
+        let mut mat = DynArray::<f64, 2>::from_shape([2, 2]);
+        mat[[0, 1]] = 1.0;
+        mat[[1, 0]] = -1.0;
+        let op = Operator::from(&mat);
+        let mut rhs = zero_element(op.range());
+        rhs.imp_mut()[[0]] = 1.0;
+        rhs.imp_mut()[[1]] = 2.0;
+        let mut x = zero_element(op.domain());
+        let final_x_0 = Cell::new(f64::NAN);
+        let final_x_1 = Cell::new(f64::NAN);
+
+        let residual = GmresIteration::new(&op, &rhs, &mut x)
+            .set_tol(1E-12)
+            .set_element_callable(|current, _| {
+                final_x_0.set(current.imp()[[0]]);
+                final_x_1.set(current.imp()[[1]]);
+            })
+            .run();
+
+        assert!(residual < 1E-12);
+        assert_relative_eq!(final_x_0.get(), -2.0, epsilon = 1E-10);
+        assert_relative_eq!(final_x_1.get(), 1.0, epsilon = 1E-10);
+    }
+
+    #[test]
+    fn converges_within_dimension_steps() {
+        let dim = 5;
+        let mat = non_symmetric_matrix(dim);
+        let op = Operator::from(&mat);
+        let mut rng = ChaCha8Rng::seed_from_u64(1);
+        let mut rhs = zero_element(op.range());
+        rhs.imp_mut().fill_from_equally_distributed(&mut rng);
+        let mut x = zero_element(op.domain());
+        let iterations = Cell::new(0);
+
+        let residual = GmresIteration::new(&op, &rhs, &mut x)
+            .set_tol(1E-13)
+            .set_callable(|it, _| iterations.set(it))
+            .run();
+
+        assert!(residual < 1E-13);
+        assert!(
+            iterations.get() <= dim,
+            "GMRES needed {} iterations for a {dim}-dimensional problem.",
+            iterations.get()
+        );
+    }
+
+    #[test]
+    fn restart_converges() {
+        let dim = 10;
+        let tol = 1E-8;
+        let mat = non_symmetric_matrix(dim);
+        let op = Operator::from(&mat);
+        let mut rng = ChaCha8Rng::seed_from_u64(2);
+        let mut rhs = zero_element(op.range());
+        rhs.imp_mut().fill_from_equally_distributed(&mut rng);
+        let mut x = zero_element(op.domain());
+        let estimates = RefCell::new(Vec::<f64>::new());
+
+        let residual = GmresIteration::new(&op, &rhs, &mut x)
+            .set_restart(2)
+            .set_tol(tol)
+            .set_callable(|_, estimate| estimates.borrow_mut().push(estimate))
+            .print_debug()
+            .run();
+
+        assert!(residual < tol);
+        let estimates = estimates.borrow();
+        assert!(!estimates.is_empty());
+        assert!(estimates.iter().all(|value| value.is_finite()));
+    }
+
+    #[test]
+    fn lucky_breakdown_terminates_cleanly() {
+        // The right-hand side is an eigenvector, so the Krylov space is
+        // one-dimensional and the first step is already exact.
+        let dim = 4;
+        let mut mat = DynArray::<f64, 2>::from_shape([dim, dim]);
+        for index in 0..dim {
+            mat[[index, index]] = (index + 1) as f64;
+        }
+        let op = Operator::from(&mat);
+        let mut rhs = zero_element(op.range());
+        rhs.imp_mut()[[2]] = 1.0;
+        let mut x = zero_element(op.domain());
+        let callback_count = Cell::new(0);
+        let final_x_2 = Cell::new(f64::NAN);
+
+        let residual = GmresIteration::new(&op, &rhs, &mut x)
+            .set_tol(1E-13)
+            .set_callable(|_, _| callback_count.set(callback_count.get() + 1))
+            .set_element_callable(|current, _| final_x_2.set(current.imp()[[2]]))
+            .run();
+
+        assert!(residual.is_finite());
+        assert!(residual < 1E-13);
+        assert_eq!(callback_count.get(), 1);
+        assert_relative_eq!(final_x_2.get(), 1.0 / 3.0, epsilon = 1E-12);
+    }
+
+    #[test]
+    fn complex_system_is_solved() {
+        let mut mat = DynArray::<c64, 2>::from_shape([2, 2]);
+        mat[[0, 0]] = c64::new(2.0, 1.0);
+        mat[[0, 1]] = c64::new(0.0, 1.0);
+        mat[[1, 0]] = c64::new(1.0, 0.0);
+        mat[[1, 1]] = c64::new(3.0, -1.0);
+        let rhs_0 = c64::new(1.0, -2.0);
+        let rhs_1 = c64::new(-1.0, 0.5);
+        let op = Operator::from(&mat);
+        let mut rhs = zero_element(op.range());
+        rhs.imp_mut()[[0]] = rhs_0;
+        rhs.imp_mut()[[1]] = rhs_1;
+        let mut x = zero_element(op.domain());
+        let final_x_0 = Cell::new(c64::new(0.0, 0.0));
+        let final_x_1 = Cell::new(c64::new(0.0, 0.0));
+
+        let residual = GmresIteration::new(&op, &rhs, &mut x)
+            .set_tol(1E-13)
+            .set_element_callable(|current, _| {
+                final_x_0.set(current.imp()[[0]]);
+                final_x_1.set(current.imp()[[1]]);
+            })
+            .run();
+
+        assert!(residual < 1E-13);
+
+        // Verify the solution directly against the original system.
+        let x_0 = final_x_0.get();
+        let x_1 = final_x_1.get();
+        let residual_0 = rhs_0 - (mat[[0, 0]] * x_0 + mat[[0, 1]] * x_1);
+        let residual_1 = rhs_1 - (mat[[1, 0]] * x_0 + mat[[1, 1]] * x_1);
+        assert!(residual_0.norm() < 1E-12);
+        assert!(residual_1.norm() < 1E-12);
+    }
+
+    #[test]
+    fn element_callable_sees_true_residual() {
+        let dim = 5;
+        let mat = non_symmetric_matrix(dim);
+        let op = Operator::from(&mat);
+        let mut rng = ChaCha8Rng::seed_from_u64(3);
+        let mut rhs = zero_element(op.range());
+        rhs.imp_mut().fill_from_equally_distributed(&mut rng);
+        let rhs_values: Vec<f64> = (0..dim).map(|index| rhs.imp()[[index]]).collect();
+        let mut x = zero_element(op.domain());
+        let calls = Cell::new(0);
+        let worst_mismatch = Cell::new(0.0f64);
+
+        let residual = GmresIteration::new(&op, &rhs, &mut x)
+            .set_tol(1E-13)
+            .set_element_callable(|current, current_residual| {
+                calls.set(calls.get() + 1);
+                for row in 0..dim {
+                    let mut value = rhs_values[row];
+                    for col in 0..dim {
+                        value -= mat[[row, col]] * current.imp()[[col]];
+                    }
+                    let mismatch = (value - current_residual.imp()[[row]]).abs();
+                    worst_mismatch.set(worst_mismatch.get().max(mismatch));
+                }
+            })
+            .run();
+
+        assert!(residual < 1E-13);
+        assert!(calls.get() > 0);
+        assert!(worst_mismatch.get() < 1E-12);
+    }
+
+    #[test]
+    fn singular_operator_does_not_update_solution() {
+        let mat = DynArray::<f64, 2>::from_shape([2, 2]);
+        let op = Operator::from(&mat);
+        let mut rhs = zero_element(op.range());
+        rhs.imp_mut()[[0]] = 1.0;
+        let mut x = zero_element(op.domain());
+        x.imp_mut()[[0]] = 3.0;
+        x.imp_mut()[[1]] = 4.0;
+        let callback_count = Cell::new(0);
+
+        let residual = GmresIteration::new(&op, &rhs, &mut x)
+            .set_callable(|_, _| callback_count.set(callback_count.get() + 1))
+            .set_element_callable(|_, _| callback_count.set(callback_count.get() + 1))
+            .run();
+
+        assert_eq!(residual, 1.0);
+        assert_eq!(callback_count.get(), 0);
+    }
+}

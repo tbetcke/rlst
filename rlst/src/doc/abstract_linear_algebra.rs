@@ -198,7 +198,8 @@
 //! # Solving operator equations
 //!
 //! To solve abstract operator equations of the form `Ax = y`, where `A` is an operator, `y` is an object in the range space and `x` is an unnknown
-//! object in the domain space, we can use iterative solvers. RLST currently only supports Conjugate Gradients with more solvers to be added.
+//! object in the domain space, we can use iterative solvers. RLST provides Conjugate Gradients for self-adjoint positive definite operators
+//! and GMRES for general operators, with more solvers to be added.
 //! The following provides a complete worked out example of how to solve operator equations with `CG`. Note that `CG` requires that the operator
 //! is self-adjoint and positive definite; using it for other operators can
 //! break down or fail to converge. `run` mutates `x` and returns
@@ -247,3 +248,64 @@
 //! system or when a zero/non-finite search-direction denominator causes
 //! pre-update termination. An exact zero right-hand side and zero initial guess
 //! therefore return `0` immediately.
+//!
+//! ## GMRES
+//!
+//! The Generalized Minimal Residual Method
+//! ([GmresIteration](crate::operator::algorithms::gmres::GmresIteration)) does not
+//! require the operator to be self-adjoint. It builds an orthonormal Krylov basis
+//! with Arnoldi's method and minimizes the residual over the resulting affine
+//! subspace. The basis is stored in an [ElementFrame](crate::ElementFrame) that the
+//! space provides through [FrameSpace::frame](crate::FrameSpace::frame), so
+//! array-backed spaces keep it as a single dense matrix.
+//!
+//! The builder mirrors `CG`, and `run` reports the residual in exactly the same
+//! way. In addition, `set_restart` bounds the size of the Krylov basis. Without
+//! it GMRES does not restart, so the basis can grow to `max_iter` elements and
+//! the work per iteration grows with the iteration count. Restarting bounds both,
+//! but restarted GMRES can stagnate on problems that full GMRES solves.
+//!
+//! ```
+//! # extern crate blas_src;
+//! # extern crate lapack_src;
+//! use rand_chacha::ChaCha8Rng;
+//! use rand::prelude::*;
+//! use rlst::DynArray;
+//! use rlst::operator::abstract_operator::Operator;
+//! use rlst::operator::space::zero_element;
+//! use rlst::operator::algorithms::gmres::GmresIteration;
+//! use rlst::traits::abstract_operator::OperatorBase;
+//! let dim = 20;
+//! let tol = 1E-8;
+//! let mut residuals = Vec::<f64>::new();
+//! let mut rng = ChaCha8Rng::seed_from_u64(0);
+//! // A non-symmetric, diagonally dominant matrix.
+//! let mut mat = DynArray::<f64, 2>::from_shape([dim, dim]);
+//! for row in 0..dim {
+//!     for col in 0..dim {
+//!         mat[[row, col]] = rng.random_range(-0.1..=0.1);
+//!     }
+//!     mat[[row, row]] += 4.0;
+//! }
+//! let op = Operator::from(&mat);
+//! let mut rhs = zero_element(op.range());
+//! rhs.imp_mut().fill_from_equally_distributed(&mut rng);
+//! let mut x = zero_element(op.domain());
+//! let gmres = GmresIteration::new(&op, &rhs, &mut x)
+//!     .set_callable(|_, residual| residuals.push(residual))
+//!     .set_restart(10)
+//!     .set_tol(tol)
+//!     .print_debug();
+//! let res = gmres.run();
+//! assert!(res < tol);
+//! ```
+//!
+//! The callback of `set_callable` receives the number of Arnoldi steps taken so
+//! far and the current residual, both obtained from the Givens recursion at no
+//! extra cost. Unlike `CG`, GMRES does not carry the approximation and the
+//! residual along, so they are only available through the separate
+//! `set_element_callable`, which reconstructs them for every call at the cost of
+//! one additional linear combination of the Krylov basis and one operator
+//! application per iteration. Both callbacks follow the same schedule as the `CG`
+//! callback: they run after each successful step, before convergence is checked,
+//! and not for an already-converged initial guess or a pre-update breakdown.
