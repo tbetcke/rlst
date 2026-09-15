@@ -60,17 +60,17 @@
 //! stores owned elements of arbitrary linear spaces; [`ArrayFrameImpl`](crate::ArrayFrameImpl)
 //! uses a column-major matrix for an
 //! [`ArrayVectorSpace`](crate::operator::interface::array_vector_space::ArrayVectorSpace).
-//! [`FrameSpace::frame`](crate::FrameSpace::frame) selects the preferred implementation
-//! and returns an `ElementFrame` wrapping it.
+//! A frame is built outside any space by wrapping the chosen implementation with
+//! `ElementFrame::new`, so nothing has to be implemented on the space itself.
 //!
 //! ```
 //! # extern crate blas_src;
 //! # extern crate lapack_src;
-//! use rlst::{FrameQrOptions, FrameSpace, LinearSpace, SliceArray};
+//! use rlst::{ArrayFrameImpl, ElementFrame, FrameQrOptions, LinearSpace, SliceArray};
 //! use rlst::operator::interface::array_vector_space::ArrayVectorSpace;
 //!
 //! let space = ArrayVectorSpace::<f64>::new(3);
-//! let mut frame = space.frame();
+//! let mut frame = ElementFrame::new(ArrayFrameImpl::new(&space));
 //! let mut element = space.zero();
 //! element.imp_mut()[[0]] = 1.0;
 //! frame.push(&element)?;
@@ -106,11 +106,10 @@
 //! assert_eq!(dense.matrix().shape(), [3, 0]);
 //! ```
 //!
-//! Custom spaces can implement `FrameSpace` with
-//! `type FrameImpl<'a> = GenericFrameImpl<'a, Self> where Self: 'a` and return
-//! `ElementFrame::new(GenericFrameImpl::new(self))` from `frame`. Direct construction
-//! also works without this trait. The wrapper's `imp` and `imp_mut` methods borrow
-//! the implementation; `into_imp` transfers ownership back without copying storage.
+//! `GenericFrameImpl` works for every linear space and has no scalar bounds, so a
+//! custom space needs no code of its own to be used with a frame. The wrapper's
+//! `imp` and `imp_mut` methods borrow the implementation; `into_imp` transfers
+//! ownership back without copying storage.
 //!
 //! `push` and `set_element` copy values; `element` returns an owned copy that
 //! borrows the space, not the frame. Array frames additionally offer `matrix`,
@@ -255,9 +254,13 @@
 //! ([GmresIteration](crate::operator::algorithms::gmres::GmresIteration)) does not
 //! require the operator to be self-adjoint. It builds an orthonormal Krylov basis
 //! with Arnoldi's method and minimizes the residual over the resulting affine
-//! subspace. The basis is stored in an [ElementFrame](crate::ElementFrame) that the
-//! space provides through [FrameSpace::frame](crate::FrameSpace::frame), so
-//! array-backed spaces keep it as a single dense matrix.
+//! subspace. The basis is stored in an [ElementFrame](crate::ElementFrame), by
+//! default a [GenericFrameImpl](crate::GenericFrameImpl) holding one element per
+//! basis vector, which works for every inner-product space. `set_storage` takes a
+//! frame to use instead, so an array-backed space can keep the basis as a single
+//! dense matrix and update the solution with one matrix-vector product, as in the
+//! example below. The supplied frame is scratch space: it is cleared at the start
+//! of every restart cycle.
 //!
 //! The builder mirrors `CG`, and `run` reports the residual in exactly the same
 //! way. In addition, `set_restart` bounds the size of the Krylov basis. Without
@@ -270,8 +273,9 @@
 //! # extern crate lapack_src;
 //! use rand_chacha::ChaCha8Rng;
 //! use rand::prelude::*;
-//! use rlst::DynArray;
+//! use rlst::{ArrayFrameImpl, DynArray, ElementFrame};
 //! use rlst::operator::abstract_operator::Operator;
+//! use rlst::operator::interface::array_vector_space::ArrayVectorSpace;
 //! use rlst::operator::space::zero_element;
 //! use rlst::operator::algorithms::gmres::GmresIteration;
 //! use rlst::traits::abstract_operator::OperatorBase;
@@ -291,7 +295,10 @@
 //! let mut rhs = zero_element(op.range());
 //! rhs.imp_mut().fill_from_equally_distributed(&mut rng);
 //! let mut x = zero_element(op.domain());
+//! // Keep the Krylov basis in one dense matrix instead of separate elements.
+//! let space = ArrayVectorSpace::<f64>::new(dim);
 //! let gmres = GmresIteration::new(&op, &rhs, &mut x)
+//!     .set_storage(ElementFrame::new(ArrayFrameImpl::new(&space)))
 //!     .set_callable(|_, residual| residuals.push(residual))
 //!     .set_restart(10)
 //!     .set_tol(tol)

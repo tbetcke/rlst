@@ -19,9 +19,10 @@ matrix and column views. `push` borrows and copies an element and returns a resu
 The initial development types `ElementFrame<'a, Space>` and `ArrayFrame<'a, Item>`
 are now `GenericFrameImpl<'a, Space>` and `ArrayFrameImpl<'a, Item>`. Explicit
 construction uses `ElementFrame::new(GenericFrameImpl::new(&space))` or
-`ElementFrame::new(ArrayFrameImpl::new(&space))`. `FrameSpace` selects a
-`FrameImpl<'a>` associated type and its `frame` method returns the wrapped
-implementation. `imp`, `imp_mut`, and `into_imp` provide implementation access.
+`ElementFrame::new(ArrayFrameImpl::new(&space))`. A frame is built entirely
+outside the space this way; spaces carry no frame-related trait or method, and a
+custom space needs no code of its own to be used with one. `imp`, `imp_mut`, and
+`into_imp` provide implementation access.
 
 Implementations opt into `FrameApply` and `FrameQr` for application and QR.
 The wrapper provides inherent methods and implements the corresponding traits
@@ -38,9 +39,14 @@ absolute residual for a zero right-hand side. The residual is recomputed from
 the operator at the end of every restart cycle, so the returned value is the
 true residual rather than the estimate from the Givens recursion.
 
-The Krylov basis is stored in an `ElementFrame` obtained from the space through
-`FrameSpace::frame`, which makes this the first consumer of the frame machinery
-and requires the space to implement `FrameSpace`. `set_restart` bounds the size
+The Krylov basis is stored in an `ElementFrame`, which makes this the first
+consumer of the frame machinery. By default that is a `GenericFrameImpl` holding
+one element per basis vector, so GMRES requires nothing of a space beyond
+`InnerProductSpace`. `set_storage` replaces it with any other frame; passing
+`ElementFrame::new(ArrayFrameImpl::new(&space))` keeps the basis as one dense
+matrix, applying it with a single BLAS matrix-vector product. A supplied frame is
+scratch space and is cleared at the start of every restart cycle.
+`set_restart` bounds the size
 of that basis; by default GMRES does not restart. Two callbacks are available:
 `set_callable` receives the iteration count and the current residual from the
 Givens recursion at no extra cost, while `set_element_callable` reconstructs the

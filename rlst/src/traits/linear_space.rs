@@ -167,17 +167,3 @@ pub trait FrameApply<'a>: FrameImpl<'a> {
         Ok(())
     }
 }
-
-/// Select a space's preferred frame storage without Rust specialization.
-///
-/// Custom spaces can opt in by selecting
-/// [`GenericFrameImpl`](crate::GenericFrameImpl). There is deliberately
-/// no blanket implementation, so array spaces can select matrix storage.
-pub trait FrameSpace: LinearSpace {
-    /// Preferred frame implementation.
-    type FrameImpl<'a>: FrameImpl<'a, Space = Self>
-    where
-        Self: 'a;
-    /// Construct an empty frame borrowing this space.
-    fn frame(&self) -> crate::ElementFrame<'_, Self::FrameImpl<'_>>;
-}

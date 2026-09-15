@@ -2,8 +2,9 @@
 //!
 //! [`ElementFrame`] forwards operations to a [`FrameImpl`]. [`GenericFrameImpl`]
 //! stores owned elements of any linear space; [`ArrayFrameImpl`] stores columns
-//! in one column-major matrix. Use [`crate::FrameSpace::frame`] to select a
-//! space's preferred implementation. QR never modifies the input frame.
+//! in one column-major matrix. Frames are built outside any space by wrapping
+//! the chosen implementation with [`ElementFrame::new`]. QR never modifies the
+//! input frame.
 
 mod array;
 mod generic;

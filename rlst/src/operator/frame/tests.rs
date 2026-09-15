@@ -1,7 +1,7 @@
 use crate::dense::array::StridedSliceArray;
 use crate::operator::{element::Element, interface::array_vector_space::ArrayVectorSpace};
 use crate::{
-    ArrayFrameImpl, DynArray, ElementFrame, FrameApply, FrameQr, FrameQrOptions, FrameSpace, Gemm,
+    ArrayFrameImpl, DynArray, ElementFrame, FrameApply, FrameQr, FrameQrOptions, Gemm,
     GenericFrameImpl, InnerProductSpace, Lapack, LinearSpace, Norm, RandScalar, RlstScalar,
     SliceArray, c32, c64,
 };
@@ -59,13 +59,6 @@ impl<Item: RlstScalar> InnerProductSpace for WeightedSpace<Item> {
     }
 }
 
-impl<Item: RlstScalar> FrameSpace for WeightedSpace<Item> {
-    type FrameImpl<'a> = GenericFrameImpl<'a, Self>;
-    fn frame(&self) -> ElementFrame<'_, Self::FrameImpl<'_>> {
-        ElementFrame::new(GenericFrameImpl::new(self))
-    }
-}
-
 fn verify_qr<'a, F, Item>(frame: &F, options: FrameQrOptions<Item::Real>, rank: usize, tol: f64)
 where
     F: FrameQr<'a> + FrameApply<'a>,
@@ -117,7 +110,7 @@ where
     let space = WeightedSpace {
         weights: [Item::from_real(Item::real(2.0)); 4],
     };
-    let mut generic = space.frame();
+    let mut generic = ElementFrame::new(GenericFrameImpl::new(&space));
     let columns = [
         [Item::one(), Item::zero(), Item::zero(), Item::zero()],
         [
@@ -143,7 +136,7 @@ where
 
     for (m, n) in [(7, 3), (3, 7), (4, 4)] {
         let space = ArrayVectorSpace::<Item>::new(m);
-        let mut dense = space.frame();
+        let mut dense = ElementFrame::new(ArrayFrameImpl::new(&space));
         for j in 0..n {
             let mut element = space.zero();
             element.imp_mut().fill_from_seed_equally_distributed(j + 10);
@@ -180,7 +173,7 @@ fn qr_complex_single() {
 #[test]
 fn dense_storage_growth_and_views() {
     let space = ArrayVectorSpace::<f64>::new(3);
-    let mut frame: ElementFrame<'_, ArrayFrameImpl<'_, f64>> = space.frame();
+    let mut frame = ElementFrame::new(ArrayFrameImpl::new(&space));
     frame.reserve(2);
     let mut element = space.zero();
     for j in 0..9 {
@@ -221,7 +214,7 @@ fn generic_storage_owns_values_and_preserves_space_lifetime() {
     let mut element = space.zero();
     let extracted;
     {
-        let mut frame = space.frame();
+        let mut frame = ElementFrame::new(GenericFrameImpl::new(&space));
         frame.reserve(4);
         element.imp_mut()[0] = 2.0;
         frame.push(&element).unwrap();
@@ -291,7 +284,7 @@ fn exercise_application<'a, F: FrameApply<'a, Space = ArrayVectorSpace<c64>>>(fr
 #[test]
 fn application_strides_expressions_and_alpha_beta() {
     let space = ArrayVectorSpace::<c64>::new(2);
-    exercise_application(&mut space.frame());
+    exercise_application(&mut ElementFrame::new(ArrayFrameImpl::new(&space)));
     exercise_application(&mut ElementFrame::new(GenericFrameImpl::new(&space)));
 }
 
@@ -299,7 +292,7 @@ fn application_strides_expressions_and_alpha_beta() {
 fn dense_rejects_incompatible_elements_without_mutating() {
     let space = ArrayVectorSpace::<f64>::new(2);
     let other = ArrayVectorSpace::<f64>::new(3);
-    let mut frame = space.frame();
+    let mut frame = ElementFrame::new(ArrayFrameImpl::new(&space));
     assert!(frame.push(&other.zero()).is_err());
     let malformed = Element::new(&space, DynArray::from_shape([3]));
     assert!(frame.push(&malformed).is_err());
@@ -319,7 +312,7 @@ fn dense_rejects_incompatible_elements_without_mutating() {
 fn qr_empty_zero_dimensional_and_zero_columns() {
     for m in [0, 3] {
         let space = ArrayVectorSpace::<f64>::new(m);
-        let mut dense = space.frame();
+        let mut dense = ElementFrame::new(ArrayFrameImpl::new(&space));
         let mut generic = ElementFrame::new(GenericFrameImpl::new(&space));
         for n in 0..4 {
             verify_qr(&dense, FrameQrOptions::default(), 0, 1e-12);
@@ -335,7 +328,7 @@ fn qr_empty_zero_dimensional_and_zero_columns() {
 fn qr_truncation_and_relative_scale() {
     for scale in [1e-8, 1.0, 1e8] {
         let space = ArrayVectorSpace::<f64>::new(3);
-        let mut dense = space.frame();
+        let mut dense = ElementFrame::new(ArrayFrameImpl::new(&space));
         let mut generic = ElementFrame::new(GenericFrameImpl::new(&space));
         for values in [
             [scale, 0.0, 0.0],
@@ -374,7 +367,7 @@ fn qr_reorthogonalizes_ill_conditioned_columns() {
     // Lauchli matrix: a single classical pass loses orthogonality for these
     // nearly parallel columns. CGS2 should retain all three directions.
     let space = WeightedSpace { weights: [1.0; 4] };
-    let mut frame = space.frame();
+    let mut frame = ElementFrame::new(GenericFrameImpl::new(&space));
     for j in 1..4 {
         let mut values = [0.0; 4];
         values[0] = 1.0;
@@ -387,7 +380,7 @@ fn qr_reorthogonalizes_ill_conditioned_columns() {
 #[test]
 fn qr_pivots_and_preserves_input() {
     let space = ArrayVectorSpace::<f64>::new(3);
-    let mut dense = space.frame();
+    let mut dense = ElementFrame::new(ArrayFrameImpl::new(&space));
     let mut generic = ElementFrame::new(GenericFrameImpl::new(&space));
     for values in [
         [1.0, 0.0, 0.0],
@@ -418,7 +411,7 @@ fn qr_pivots_and_preserves_input() {
 #[test]
 fn qr_rejects_invalid_tolerances_and_nonfinite_data() {
     let space = ArrayVectorSpace::<f64>::new(1);
-    let mut dense = space.frame();
+    let mut dense = ElementFrame::new(ArrayFrameImpl::new(&space));
     let mut generic = ElementFrame::new(GenericFrameImpl::new(&space));
     for options in [
         FrameQrOptions {
@@ -458,7 +451,7 @@ fn qr_results_borrow_space_not_input_frame() {
     let mut element = space.zero();
     element.imp_mut()[[1]] = 2.0;
     let (dense_qr, generic_qr) = {
-        let mut dense = space.frame();
+        let mut dense = ElementFrame::new(ArrayFrameImpl::new(&space));
         let mut generic = ElementFrame::new(GenericFrameImpl::new(&space));
         dense.push(&element).unwrap();
         generic.push(&element).unwrap();

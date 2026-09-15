@@ -3,7 +3,7 @@ use std::cell::Cell;
 use crate::operator::{element::Element, interface::array_vector_space::ArrayVectorSpace};
 use crate::{
     Array, ArrayFrameImpl, ElementFrame, FrameApply, FrameImpl, FrameQr, FrameQrDecomposition,
-    FrameQrOptions, FrameSpace, GenericFrameImpl, LinearSpace, Norm, RlstResult, Shape, SliceArray,
+    FrameQrOptions, GenericFrameImpl, LinearSpace, Norm, RlstResult, Shape, SliceArray,
     UnsafeRandom1DAccessByValue,
 };
 
@@ -178,7 +178,7 @@ fn implementation_access_and_extraction_preserve_storage() {
 #[test]
 fn storage_does_not_require_application_or_inner_products() {
     let space = ArrayVectorSpace::<i64>::new(2);
-    let mut frame = space.frame();
+    let mut frame = ElementFrame::new(ArrayFrameImpl::new(&space));
     let mut element = space.zero();
     element.imp_mut()[[1]] = 9;
     frame.push(&element).unwrap();

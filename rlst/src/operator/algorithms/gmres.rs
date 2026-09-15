@@ -5,18 +5,19 @@
 //! orthonormal Krylov basis with Arnoldi's method and minimizes the residual
 //! over the resulting affine subspace.
 //!
-//! The Krylov basis is stored in an [`ElementFrame`](crate::ElementFrame)
-//! provided by the space through [`FrameSpace::frame`], so array-backed spaces
-//! store the basis as one dense matrix and update the solution with a single
-//! matrix-vector product.
+//! The Krylov basis is stored in an [`ElementFrame`]. By default this is a
+//! [`GenericFrameImpl`], which owns one element per basis vector and works for
+//! every inner-product space. Pass `ElementFrame::new(ArrayFrameImpl::new(&space))`
+//! to [`GmresIteration::set_storage`] to keep the basis as one dense matrix
+//! instead, updating the solution with a single matrix-vector product.
 
 use std::ops::Mul;
 
 use num::{Float, One, Zero};
 
 use crate::{
-    DynArray, FrameApply, FrameSpace, Inner, InnerProductSpace, Lapack, Norm, NormedSpace,
-    RlstScalar, SolveTriangular, UpLo,
+    DynArray, ElementFrame, FrameApply, FrameImpl, GenericFrameImpl, Inner, InnerProductSpace,
+    Lapack, Norm, NormedSpace, RlstScalar, SolveTriangular, UpLo,
     abstract_operator::OperatorBase,
     operator::{abstract_operator::Operator, element::Element},
 };
@@ -33,8 +34,9 @@ use crate::{
 pub struct GmresIteration<
     'a,
     Scalar: RlstScalar,
-    Space: InnerProductSpace<F = Scalar> + FrameSpace,
+    Space: InnerProductSpace<F = Scalar>,
     OpImpl: OperatorBase<Domain = Space, Range = Space>,
+    Storage: FrameImpl<'a, Space = Space> = GenericFrameImpl<'a, Space>,
 > {
     operator: &'a Operator<OpImpl>,
     rhs: &'a Element<'a, Space>,
@@ -47,23 +49,26 @@ pub struct GmresIteration<
     #[allow(clippy::type_complexity)]
     element_callable: Option<Box<dyn FnMut(&Element<Space>, &Element<Space>) + 'a>>,
     print_debug: bool,
+    storage: ElementFrame<'a, Storage>,
 }
 
 impl<
     'a,
     Scalar: RlstScalar + Lapack,
-    Space: InnerProductSpace<F = Scalar> + FrameSpace,
+    Space: InnerProductSpace<F = Scalar>,
     OpImpl: OperatorBase<Domain = Space, Range = Space>,
-> GmresIteration<'a, Scalar, Space, OpImpl>
+> GmresIteration<'a, Scalar, Space, OpImpl, GenericFrameImpl<'a, Space>>
 where
     Space: NormedSpace<Output = Scalar::Real>,
-    Space::FrameImpl<'a>: FrameApply<'a>,
 {
     /// Create a new GMRES iteration.
     ///
     /// This function takes an operator `op`, a right-hand side `rhs`, and an element `x` of the
     /// function space as starting approximation. Typically, `x` can be chosen to be the zero
     /// element of the space. Defaults are tolerance `1E-6`, 1000 iterations, and no restarting.
+    ///
+    /// The Krylov basis is stored in an element-backed frame. Use
+    /// [`Self::set_storage`] to choose a different frame implementation.
     pub fn new(
         op: &'a Operator<OpImpl>,
         rhs: &'a Element<'a, Space>,
@@ -79,6 +84,44 @@ where
             callable: None,
             element_callable: None,
             print_debug: false,
+            storage: ElementFrame::new(GenericFrameImpl::new(rhs.space())),
+        }
+    }
+}
+
+impl<
+    'a,
+    Scalar: RlstScalar + Lapack,
+    Space: InnerProductSpace<F = Scalar>,
+    OpImpl: OperatorBase<Domain = Space, Range = Space>,
+    Storage: FrameApply<'a, Space = Space>,
+> GmresIteration<'a, Scalar, Space, OpImpl, Storage>
+where
+    Space: NormedSpace<Output = Scalar::Real>,
+{
+    /// Store the Krylov basis in `storage` instead of the default
+    /// element-backed frame.
+    ///
+    /// The frame is scratch space: it is cleared at the start of every restart
+    /// cycle, so elements it already holds are discarded while its allocated
+    /// capacity is reused. Array-backed spaces keep the basis as one dense
+    /// matrix with
+    /// `set_storage(ElementFrame::new(ArrayFrameImpl::new(&space)))`.
+    pub fn set_storage<NewStorage: FrameApply<'a, Space = Space>>(
+        self,
+        storage: ElementFrame<'a, NewStorage>,
+    ) -> GmresIteration<'a, Scalar, Space, OpImpl, NewStorage> {
+        GmresIteration {
+            operator: self.operator,
+            rhs: self.rhs,
+            x: self.x,
+            max_iter: self.max_iter,
+            restart: self.restart,
+            tol: self.tol,
+            callable: self.callable,
+            element_callable: self.element_callable,
+            print_debug: self.print_debug,
+            storage,
         }
     }
 
@@ -220,7 +263,7 @@ where
         // The frame grows geometrically as basis vectors are pushed. Reserving
         // the whole restart length up front would allocate for `max_iter`
         // elements even when the iteration converges after a few steps.
-        let mut frame = self.rhs.space().frame();
+        let frame = &mut self.storage;
 
         let mut total_iter = 0usize;
 
@@ -461,13 +504,96 @@ mod test {
     use rand_chacha::ChaCha8Rng;
 
     use crate::{
+        ArrayFrameImpl, ElementFrame, InnerProductSpace, LinearSpace, Norm,
         abstract_operator::OperatorBase,
         base_types::c64,
         dense::array::DynArray,
         operator::{
-            abstract_operator::Operator, algorithms::gmres::GmresIteration, space::zero_element,
+            abstract_operator::Operator, algorithms::gmres::GmresIteration, element::Element,
+            interface::array_vector_space::ArrayVectorSpace, space::zero_element,
         },
     };
+
+    /// A space that is not array-backed, to show that GMRES needs nothing of a
+    /// space beyond the inner product.
+    struct TripleSpace;
+
+    impl LinearSpace for TripleSpace {
+        type F = f64;
+        type Impl = [f64; 3];
+
+        fn zero(&self) -> Element<'_, Self> {
+            Element::new(self, [0.0; 3])
+        }
+        fn add(&self, x: &Element<Self>, y: &Element<Self>) -> Element<'_, Self> {
+            Element::new(self, std::array::from_fn(|i| x.imp()[i] + y.imp()[i]))
+        }
+        fn sub(&self, x: &Element<Self>, y: &Element<Self>) -> Element<'_, Self> {
+            Element::new(self, std::array::from_fn(|i| x.imp()[i] - y.imp()[i]))
+        }
+        fn scalar_mul(&self, scalar: &f64, x: &Element<Self>) -> Element<'_, Self> {
+            Element::new(self, x.imp().map(|value| value * *scalar))
+        }
+        fn neg(&self, x: &Element<Self>) -> Element<'_, Self> {
+            self.scalar_mul(&-1.0, x)
+        }
+        fn sum_inplace(&self, x: &mut Element<Self>, y: &Element<Self>) {
+            for i in 0..3 {
+                x.imp_mut()[i] += y.imp()[i];
+            }
+        }
+        fn sub_inplace(&self, x: &mut Element<Self>, y: &Element<Self>) {
+            for i in 0..3 {
+                x.imp_mut()[i] -= y.imp()[i];
+            }
+        }
+        fn scale_inplace(&self, scalar: &f64, x: &mut Element<Self>) {
+            for value in x.imp_mut() {
+                *value *= *scalar;
+            }
+        }
+        fn copy_from(&self, x: &Element<Self>) -> Element<'_, Self> {
+            Element::new(self, *x.imp())
+        }
+    }
+
+    impl InnerProductSpace for TripleSpace {
+        fn inner_product(&self, x: &Element<Self>, y: &Element<Self>) -> f64 {
+            (0..3).map(|i| x.imp()[i] * y.imp()[i]).sum()
+        }
+    }
+
+    /// A non-symmetric operator on [`TripleSpace`].
+    struct Shift;
+
+    impl OperatorBase for Shift {
+        type Domain = TripleSpace;
+        type Range = TripleSpace;
+
+        fn domain(&self) -> &Self::Domain {
+            &TripleSpace
+        }
+        fn range(&self) -> &Self::Range {
+            &TripleSpace
+        }
+        fn apply(
+            &self,
+            alpha: f64,
+            x: &Element<Self::Domain>,
+            beta: f64,
+            y: &mut Element<Self::Range>,
+        ) {
+            let x = *x.imp();
+            let result = [
+                3.0 * x[0] + x[1],
+                -x[0] + 4.0 * x[1] + 2.0 * x[2],
+                x[1] + 5.0 * x[2],
+            ];
+            for i in 0..3 {
+                y.imp_mut()[i] = alpha * result[i] + beta * y.imp()[i];
+            }
+        }
+    }
 
     /// A well-conditioned non-symmetric matrix with a fixed random perturbation.
     fn non_symmetric_matrix(dim: usize) -> DynArray<f64, 2> {
@@ -580,6 +706,105 @@ mod test {
             "GMRES needed {} iterations for a {dim}-dimensional problem.",
             iterations.get()
         );
+    }
+
+    #[test]
+    fn matrix_storage_matches_the_default_element_storage() {
+        let dim = 10;
+        let tol = 1E-10;
+        let mat = non_symmetric_matrix(dim);
+        let op = Operator::from(&mat);
+        let mut rng = ChaCha8Rng::seed_from_u64(3);
+        let mut rhs = zero_element(op.range());
+        rhs.imp_mut().fill_from_equally_distributed(&mut rng);
+
+        let mut x_default = zero_element(op.domain());
+        let default_solution = RefCell::new(Vec::<f64>::new());
+        let default_residual = GmresIteration::new(&op, &rhs, &mut x_default)
+            .set_tol(tol)
+            .set_element_callable(|current, _| {
+                let mut solution = default_solution.borrow_mut();
+                solution.clear();
+                solution.extend(current.imp().data().unwrap().iter().copied());
+            })
+            .run();
+
+        // The dense frame borrows a space instance of its own, which must have
+        // the dimension the operator works with.
+        let space = ArrayVectorSpace::<f64>::new(dim);
+        let mut x_dense = zero_element(op.domain());
+        let dense_solution = RefCell::new(Vec::<f64>::new());
+        let dense_residual = GmresIteration::new(&op, &rhs, &mut x_dense)
+            .set_storage(ElementFrame::new(ArrayFrameImpl::new(&space)))
+            .set_restart(3)
+            .set_tol(tol)
+            .set_element_callable(|current, _| {
+                let mut solution = dense_solution.borrow_mut();
+                solution.clear();
+                solution.extend(current.imp().data().unwrap().iter().copied());
+            })
+            .run();
+
+        assert!(default_residual < tol);
+        assert!(dense_residual < tol);
+        let default_solution = default_solution.borrow();
+        let dense_solution = dense_solution.borrow();
+        assert_eq!(dense_solution.len(), dim);
+        assert_eq!(default_solution.len(), dim);
+        for (dense, default) in dense_solution.iter().zip(default_solution.iter()) {
+            assert_relative_eq!(*dense, *default, epsilon = 1E-8);
+        }
+    }
+
+    #[test]
+    fn supplied_storage_is_cleared_before_use() {
+        let dim = 4;
+        let tol = 1E-10;
+        let mat = non_symmetric_matrix(dim);
+        let op = Operator::from(&mat);
+        let mut rhs = zero_element(op.range());
+        rhs.imp_mut()[[0]] = 1.0;
+        let mut x = zero_element(op.domain());
+
+        let space = ArrayVectorSpace::<f64>::new(dim);
+        let mut storage = ElementFrame::new(ArrayFrameImpl::new(&space));
+        storage.push(&space.zero()).unwrap();
+        storage.push(&space.zero()).unwrap();
+        assert_eq!(storage.len(), 2);
+
+        let residual = GmresIteration::new(&op, &rhs, &mut x)
+            .set_storage(storage)
+            .set_tol(tol)
+            .run();
+
+        assert!(residual < tol);
+    }
+
+    #[test]
+    fn solves_on_a_space_without_array_storage() {
+        let op = Operator::new(Shift);
+        let mut rhs = zero_element(op.range());
+        rhs.imp_mut()[0] = 1.0;
+        rhs.imp_mut()[2] = -2.0;
+        let mut x = zero_element(op.domain());
+        let solution = Cell::new([f64::NAN; 3]);
+
+        let residual = GmresIteration::new(&op, &rhs, &mut x)
+            .set_tol(1E-12)
+            .set_element_callable(|current, _| solution.set(*current.imp()))
+            .run();
+
+        assert!(residual < 1E-12);
+        // `run` recomputes the residual from the operator; check the captured
+        // approximation against the equations independently of that.
+        let mut applied = zero_element(op.range());
+        Shift.apply(
+            1.0,
+            &Element::new(&TripleSpace, solution.get()),
+            0.0,
+            &mut applied,
+        );
+        assert!((&applied - &rhs).norm() < 1E-10);
     }
 
     #[test]
