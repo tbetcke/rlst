@@ -134,6 +134,20 @@ where
     ) -> crate::operator::element::Element<'_, Self> {
         Element::new(self, x.imp().eval())
     }
+
+    /// Compute `y += alpha * x` without forming the scaled element.
+    ///
+    /// The update is entirely local; no collective operation is involved.
+    fn axpy_inplace(
+        &self,
+        alpha: &Self::F,
+        x: &crate::operator::element::Element<Self>,
+        y: &mut crate::operator::element::Element<Self>,
+    ) {
+        y.imp_mut()
+            .r_mut()
+            .add_assign(x.imp().r().scalar_mul(*alpha));
+    }
 }
 
 impl<'a, C, Item> InnerProductSpace for DistributedArrayVectorSpace<'a, C, Item>

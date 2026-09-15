@@ -32,6 +32,28 @@ All workspace crates (`rlst`, `rlst-proc-macro`, and `rlst-suitesparse`) use ver
   `SUITESPARSE_PATH` override. UMFPACK is GPL-2.0-or-later; see the companion
   crate's README for licensing implications.
 
+### Frames of elements
+
+- Added `FrameRefAccess`, a frame capability that borrows stored columns instead
+  of copying them: `element_ref`, `element_mut`, `iter`, and `iter_mut`, on both
+  the backend and the `ElementFrame` wrapper. `GenericFrameImpl` implements it.
+  `ArrayFrameImpl` stores its columns packed in one matrix and has no stored
+  element to borrow, so it does not implement the trait and continues to offer
+  `column`, `column_mut`, `matrix`, and `matrix_mut`. The mutating accessors
+  expose the stored element directly, so callers must preserve the space's
+  invariants, as for `Element::new` and `Element::imp_mut`.
+- Added `LinearSpace::axpy_inplace`, computing `y += alpha * x`. It has a default
+  implementation in terms of `scalar_mul` and `sum_inplace`, so existing spaces
+  need no changes; implementations backed by arrays may override it with a fused,
+  allocation-free update, as `ArrayVectorSpace` and
+  `DistributedArrayVectorSpace` now do.
+- Generic frame application no longer copies columns or forms scaled
+  temporaries. `GenericFrameImpl::apply` borrows its columns and accumulates
+  through `axpy_inplace`, and the `FrameApply::apply_into` default scales the
+  output in place rather than allocating a second temporary. Results, error
+  conditions, and the zero-`beta` contract are unchanged; array-backed frames
+  already used BLAS and are unaffected.
+
 ### Dense multiplication and scalar arrays — migration required
 
 - **Use `dot_blas!` in place of the old dense `dot!` for BLAS-backed matrix

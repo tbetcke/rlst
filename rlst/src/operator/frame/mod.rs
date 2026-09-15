@@ -5,6 +5,11 @@
 //! in one column-major matrix. Frames are built outside any space by wrapping
 //! the chosen implementation with [`ElementFrame::new`]. QR never modifies the
 //! input frame.
+//!
+//! Element-backed implementations additionally support
+//! [`FrameRefAccess`], which borrows the stored columns
+//! and allows in-place mutation. Packed storages have no stored element to
+//! borrow and expose array views instead.
 
 mod array;
 mod generic;
@@ -18,8 +23,8 @@ use std::{marker::PhantomData, ops::Neg};
 
 use crate::operator::element::Element;
 use crate::{
-    Array, FrameApply, FrameImpl, InnerProductSpace, LinearSpace, RlstError, RlstNum, RlstResult,
-    RlstScalar, Shape, SliceArray, SliceArrayMut, UnsafeRandom1DAccessByValue,
+    Array, FrameApply, FrameImpl, FrameRefAccess, InnerProductSpace, LinearSpace, RlstError,
+    RlstNum, RlstResult, RlstScalar, Shape, SliceArray, SliceArrayMut, UnsafeRandom1DAccessByValue,
 };
 
 #[cfg(test)]
@@ -261,10 +266,65 @@ where
     }
 }
 
-impl<'a, Space: LinearSpace> ElementFrame<'a, GenericFrameImpl<'a, Space>> {
+impl<'a, I: FrameRefAccess<'a>> ElementFrame<'a, I> {
+    /// Borrow a column without copying it, or return `None` out of bounds.
+    pub fn element_ref(&self, index: usize) -> Option<&Element<'a, I::Space>> {
+        self.imp.element_ref(index)
+    }
+
+    /// Mutably borrow a column, or return `None` out of bounds.
+    ///
+    /// Mutating a column through this reference must preserve the space's
+    /// invariants; see [`FrameRefAccess`].
+    pub fn element_mut<'s>(&'s mut self, index: usize) -> Option<&'s mut Element<'a, I::Space>>
+    where
+        'a: 's,
+    {
+        self.imp.element_mut(index)
+    }
+
     /// Iterate over stored elements without copying them.
-    pub fn iter(&self) -> impl ExactSizeIterator<Item = &Element<'a, Space>> {
+    pub fn iter<'s>(&'s self) -> impl ExactSizeIterator<Item = &'s Element<'a, I::Space>>
+    where
+        'a: 's,
+    {
         self.imp.iter()
+    }
+
+    /// Mutably iterate over stored elements.
+    ///
+    /// The same invariant contract applies as for [`Self::element_mut`].
+    pub fn iter_mut<'s>(
+        &'s mut self,
+    ) -> impl ExactSizeIterator<Item = &'s mut Element<'a, I::Space>>
+    where
+        'a: 's,
+    {
+        self.imp.iter_mut()
+    }
+}
+
+impl<'a, I: FrameRefAccess<'a>> FrameRefAccess<'a> for ElementFrame<'a, I> {
+    fn element_ref(&self, index: usize) -> Option<&Element<'a, Self::Space>> {
+        self.imp.element_ref(index)
+    }
+    fn element_mut<'s>(&'s mut self, index: usize) -> Option<&'s mut Element<'a, Self::Space>>
+    where
+        'a: 's,
+    {
+        self.imp.element_mut(index)
+    }
+    fn iter<'s>(&'s self) -> impl ExactSizeIterator<Item = &'s Element<'a, Self::Space>>
+    where
+        'a: 's,
+    {
+        self.imp.iter()
+    }
+    fn iter_mut<'s>(&'s mut self) -> impl ExactSizeIterator<Item = &'s mut Element<'a, Self::Space>>
+    where
+        'a: 's,
+    {
+        self.imp.iter_mut()
     }
 }
 

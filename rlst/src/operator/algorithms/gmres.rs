@@ -536,7 +536,7 @@ mod test {
         dense::array::DynArray,
         operator::{
             abstract_operator::Operator, algorithms::gmres::GmresIteration, element::Element,
-            interface::array_vector_space::ArrayVectorSpace, space::zero_element,
+            space::zero_element,
         },
     };
 

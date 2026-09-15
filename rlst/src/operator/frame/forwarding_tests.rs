@@ -3,8 +3,8 @@ use std::cell::Cell;
 use crate::operator::{element::Element, interface::array_vector_space::ArrayVectorSpace};
 use crate::{
     Array, ArrayFrameImpl, ElementFrame, FrameApply, FrameImpl, FrameQr, FrameQrDecomposition,
-    FrameQrOptions, GenericFrameImpl, LinearSpace, Norm, RlstResult, Shape, SliceArray,
-    UnsafeRandom1DAccessByValue,
+    FrameQrOptions, FrameRefAccess, GenericFrameImpl, LinearSpace, Norm, RlstResult, Shape,
+    SliceArray, UnsafeRandom1DAccessByValue,
 };
 
 // Use a third implementation to ensure dispatch is truly generic. The counters
@@ -15,6 +15,7 @@ struct ObservedFrameImpl<'a> {
     apply_calls: Cell<usize>,
     apply_into_calls: Cell<usize>,
     qr_calls: Cell<usize>,
+    ref_calls: Cell<usize>,
     generation: usize,
 }
 
@@ -26,8 +27,37 @@ impl<'a> ObservedFrameImpl<'a> {
             apply_calls: Cell::new(0),
             apply_into_calls: Cell::new(0),
             qr_calls: Cell::new(0),
+            ref_calls: Cell::new(0),
             generation,
         }
+    }
+}
+
+impl<'a> FrameRefAccess<'a> for ObservedFrameImpl<'a> {
+    fn element_ref(&self, index: usize) -> Option<&Element<'a, Self::Space>> {
+        self.ref_calls.set(self.ref_calls.get() + 1);
+        self.inner.element_ref(index)
+    }
+    fn element_mut<'s>(&'s mut self, index: usize) -> Option<&'s mut Element<'a, Self::Space>>
+    where
+        'a: 's,
+    {
+        self.ref_calls.set(self.ref_calls.get() + 1);
+        self.inner.element_mut(index)
+    }
+    fn iter<'s>(&'s self) -> impl ExactSizeIterator<Item = &'s Element<'a, Self::Space>>
+    where
+        'a: 's,
+    {
+        self.ref_calls.set(self.ref_calls.get() + 1);
+        self.inner.iter()
+    }
+    fn iter_mut<'s>(&'s mut self) -> impl ExactSizeIterator<Item = &'s mut Element<'a, Self::Space>>
+    where
+        'a: 's,
+    {
+        self.ref_calls.set(self.ref_calls.get() + 1);
+        self.inner.iter_mut()
     }
 }
 
@@ -184,4 +214,27 @@ fn storage_does_not_require_application_or_inner_products() {
     frame.push(&element).unwrap();
     assert_eq!(frame.pop().unwrap().imp()[[1]], 9);
     assert!(frame.is_empty());
+}
+
+#[test]
+fn wrapper_forwards_reference_access_to_the_backend() {
+    let space = ArrayVectorSpace::<f64>::new(2);
+    let mut inner = GenericFrameImpl::new(&space);
+    let mut element = space.zero();
+    element.imp_mut()[[0]] = 7.0;
+    inner.push(&element).unwrap();
+    let mut frame = ElementFrame::new(ObservedFrameImpl::new(inner, 0));
+
+    assert_eq!(frame.element_ref(0).unwrap().imp()[[0]], 7.0);
+    assert!(frame.element_ref(1).is_none());
+    frame.element_mut(0).unwrap().imp_mut()[[0]] = 8.0;
+    assert_eq!(frame.iter().next().unwrap().imp()[[0]], 8.0);
+    for elem in frame.iter_mut() {
+        elem.imp_mut()[[0]] += 1.0;
+    }
+    assert_eq!(frame.element_ref(0).unwrap().imp()[[0]], 9.0);
+
+    // Two `element_ref`, one `element_mut`, one `iter`, one `iter_mut`, and the
+    // final `element_ref`: every call reached the backend.
+    assert_eq!(frame.imp().ref_calls.get(), 6);
 }

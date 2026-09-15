@@ -117,6 +117,38 @@
 //! `reserve` grows capacity and `clear` retains it. Extracted elements and QR
 //! results can outlive the original frame, but cannot outlive the space.
 //!
+//! ## Borrowing frame columns
+//!
+//! Element-backed implementations also support
+//! [`FrameRefAccess`](crate::FrameRefAccess), which borrows the stored columns
+//! instead of copying them: `element_ref`, `element_mut`, `iter`, and `iter_mut`.
+//! Array frames store their columns packed in one matrix and have no stored
+//! element to borrow, so they do not implement this trait and expose `column`
+//! and `column_mut` instead.
+//!
+//! ```
+//! use rlst::operator::interface::array_vector_space::ArrayVectorSpace;
+//! use rlst::{ElementFrame, GenericFrameImpl, LinearSpace};
+//!
+//! let space = ArrayVectorSpace::<f64>::new(3);
+//! let mut frame = ElementFrame::new(GenericFrameImpl::new(&space));
+//! frame.push(&space.zero())?;
+//!
+//! // Borrow a column and mutate it in place, without copying it out.
+//! frame.element_mut(0).unwrap().imp_mut()[[1]] = 5.0;
+//! assert_eq!(frame.element_ref(0).unwrap().imp()[[1]], 5.0);
+//! for element in frame.iter_mut() {
+//!     *element *= 2.0;
+//! }
+//! assert_eq!(frame.iter().next().unwrap().imp()[[1]], 10.0);
+//! # Ok::<(), rlst::RlstError>(())
+//! ```
+//!
+//! The mutating accessors hand out the stored element itself, so a caller can
+//! replace it with an incompatible value. Preserving the space's invariants is
+//! the caller's responsibility, exactly as for `Element::new` and
+//! `Element::imp_mut`.
+//!
 //! Implementations supporting [`FrameApply`](crate::FrameApply) enable the wrapper's
 //! `apply`, `apply_into`, and `adjoint_apply` methods. `adjoint_apply` returns the
 //! inner products of an element with every column, so `adjoint_apply` followed by
@@ -124,7 +156,9 @@
 //! columns. `apply` and `apply_into` accept strided coefficient arrays and lazy
 //! expressions. Dense application uses BLAS with a `Gemm` scalar,
 //! borrowing the active matrix and packing only the coefficients. Generic
-//! application uses the space's operations.
+//! application uses the space's operations, borrowing each column and
+//! accumulating through [`LinearSpace::axpy_inplace`](crate::LinearSpace::axpy_inplace)
+//! rather than copying columns or forming scaled temporaries.
 //! `apply_into(alpha, coefficients, beta, output)` computes
 //! `output = alpha * frame * coefficients + beta * output`; a zero `beta`
 //! discards the old output. Dense frames validate element dimensions. Generic

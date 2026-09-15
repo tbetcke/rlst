@@ -1,8 +1,8 @@
 use crate::dense::array::StridedSliceArray;
 use crate::operator::{element::Element, interface::array_vector_space::ArrayVectorSpace};
 use crate::{
-    ArrayFrameImpl, DynArray, ElementFrame, FrameApply, FrameQr, FrameQrOptions, Gemm,
-    GenericFrameImpl, InnerProductSpace, Lapack, LinearSpace, Norm, RandScalar, RlstScalar,
+    ArrayFrameImpl, DynArray, ElementFrame, FrameApply, FrameQr, FrameQrOptions, FrameRefAccess,
+    Gemm, GenericFrameImpl, InnerProductSpace, Lapack, LinearSpace, Norm, RandScalar, RlstScalar,
     SliceArray, c32, c64,
 };
 
@@ -262,6 +262,11 @@ fn exercise_application<'a, F: FrameApply<'a, Space = ArrayVectorSpace<c64>>>(fr
         .apply_into(alpha, &coefficients, beta, &mut element)
         .unwrap();
     assert_eq!(element.imp()[[0]], alpha * expected + beta * previous);
+    let previous = element.imp()[[0]];
+    frame
+        .apply_into(c64::new(0.0, 0.0), &coefficients, beta, &mut element)
+        .unwrap();
+    assert_eq!(element.imp()[[0]], beta * previous);
     let bad = DynArray::<c64, 1>::from_shape([1]);
     let previous = element.imp()[[0]];
     assert!(frame.apply_into(alpha, &bad, beta, &mut element).is_err());
@@ -508,4 +513,85 @@ fn qr_results_borrow_space_not_input_frame() {
     let generic_result = generic_qr.q.apply(&generic_qr.r.r().col(0)).unwrap();
     assert!((&dense_result - &element).norm() < 1e-12);
     assert!((&generic_result - &element).norm() < 1e-12);
+}
+
+#[test]
+fn reference_access_borrows_and_mutates_columns() {
+    let space = WeightedSpace { weights: [1.0; 4] };
+    let mut frame = ElementFrame::new(GenericFrameImpl::new(&space));
+    assert_eq!(frame.iter().len(), 0);
+    assert!(frame.element_ref(0).is_none());
+    assert!(frame.element_mut(0).is_none());
+
+    let mut element = space.zero();
+    for j in 0..3 {
+        element.imp_mut()[0] = j as f64;
+        frame.push(&element).unwrap();
+    }
+
+    // Borrowed columns see the stored values in column order.
+    assert_eq!(frame.iter().len(), frame.len());
+    let borrowed: Vec<f64> = frame.iter().map(|elem| elem.imp()[0]).collect();
+    assert_eq!(borrowed, vec![0.0, 1.0, 2.0]);
+    assert_eq!(frame.element_ref(1).unwrap().imp()[0], 1.0);
+    assert!(frame.element_ref(3).is_none());
+    assert!(frame.element_mut(3).is_none());
+
+    // Mutation through a borrowed column is visible through every accessor.
+    frame.element_mut(1).unwrap().imp_mut()[0] = 42.0;
+    assert_eq!(frame.element_ref(1).unwrap().imp()[0], 42.0);
+    assert_eq!(frame.element(1).unwrap().imp()[0], 42.0);
+
+    assert_eq!(frame.iter_mut().len(), 3);
+    for elem in frame.iter_mut() {
+        elem.imp_mut()[0] *= 2.0;
+    }
+    let doubled: Vec<f64> = frame.iter().map(|elem| elem.imp()[0]).collect();
+    assert_eq!(doubled, vec![0.0, 84.0, 4.0]);
+
+    // The backend itself exposes the same accessors as the wrapper.
+    assert_eq!(frame.imp().element_ref(2).unwrap().imp()[0], 4.0);
+    frame.imp_mut().element_mut(2).unwrap().imp_mut()[0] = -1.0;
+    assert_eq!(frame.element_ref(2).unwrap().imp()[0], -1.0);
+
+    frame.clear();
+    assert_eq!(frame.iter().len(), 0);
+    assert!(frame.element_ref(0).is_none());
+}
+
+#[test]
+fn axpy_inplace_default_and_override_agree() {
+    // `WeightedSpace` uses the default implementation, `ArrayVectorSpace` the
+    // fused override; both must match `y + alpha * x`.
+    let weighted = WeightedSpace { weights: [1.0; 4] };
+    let mut y = weighted.zero();
+    y.imp_mut()[0] = 5.0;
+    y.imp_mut()[1] = -2.0;
+    let mut x = weighted.zero();
+    x.imp_mut()[0] = 3.0;
+    x.imp_mut()[1] = 1.0;
+    weighted.axpy_inplace(&2.0, &x, &mut y);
+    assert_eq!(y.imp()[0], 11.0);
+    assert_eq!(y.imp()[1], 0.0);
+    weighted.axpy_inplace(&0.0, &x, &mut y);
+    assert_eq!(y.imp()[0], 11.0);
+
+    let space = ArrayVectorSpace::<c64>::new(2);
+    let mut y = space.zero();
+    y.imp_mut()[[0]] = c64::new(5.0, 1.0);
+    let mut x = space.zero();
+    x.imp_mut()[[0]] = c64::new(3.0, -2.0);
+    let alpha = c64::new(2.0, 1.0);
+    let expected = c64::new(5.0, 1.0) + alpha * c64::new(3.0, -2.0);
+    space.axpy_inplace(&alpha, &x, &mut y);
+    assert_eq!(y.imp()[[0]], expected);
+    space.axpy_inplace(&c64::new(0.0, 0.0), &x, &mut y);
+    assert_eq!(y.imp()[[0]], expected);
+
+    // A zero-dimensional space must not panic.
+    let empty = ArrayVectorSpace::<f64>::new(0);
+    let x = empty.zero();
+    let mut y = empty.zero();
+    empty.axpy_inplace(&1.0, &x, &mut y);
+    assert_eq!(y.imp().shape(), [0]);
 }
