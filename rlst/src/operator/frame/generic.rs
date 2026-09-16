@@ -2,7 +2,7 @@
 
 use super::index_error;
 use crate::operator::element::Element;
-use crate::traits::linear_space::combine_columns;
+use crate::traits::linear_space::{accumulate_columns, combine_columns};
 use crate::{
     Array, FrameApply, FrameImpl, FrameRefAccess, InnerProductSpace, LinearSpace, RlstResult,
     Shape, UnsafeRandom1DAccessByValue,
@@ -104,5 +104,28 @@ impl<'a, Space: LinearSpace> FrameApply<'a> for GenericFrameImpl<'a, Space> {
             .iter()
             .map(|basis| self.space.inner_product(x, basis))
             .collect())
+    }
+
+    fn apply_into<A>(
+        &self,
+        alpha: Space::F,
+        coefficients: &Array<A, 1>,
+        beta: Space::F,
+        output: &mut Element<Space>,
+    ) -> RlstResult<()>
+    where
+        A: Shape<1> + UnsafeRandom1DAccessByValue<Item = Space::F>,
+        Space::F: num::Zero + num::One + PartialEq + Copy,
+    {
+        // Borrow the stored elements instead of copying them through `element`.
+        accumulate_columns(
+            self.space,
+            self.elements.len(),
+            alpha,
+            coefficients,
+            beta,
+            output,
+            self.elements.iter(),
+        )
     }
 }

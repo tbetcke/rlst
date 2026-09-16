@@ -1,5 +1,107 @@
 # Changelog
 
+## v0.8.0 (unreleased)
+
+Changes since [v0.7.0](https://codeberg.org/rlst/rlst/releases/tag/v0.7.0).
+All workspace crates (`rlst`, `rlst-proc-macro`, and `rlst-suitesparse`) use
+development version `0.8.0-dev`.
+
+### Frames of elements — migration required
+
+- The previously unimplemented `Frame` trait has been replaced by `FrameImpl<'a>`.
+  `ElementFrame<'a, Implementation>` is the public wrapper and forwards storage,
+  application, and QR operations to its implementation. `GenericFrameImpl` stores
+  owned elements; `ArrayFrameImpl` uses a column-major matrix. Both support growth,
+  linear combinations, and rank-adaptive pivoted QR. The former reference-based
+  `get`, `get_mut`, and iterator requirements have been replaced by owned
+  `element` extraction and `set_element`; array-backed wrappers provide zero-copy
+  matrix and column views. `push` borrows and copies an element and returns a result.
+- The initial development types `ElementFrame<'a, Space>` and `ArrayFrame<'a, Item>`
+  are now `GenericFrameImpl<'a, Space>` and `ArrayFrameImpl<'a, Item>`. Explicit
+  construction uses `ElementFrame::new(GenericFrameImpl::new(&space))` or
+  `ElementFrame::new(ArrayFrameImpl::new(&space))`. A frame is built entirely
+  outside the space this way; spaces carry no frame-related trait or method, and a
+  custom space needs no code of its own to be used with one. `imp`, `imp_mut`, and
+  `into_imp` provide implementation access.
+- Implementations opt into `FrameApply` and `FrameQr` for application and QR.
+  `FrameApply::adjoint_apply` returns the inner products of an element with every
+  column, `V^H x`; for orthonormal columns such as a Q factor or a Krylov basis,
+  `adjoint_apply` followed by `apply_into` projects an element onto their span.
+  `ArrayFrameImpl` computes it with one dense matrix-vector product. The wrapper
+  provides inherent methods and implements the corresponding traits by
+  delegation; its QR result contains a wrapped Q with the same implementation
+  type. See the abstract linear algebra guide for construction and QR examples.
+- Added `FrameRefAccess`, a frame capability that borrows stored columns instead
+  of copying them: `element_ref`, `element_mut`, `iter`, and `iter_mut`, on both
+  the backend and the `ElementFrame` wrapper. `GenericFrameImpl` implements it.
+  `ArrayFrameImpl` stores its columns packed in one matrix and has no stored
+  element to borrow, so it does not implement the trait and continues to offer
+  `column`, `column_mut`, `matrix`, and `matrix_mut`. The mutating accessors
+  expose the stored element directly, so callers must preserve the space's
+  invariants, as for `Element::new` and `Element::imp_mut`.
+- Added `LinearSpace::axpy_inplace`, computing `y += alpha * x`. It has a default
+  implementation in terms of `scalar_mul` and `sum_inplace`, so existing spaces
+  need no changes; implementations backed by arrays may override it with a fused,
+  allocation-free update, as `ArrayVectorSpace` and
+  `DistributedArrayVectorSpace` now do.
+- Generic frame application no longer copies columns or forms temporaries.
+  `GenericFrameImpl::apply`, `adjoint_apply`, and `apply_into` borrow the stored
+  columns, and the `FrameApply::apply_into` default folds each column into the
+  output through `axpy_inplace` without an intermediate element, skipping the
+  scaling pass for a unit `beta`. The method's scalar bound is now
+  `Zero + One + PartialEq + Copy` instead of `Zero`; every RLST scalar satisfies
+  it. Results, error conditions, and the zero-`beta` contract are unchanged;
+  array-backed frames already used BLAS and are unaffected.
+
+### GMRES for abstract operators
+
+- Added `GmresIteration` in `operator::algorithms::gmres`, a generalized minimal
+  residual solver for operator equations whose operator need not be self-adjoint.
+  It follows the same builder shape as `CgIteration`, and `run` reports the
+  residual by the same rules: the relative residual `||b-Ax||/||b||`, or the
+  absolute residual for a zero right-hand side. The residual is recomputed from
+  the operator at the end of every restart cycle, so the returned value is the
+  true residual of `x` rather than the estimate from the Givens recursion.
+- The Krylov basis is stored in an `ElementFrame` and orthogonalized with two
+  passes of classical Gram-Schmidt through the frame's `adjoint_apply` and
+  `apply_into`, so no basis vector is copied; the same routine backs the generic
+  pivoted QR. By default the frame is a `GenericFrameImpl` holding one element
+  per basis vector, so GMRES requires nothing of a space beyond
+  `InnerProductSpace` and no LAPACK linkage. `set_storage` replaces it with any
+  other frame borrowing the right-hand side's space and panics for a frame over a
+  different space instance; passing
+  `ElementFrame::new(ArrayFrameImpl::new(rhs.space()))` keeps the basis as one
+  dense matrix and runs the orthogonalization and the solution update as BLAS
+  matrix-vector products. A supplied frame is scratch space and is cleared at the
+  start of every restart cycle. `set_restart` bounds the size of that basis; by
+  default GMRES does not restart.
+- Breakdown is detected relative to the norm of the new Hessenberg column with a
+  threshold of `100 * epsilon`, not by an exact comparison with zero, so a
+  numerically exhausted Krylov space ends the cycle instead of normalizing
+  rounding noise into basis vectors. A cycle that does not reduce the true
+  residual, or produces a non-finite one, is undone and ends the iteration, so
+  `x` is never worse than the initial guess and the returned residual always
+  belongs to `x`.
+- Two callbacks are available: `set_callable` receives the iteration count and
+  the current residual from the Givens recursion at no extra cost, while
+  `set_element_callable` reconstructs the approximation and the residual element
+  for every call at the cost of one extra linear combination and one extra
+  operator application per iteration.
+
+### Iterative solvers — migration required
+
+- `CgIteration` and `GmresIteration` now take the initial guess as
+  `x: &'a mut Element<'b, Space>` and carry a second lifetime parameter. The
+  mutable borrow of `x` previously lasted as long as the element's borrow of its
+  space, so the solution could only be observed through a callback; it now ends
+  when `run` returns and `x` can be read directly. Calls such as
+  `CgIteration::new(&op, &rhs, &mut x)` are unchanged. Code that names the type
+  explicitly must add the lifetime, for example `CgIteration<'a, 'b, f64, S, Op>`
+  in place of `CgIteration<'a, f64, S, Op>`.
+- Conjugate gradients updates the approximation through
+  `LinearSpace::axpy_inplace` and no longer allocates a scaled search direction
+  per step.
+
 ## v0.7.0
 
 Changes since [v0.6.1](https://codeberg.org/rlst/rlst/releases/tag/v0.6.1),
@@ -31,28 +133,6 @@ All workspace crates (`rlst`, `rlst-proc-macro`, and `rlst-suitesparse`) use ver
 - Added native SuiteSparse discovery for Homebrew and Linux installations and a
   `SUITESPARSE_PATH` override. UMFPACK is GPL-2.0-or-later; see the companion
   crate's README for licensing implications.
-
-### Frames of elements
-
-- Added `FrameRefAccess`, a frame capability that borrows stored columns instead
-  of copying them: `element_ref`, `element_mut`, `iter`, and `iter_mut`, on both
-  the backend and the `ElementFrame` wrapper. `GenericFrameImpl` implements it.
-  `ArrayFrameImpl` stores its columns packed in one matrix and has no stored
-  element to borrow, so it does not implement the trait and continues to offer
-  `column`, `column_mut`, `matrix`, and `matrix_mut`. The mutating accessors
-  expose the stored element directly, so callers must preserve the space's
-  invariants, as for `Element::new` and `Element::imp_mut`.
-- Added `LinearSpace::axpy_inplace`, computing `y += alpha * x`. It has a default
-  implementation in terms of `scalar_mul` and `sum_inplace`, so existing spaces
-  need no changes; implementations backed by arrays may override it with a fused,
-  allocation-free update, as `ArrayVectorSpace` and
-  `DistributedArrayVectorSpace` now do.
-- Generic frame application no longer copies columns or forms scaled
-  temporaries. `GenericFrameImpl::apply` borrows its columns and accumulates
-  through `axpy_inplace`, and the `FrameApply::apply_into` default scales the
-  output in place rather than allocating a second temporary. Results, error
-  conditions, and the zero-`beta` contract are unchanged; array-backed frames
-  already used BLAS and are unaffected.
 
 ### Dense multiplication and scalar arrays — migration required
 

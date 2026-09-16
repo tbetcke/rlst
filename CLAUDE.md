@@ -171,13 +171,18 @@ that file.
 - Solvers are builder-style with in-place iteration — see `CgIteration` in
   `operator/algorithms/conjugate_gradients.rs` for the pattern to follow (`new(op, rhs, &mut x)`,
   chained `set_tol` / `set_max_iter` / callback setters, `run` mutating `x` and returning a
-  residual measure rather than a convergence flag). New iterative solvers belong in
+  residual measure rather than a convergence flag). The solver types carry two lifetimes and take
+  `x: &'a mut Element<'b, Space>`, so the mutable borrow ends with `run` and callers read the
+  solution from `x` afterwards; keep that shape for new solvers. New iterative solvers belong in
   `operator/algorithms/` alongside it. `GmresIteration` in `operator/algorithms/gmres.rs` follows
   the same pattern for general (non-self-adjoint) operators and adds `set_restart`.
 - `ElementFrame` is a growable collection of columns in one space, backed by a `FrameImpl`
   (`GenericFrameImpl` for arbitrary spaces, `ArrayFrameImpl` for array-backed ones), with pivoted
-  QR in `operator/frame/qr.rs`. `GmresIteration` stores its Krylov basis in one, obtained from the
-  space via `FrameSpace::frame`.
+  QR in `operator/frame/qr.rs`. `GmresIteration` stores its Krylov basis in one, constructed as
+  `ElementFrame::new(GenericFrameImpl::new(rhs.space()))` by default; `set_storage` swaps in
+  another frame over the right-hand side's space, such as an `ArrayFrameImpl`-backed one. The
+  two-pass Gram-Schmidt step shared by GMRES and the generic QR is `orthogonalize_twice` in
+  `operator/frame/mod.rs`.
 
 ## Tests and documentation
 

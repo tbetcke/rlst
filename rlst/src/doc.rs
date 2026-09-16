@@ -1,7 +1,7 @@
 //! The RLST documentation.
 
 pub mod abstract_linear_algebra;
-#[doc = include_str!("doc/changelog.md")]
+#[doc = include_str!("../CHANGELOG.md")]
 pub mod changelog {}
 pub mod dense_linear_algebra;
 #[cfg(feature = "mpi")]

@@ -21,6 +21,8 @@ pub use qr::{FrameQr, FrameQrDecomposition, FrameQrOptions};
 
 use std::{marker::PhantomData, ops::Neg};
 
+use num::One;
+
 use crate::operator::element::Element;
 use crate::{
     Array, FrameApply, FrameImpl, FrameRefAccess, InnerProductSpace, LinearSpace, RlstError,
@@ -192,7 +194,7 @@ impl<'a, I: FrameApply<'a>> ElementFrame<'a, I> {
     ) -> RlstResult<()>
     where
         A: Shape<1> + UnsafeRandom1DAccessByValue<Item = <I::Space as LinearSpace>::F>,
-        <I::Space as LinearSpace>::F: num::Zero,
+        <I::Space as LinearSpace>::F: num::Zero + num::One + PartialEq + Copy,
     {
         self.imp.apply_into(alpha, coefficients, beta, output)
     }
@@ -225,7 +227,7 @@ impl<'a, I: FrameApply<'a>> FrameApply<'a> for ElementFrame<'a, I> {
     ) -> RlstResult<()>
     where
         A: Shape<1> + UnsafeRandom1DAccessByValue<Item = <Self::Space as LinearSpace>::F>,
-        <Self::Space as LinearSpace>::F: num::Zero,
+        <Self::Space as LinearSpace>::F: num::Zero + num::One + PartialEq + Copy,
     {
         self.imp.apply_into(alpha, coefficients, beta, output)
     }
@@ -342,6 +344,44 @@ impl<'a, Item: RlstNum + Neg<Output = Item>> ElementFrame<'a, ArrayFrameImpl<'a,
     pub fn column_mut(&mut self, index: usize) -> Option<SliceArrayMut<'_, Item, 1>> {
         self.imp.column_mut(index)
     }
+}
+
+/// Orthogonalize `candidate` against the columns of `frame` and return the
+/// projection coefficients, one per column.
+///
+/// Two passes of classical Gram-Schmidt (CGS2) are used. Each pass computes all
+/// inner products through [`FrameApply::adjoint_apply`] before subtracting the
+/// combination through [`FrameApply::apply_into`], so array-backed frames run
+/// two dense matrix-vector products per pass and no column is copied. The
+/// columns are assumed to be orthonormal, as for a Krylov basis or a Q factor.
+/// Shared by GMRES and the generic pivoted QR.
+pub(crate) fn orthogonalize_twice<'a, F>(
+    frame: &F,
+    candidate: &mut Element<F::Space>,
+) -> RlstResult<Vec<<F::Space as LinearSpace>::F>>
+where
+    F: FrameApply<'a>,
+    F::Space: InnerProductSpace,
+    <F::Space as LinearSpace>::F: RlstScalar,
+{
+    let mut coefficients = Vec::new();
+    for pass in 0..2 {
+        let projection = frame.adjoint_apply(candidate)?;
+        frame.apply_into(
+            -<<F::Space as LinearSpace>::F as One>::one(),
+            &SliceArray::from_shape(&projection, [projection.len()]),
+            One::one(),
+            candidate,
+        )?;
+        if pass == 0 {
+            coefficients = projection;
+        } else {
+            for (total, correction) in coefficients.iter_mut().zip(projection) {
+                *total += correction;
+            }
+        }
+    }
+    Ok(coefficients)
 }
 
 fn index_error() -> RlstError {

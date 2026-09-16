@@ -4,7 +4,8 @@ use super::{ArrayFrameImpl, GenericFrameImpl};
 use crate::dense::linalg::lapack::qr::{EnablePivoting, QMode};
 use crate::operator::element::Element;
 use crate::{
-    DynArray, FrameImpl, InnerProductSpace, Lapack, Norm, Qr, RlstError, RlstResult, RlstScalar,
+    DynArray, FrameImpl, FrameRefAccess, InnerProductSpace, Lapack, Norm, Qr, RlstError,
+    RlstResult, RlstScalar,
 };
 use num::{Float, One, Zero};
 
@@ -93,7 +94,12 @@ fn finite<Real: Float>(value: Real) -> RlstResult<Real> {
     }
 }
 
-/// Two classical passes: each coefficient vector is computed before any update.
+/// Project `original` off the columns of `q` with two classical Gram-Schmidt
+/// passes, returning the residual and the accumulated coefficients.
+///
+/// The orthogonalization itself is shared with GMRES through
+/// [`super::orthogonalize_twice`]; QR additionally rejects non-finite
+/// coefficients.
 fn project_twice<'a, S: InnerProductSpace>(
     q: &GenericFrameImpl<'a, S>,
     original: &Element<S>,
@@ -102,21 +108,9 @@ where
     S::F: RlstScalar,
 {
     let mut residual = q.space.copy_from(original);
-    let mut coefficients = vec![S::F::zero(); q.len()];
-    for _ in 0..2 {
-        let pass: Vec<_> = q
-            .elements
-            .iter()
-            .map(|basis| q.space.inner_product(&residual, basis))
-            .collect();
-        let mut projection = q.space.zero();
-        for ((basis, coefficient), total) in q.elements.iter().zip(pass).zip(&mut coefficients) {
-            finite(coefficient.abs())?;
-            *total += coefficient;
-            finite(total.abs())?;
-            q.space.axpy_inplace(&coefficient, basis, &mut projection);
-        }
-        q.space.sub_inplace(&mut residual, &projection);
+    let coefficients = super::orthogonalize_twice(q, &mut residual)?;
+    for coefficient in &coefficients {
+        finite(coefficient.abs())?;
     }
     Ok((residual, coefficients))
 }
@@ -131,7 +125,7 @@ where
     ) -> RlstResult<FrameQrDecomposition<Self, S::F>> {
         let n = self.len();
         let mut scale = <S::F as RlstScalar>::Real::zero();
-        for element in &self.elements {
+        for element in self.iter() {
             scale = Float::max(scale, finite(element.norm())?);
         }
         let threshold = options.threshold(scale)?;
