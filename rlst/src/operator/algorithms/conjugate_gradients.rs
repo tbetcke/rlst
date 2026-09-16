@@ -18,15 +18,21 @@ use crate::{
 /// CG assumes a self-adjoint positive-definite operator on one inner-product
 /// space. [`Self::run`] mutates the supplied initial guess and returns a
 /// residual measure, not a convergence flag.
+///
+/// The iteration borrows the operator and the right-hand side for `'a` and the
+/// initial guess, an element borrowing its space for `'b`, mutably for `'a`
+/// only. The mutable borrow ends when [`Self::run`] consumes the iteration, so
+/// the solution can be read from the element afterwards.
 pub struct CgIteration<
     'a,
+    'b,
     Scalar: RlstScalar,
     Space: InnerProductSpace<F = Scalar>,
     OpImpl: OperatorBase<Domain = Space, Range = Space>,
 > {
     operator: &'a Operator<OpImpl>,
     rhs: &'a Element<'a, Space>,
-    x: &'a mut Element<'a, Space>,
+    x: &'a mut Element<'b, Space>,
     max_iter: usize,
     tol: Scalar::Real,
     #[allow(clippy::type_complexity)]
@@ -36,10 +42,11 @@ pub struct CgIteration<
 
 impl<
     'a,
+    'b,
     Scalar: RlstScalar,
     Space: InnerProductSpace<F = Scalar>,
     OpImpl: OperatorBase<Domain = Space, Range = Space>,
-> CgIteration<'a, Scalar, Space, OpImpl>
+> CgIteration<'a, 'b, Scalar, Space, OpImpl>
 where
     Space: NormedSpace<Output = Scalar::Real>,
 {
@@ -47,11 +54,12 @@ where
     ///
     /// This function takes an operator `op`, a right-hand side `rhs`, and an element `x` of the
     /// function space as starting approximation. Typically, `x` can be chosen to be the zero
-    /// element of the space. Defaults are tolerance `1E-6` and 1000 iterations.
+    /// element of the space. Defaults are tolerance `1E-6` and 1000 iterations. `x` is
+    /// borrowed only until [`Self::run`] returns and holds the approximation afterwards.
     pub fn new(
         op: &'a Operator<OpImpl>,
         rhs: &'a Element<'a, Space>,
-        x: &'a mut Element<'a, Space>,
+        x: &'a mut Element<'b, Space>,
     ) -> Self {
         Self {
             operator: op,
@@ -127,6 +135,8 @@ where
             );
         }
 
+        let space = self.rhs.space();
+
         let mut res = self.rhs.clone();
         self.operator
             .apply(-<Scalar as One>::one(), self.x, One::one(), &mut res);
@@ -175,7 +185,7 @@ where
             }
 
             let alpha = res_inner / p_conj_inner;
-            *self.x += (&p).mul(alpha);
+            space.axpy_inplace(&alpha, &p, self.x);
             res -= (&a_p).mul(alpha);
 
             if let Some(callable) = self.callable.as_mut() {
@@ -326,6 +336,28 @@ mod test {
         assert!(true_relative_residual < 1E-12);
         assert_relative_eq!(x_0, 1.0 / 11.0, epsilon = 1E-12);
         assert_relative_eq!(x_1, 7.0 / 11.0, epsilon = 1E-12);
+    }
+
+    #[test]
+    fn solution_is_readable_after_run() {
+        let mut mat = DynArray::<f64, 2>::from_shape([2, 2]);
+        mat[[0, 0]] = 4.0;
+        mat[[0, 1]] = 1.0;
+        mat[[1, 0]] = 1.0;
+        mat[[1, 1]] = 3.0;
+        let op = Operator::from(&mat);
+        let mut rhs = zero_element(op.range());
+        rhs.imp_mut()[[0]] = 1.0;
+        rhs.imp_mut()[[1]] = 2.0;
+        let mut x = zero_element(op.domain());
+
+        let residual = CgIteration::new(&op, &rhs, &mut x).set_tol(1E-12).run();
+
+        // The mutable borrow of `x` ends with `run`, so the solution is read
+        // directly rather than through a callback.
+        assert!(residual < 1E-12);
+        assert_relative_eq!(x.imp()[[0]], 1.0 / 11.0, epsilon = 1E-12);
+        assert_relative_eq!(x.imp()[[1]], 7.0 / 11.0, epsilon = 1E-12);
     }
 
     #[test]

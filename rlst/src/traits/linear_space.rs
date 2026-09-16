@@ -208,10 +208,12 @@ pub trait FrameApply<'a>: FrameImpl<'a> {
     ///
     /// Entry `i` of the result is `inner_product(x, column_i)`, so in complex
     /// spaces the conjugate is taken on the column and the result is `V^H x`
-    /// for the column matrix `V`. Together with [`Self::apply_into`] this
-    /// projects an element onto the span of the columns without copying them.
-    /// The default uses the space's inner product; array frames override it
-    /// with a dense matrix-vector product.
+    /// for the column matrix `V`. When the columns are orthonormal, for example
+    /// the Q factor of a pivoted QR or an Arnoldi basis, `adjoint_apply`
+    /// followed by [`Self::apply_into`] projects an element onto their span
+    /// without copying them. For general columns the result is `V^H x`, not a
+    /// projection. The default uses the space's inner product; array frames
+    /// override it with a dense matrix-vector product.
     fn adjoint_apply(
         &self,
         x: &Element<Self::Space>,
@@ -229,7 +231,10 @@ pub trait FrameApply<'a>: FrameImpl<'a> {
     ///
     /// A zero `beta` replaces the output without reading its previous value.
     /// Shape errors leave the output unchanged. The output must belong to a
-    /// compatible space instance.
+    /// compatible space instance. The default folds each column into `output`
+    /// with [`LinearSpace::axpy_inplace`] and forms no temporary element; it
+    /// obtains the columns through [`FrameImpl::element`], so element-backed
+    /// frames override it to borrow their columns instead.
     fn apply_into<A>(
         &self,
         alpha: <Self::Space as LinearSpace>::F,
@@ -240,21 +245,57 @@ pub trait FrameApply<'a>: FrameImpl<'a> {
     where
         A: crate::Shape<1>
             + crate::UnsafeRandom1DAccessByValue<Item = <Self::Space as LinearSpace>::F>,
-        <Self::Space as LinearSpace>::F: num::Zero,
+        <Self::Space as LinearSpace>::F: num::Zero + num::One + PartialEq + Copy,
     {
-        let space = self.space();
-        // `apply` validates the coefficients, so a shape error returns before
-        // `output` is touched.
-        let mut result = self.apply(coefficients)?;
-        if num::Zero::is_zero(&beta) {
-            // Do not read the previous output at all, so a zero `beta` discards
-            // non-finite values instead of propagating them.
-            space.scale_inplace(&alpha, &mut result);
-            *output.imp_mut() = result.into_imp();
-        } else {
-            space.scale_inplace(&beta, output);
-            space.axpy_inplace(&alpha, &result, output);
-        }
-        Ok(())
+        accumulate_columns(
+            self.space(),
+            self.len(),
+            alpha,
+            coefficients,
+            beta,
+            output,
+            (0..self.len()).map(|index| self.element(index).unwrap()),
+        )
     }
+}
+
+/// Accumulate `output = alpha * sum_i coefficients[i] * columns[i] + beta * output`.
+///
+/// Shared by the [`FrameApply::apply_into`] default and element-backed frames.
+/// The coefficient length is validated before `output` is touched. A zero
+/// `beta` replaces `output` by the zero element first, so non-finite previous
+/// values are discarded rather than propagated; a unit `beta` skips the scaling
+/// pass; any other `beta` scales `output` in place. Each column is then folded
+/// in with one [`LinearSpace::axpy_inplace`], so no temporary element is formed.
+/// `columns` may yield owned elements or references to stored ones.
+pub(crate) fn accumulate_columns<'a, S, A, C>(
+    space: &S,
+    len: usize,
+    alpha: S::F,
+    coefficients: &crate::Array<A, 1>,
+    beta: S::F,
+    output: &mut Element<S>,
+    columns: impl IntoIterator<Item = C>,
+) -> crate::RlstResult<()>
+where
+    S: LinearSpace + 'a,
+    S::F: num::Zero + num::One + PartialEq + Copy,
+    A: crate::Shape<1> + crate::UnsafeRandom1DAccessByValue<Item = S::F>,
+    C: std::borrow::Borrow<Element<'a, S>>,
+{
+    if coefficients.shape()[0] != len {
+        return Err(crate::RlstError::SingleDimensionError {
+            expected: len,
+            actual: coefficients.shape()[0],
+        });
+    }
+    if num::Zero::is_zero(&beta) {
+        *output.imp_mut() = space.zero().into_imp();
+    } else if !num::One::is_one(&beta) {
+        space.scale_inplace(&beta, output);
+    }
+    for (coefficient, column) in coefficients.iter_value().zip(columns) {
+        space.axpy_inplace(&(alpha * coefficient), column.borrow(), output);
+    }
+    Ok(())
 }

@@ -151,14 +151,16 @@
 //!
 //! Implementations supporting [`FrameApply`](crate::FrameApply) enable the wrapper's
 //! `apply`, `apply_into`, and `adjoint_apply` methods. `adjoint_apply` returns the
-//! inner products of an element with every column, so `adjoint_apply` followed by
-//! `apply_into` projects an element onto the span of the frame without copying
-//! columns. `apply` and `apply_into` accept strided coefficient arrays and lazy
-//! expressions. Dense application uses BLAS with a `Gemm` scalar,
+//! inner products of an element with every column, `V^H x` for the column matrix
+//! `V`. When the columns are orthonormal, as for the Q factor of `qr_pivoted` or
+//! a Krylov basis, `adjoint_apply` followed by `apply_into` projects an element
+//! onto their span without copying columns; for general columns the result is
+//! not a projection. `apply` and `apply_into` accept strided coefficient arrays
+//! and lazy expressions. Dense application uses BLAS with a `Gemm` scalar,
 //! borrowing the active matrix and packing only the coefficients. Generic
 //! application uses the space's operations, borrowing each column and
 //! accumulating through [`LinearSpace::axpy_inplace`](crate::LinearSpace::axpy_inplace)
-//! rather than copying columns or forming scaled temporaries.
+//! rather than copying columns or forming temporaries, for `apply_into` as well.
 //! `apply_into(alpha, coefficients, beta, output)` computes
 //! `output = alpha * frame * coefficients + beta * output`; a zero `beta`
 //! discards the old output. Dense frames validate element dimensions. Generic
@@ -241,7 +243,8 @@
 //! break down or fail to converge. `run` mutates `x` and returns
 //! `||b-Ax|| / ||b||`, except that it returns the absolute residual when b is
 //! zero. Reaching the iteration limit is not a separate error, so compare the
-//! returned value with the requested tolerance.
+//! returned value with the requested tolerance. The iteration borrows `x`
+//! only until `run` returns, after which `x` holds the approximation.
 //!
 //!
 //! ```
@@ -276,6 +279,10 @@
 //!     .print_debug();
 //! let res = cg.run();
 //! assert!(res < tol);
+//! // `x` now holds the approximation.
+//! let mut check = zero_element(op.range());
+//! op.apply(1.0, &x, 0.0, &mut check);
+//! assert!((&check - &rhs).norm() < tol * rhs.norm());
 //! ```
 //!
 //! The callback receives the updated approximation and the corresponding
@@ -304,7 +311,13 @@
 //! way. In addition, `set_restart` bounds the size of the Krylov basis. Without
 //! it GMRES does not restart, so the basis can grow to `max_iter` elements and
 //! the work per iteration grows with the iteration count. Restarting bounds both,
-//! but restarted GMRES can stagnate on problems that full GMRES solves.
+//! but restarted GMRES can stagnate on problems that full GMRES solves. The true
+//! residual is recomputed at the end of every cycle; a cycle that does not
+//! reduce it is undone and ends the iteration, so `x` is never worse than the
+//! initial guess. Breakdown is detected relative to the norm of the new
+//! Hessenberg column rather than by an exact comparison with zero, so a
+//! numerically exhausted Krylov space ends the cycle instead of turning
+//! rounding noise into basis vectors.
 //!
 //! ```
 //! # extern crate blas_src;
@@ -316,6 +329,7 @@
 //! use rlst::operator::space::zero_element;
 //! use rlst::operator::algorithms::gmres::GmresIteration;
 //! use rlst::traits::abstract_operator::OperatorBase;
+//! use rlst::traits::Norm;
 //! let dim = 20;
 //! let tol = 1E-8;
 //! let mut residuals = Vec::<f64>::new();
@@ -341,6 +355,10 @@
 //!     .print_debug();
 //! let res = gmres.run();
 //! assert!(res < tol);
+//! // `x` now holds the approximation.
+//! let mut check = zero_element(op.range());
+//! op.apply(1.0, &x, 0.0, &mut check);
+//! assert!((&check - &rhs).norm() < tol * rhs.norm());
 //! ```
 //!
 //! The callback of `set_callable` receives the number of Arnoldi steps taken so
@@ -351,4 +369,5 @@
 //! one additional linear combination of the Krylov basis and one operator
 //! application per iteration. Both callbacks follow the same schedule as the `CG`
 //! callback: they run after each successful step, before convergence is checked,
-//! and not for an already-converged initial guess or a pre-update breakdown.
+//! and not for an already-converged initial guess or a step that ends in a
+//! degenerate pivot.

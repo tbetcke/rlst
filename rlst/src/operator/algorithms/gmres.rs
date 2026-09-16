@@ -16,9 +16,9 @@ use num::{Float, One, Zero};
 
 use crate::{
     DynArray, ElementFrame, FrameApply, GenericFrameImpl, InnerProductSpace, Norm, NormedSpace,
-    RlstScalar, SliceArray,
+    RlstScalar,
     abstract_operator::OperatorBase,
-    operator::{abstract_operator::Operator, element::Element},
+    operator::{abstract_operator::Operator, element::Element, frame::orthogonalize_twice},
 };
 
 /// Builder and in-place iteration for the generalized minimal residual method.
@@ -27,11 +27,17 @@ use crate::{
 /// itself. [`Self::run`] mutates the supplied initial guess and returns a
 /// residual measure, not a convergence flag.
 ///
+/// The iteration borrows the operator and the right-hand side for `'a` and the
+/// initial guess, an element borrowing its space for `'b`, mutably for `'a`
+/// only. The mutable borrow ends when [`Self::run`] consumes the iteration, so
+/// the solution can be read from the element afterwards.
+///
 /// Without restarting, the Krylov basis grows by one element per iteration and
 /// the work per iteration grows linearly, so long runs should set a restart
 /// length with [`Self::set_restart`].
 pub struct GmresIteration<
     'a,
+    'b,
     Scalar: RlstScalar,
     Space: InnerProductSpace<F = Scalar>,
     OpImpl: OperatorBase<Domain = Space, Range = Space>,
@@ -39,7 +45,7 @@ pub struct GmresIteration<
 > {
     operator: &'a Operator<OpImpl>,
     rhs: &'a Element<'a, Space>,
-    x: &'a mut Element<'a, Space>,
+    x: &'a mut Element<'b, Space>,
     max_iter: usize,
     restart: Option<usize>,
     tol: Scalar::Real,
@@ -53,10 +59,11 @@ pub struct GmresIteration<
 
 impl<
     'a,
+    'b,
     Scalar: RlstScalar,
     Space: InnerProductSpace<F = Scalar>,
     OpImpl: OperatorBase<Domain = Space, Range = Space>,
-> GmresIteration<'a, Scalar, Space, OpImpl, GenericFrameImpl<'a, Space>>
+> GmresIteration<'a, 'b, Scalar, Space, OpImpl, GenericFrameImpl<'a, Space>>
 where
     Space: NormedSpace<Output = Scalar::Real>,
 {
@@ -65,13 +72,14 @@ where
     /// This function takes an operator `op`, a right-hand side `rhs`, and an element `x` of the
     /// function space as starting approximation. Typically, `x` can be chosen to be the zero
     /// element of the space. Defaults are tolerance `1E-6`, 1000 iterations, and no restarting.
+    /// `x` is borrowed only until [`Self::run`] returns and holds the approximation afterwards.
     ///
     /// The Krylov basis is stored in an element-backed frame. Use
     /// [`Self::set_storage`] to choose a different frame implementation.
     pub fn new(
         op: &'a Operator<OpImpl>,
         rhs: &'a Element<'a, Space>,
-        x: &'a mut Element<'a, Space>,
+        x: &'a mut Element<'b, Space>,
     ) -> Self {
         Self {
             operator: op,
@@ -90,11 +98,12 @@ where
 
 impl<
     'a,
+    'b,
     Scalar: RlstScalar,
     Space: InnerProductSpace<F = Scalar>,
     OpImpl: OperatorBase<Domain = Space, Range = Space>,
     Storage: FrameApply<'a, Space = Space>,
-> GmresIteration<'a, Scalar, Space, OpImpl, Storage>
+> GmresIteration<'a, 'b, Scalar, Space, OpImpl, Storage>
 where
     Space: NormedSpace<Output = Scalar::Real>,
 {
@@ -102,14 +111,26 @@ where
     /// element-backed frame.
     ///
     /// The frame is scratch space: it is cleared at the start of every restart
-    /// cycle, so elements it already holds are discarded while its allocated
-    /// capacity is reused. The frame must borrow the space of the right-hand
-    /// side; array-backed spaces keep the basis as one dense matrix with
+    /// cycle, so elements it already holds are discarded. Array-backed frames
+    /// keep their matrix allocation across cycles, while element-backed frames
+    /// free their elements and allocate again as the basis grows. The frame
+    /// must borrow the space of the right-hand side; array-backed spaces keep
+    /// the basis as one dense matrix with
     /// `set_storage(ElementFrame::new(ArrayFrameImpl::new(rhs.space())))`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `storage` borrows a different space instance than the
+    /// right-hand side. Instances of a zero-sized space type carry no state and
+    /// are always accepted.
     pub fn set_storage<NewStorage: FrameApply<'a, Space = Space>>(
         self,
         storage: ElementFrame<'a, NewStorage>,
-    ) -> GmresIteration<'a, Scalar, Space, OpImpl, NewStorage> {
+    ) -> GmresIteration<'a, 'b, Scalar, Space, OpImpl, NewStorage> {
+        assert!(
+            std::mem::size_of::<Space>() == 0 || std::ptr::eq(storage.space(), self.rhs.space()),
+            "GMRES: the storage frame must borrow the space of the right-hand side."
+        );
         GmresIteration {
             operator: self.operator,
             rhs: self.rhs,
@@ -164,7 +185,8 @@ where
     /// residual, normalized as described in [`Self::set_tol`]. Both values come
     /// from the Givens recursion at no additional cost. The callable runs after
     /// each successful step, before convergence is checked. It is not called for
-    /// an already-converged initial guess or a pre-update breakdown.
+    /// an already-converged initial guess or a step that ends in a degenerate
+    /// pivot.
     ///
     /// Use [`Self::set_element_callable`] to inspect the approximation and the
     /// residual themselves.
@@ -206,18 +228,27 @@ where
     /// Returns the final relative residual, or the absolute residual when the
     /// right-hand side is zero. The residual is recomputed from the operator at
     /// the end of every restart cycle, so the returned value is the true
-    /// residual and not the estimate from the Givens recursion. The caller
-    /// determines convergence by comparing this value with the configured
-    /// tolerance; exhausting `max_iter` is not otherwise signaled. An exact
-    /// initial solution returns immediately. If GMRES encounters a degenerate
-    /// or non-finite Hessenberg column, it terminates without applying an
-    /// invalid update and returns the current residual. The callables are
-    /// invoked only after successful steps.
+    /// residual of `x` and not the estimate from the Givens recursion. The
+    /// caller determines convergence by comparing this value with the
+    /// configured tolerance; exhausting `max_iter` is not otherwise signaled.
+    /// An exact initial solution returns immediately.
+    ///
+    /// Breakdown is detected relative to the norm of the operator applied to
+    /// the latest basis vector, which is also the norm of the new Hessenberg
+    /// column: a new basis vector or a least-squares pivot smaller than
+    /// `100 * epsilon` times that norm, or not finite, ends the current cycle.
+    /// The basis vector belonging to a degenerate pivot is discarded, so no
+    /// invalid update is applied; the update over the remaining columns is
+    /// applied as usual. If a cycle does not reduce the true residual, or
+    /// produces a non-finite one, the previous approximation is restored and
+    /// the iteration stops. `x` is therefore never worse than the initial
+    /// guess and the returned residual always belongs to `x`. The callables
+    /// are invoked only after successful steps.
     ///
     /// # Panics
     ///
-    /// Panics if a frame supplied through [`Self::set_storage`] rejects an
-    /// element of the right-hand side's space.
+    /// Panics if a frame supplied through [`Self::set_storage`] rejects a
+    /// Krylov basis vector or the candidate that is orthogonalized against it.
     pub fn run(mut self) -> Scalar::Real {
         fn print_success<T: RlstScalar>(it_count: usize, rel_res: T) {
             println!(
@@ -272,6 +303,9 @@ where
         while total_iter < self.max_iter {
             // `res` holds `b - Ax` and `residual` its norm, both for the current `x`.
             let beta = residual;
+            // Kept so that a cycle which fails to reduce the true residual can
+            // be undone.
+            let previous_x = self.x.clone();
 
             // Columns of the Hessenberg matrix after all Givens rotations have
             // been applied. Column `k` holds `k + 1` entries, the last being the pivot.
@@ -291,14 +325,18 @@ where
                 .expect("GMRES: the frame rejected a Krylov basis vector.");
 
             let cycle_length = restart.min(self.max_iter - total_iter);
-            let mut breakdown = false;
 
             // Invariant: the frame holds exactly `hessenberg.len() + 1`
             // basis vectors at the top of each step, and exactly
             // `hessenberg.len()` once the cycle ends.
             for step in 0..cycle_length {
                 let mut candidate = self.operator.dot(&basis_vector);
-                let mut column = Self::orthogonalize(frame, &mut candidate);
+                // For an orthonormal basis this is the norm of the new
+                // Hessenberg column, which the rotations preserve. Both
+                // breakdown tests are relative to it.
+                let scale = Norm::norm(&candidate);
+                let mut column = orthogonalize_twice(frame, &mut candidate)
+                    .expect("GMRES: the frame rejected a Krylov candidate.");
                 let candidate_norm = Norm::norm(&candidate);
                 column.push(Scalar::from_real(candidate_norm));
 
@@ -315,15 +353,15 @@ where
                 }
 
                 // Eliminate the subdiagonal entry of the new column.
-                let (cosine, sine, pivot) = givens_rotation(column[step], column[step + 1]);
-                if pivot == zero_real || !pivot.is_finite() {
+                let pivot = column[step].abs().hypot(column[step + 1].abs());
+                if degenerate(pivot, scale) {
                     // A degenerate column carries no usable update. Drop the
                     // basis vector it belongs to so the frame matches the
                     // Hessenberg columns.
                     frame.pop();
-                    breakdown = true;
                     break;
                 }
+                let (cosine, sine) = givens_rotation(column[step], column[step + 1], pivot);
                 column[step] = Scalar::from_real(pivot);
                 column.pop();
                 cosines.push(cosine);
@@ -351,7 +389,7 @@ where
                             One::one(),
                             &mut current,
                         )
-                        .expect("GMRES: the frame rejected the coefficient vector.");
+                        .expect("GMRES: internal error, the frame and the Hessenberg matrix are out of step.");
                     let mut current_residual = self.rhs.clone();
                     self.operator.apply(
                         -<Scalar as One>::one(),
@@ -366,10 +404,9 @@ where
                     break;
                 }
 
-                if candidate_norm == zero_real || !candidate_norm.is_finite() {
-                    // The Krylov space is invariant; the current least-squares
-                    // solution is the best this cycle can produce.
-                    breakdown = true;
+                if degenerate(candidate_norm, scale) {
+                    // The Krylov space is (numerically) invariant; the current
+                    // least-squares solution is the best this cycle can produce.
                     break;
                 }
 
@@ -391,7 +428,9 @@ where
                         One::one(),
                         self.x,
                     )
-                    .expect("GMRES: the frame rejected the coefficient vector.");
+                    .expect(
+                        "GMRES: internal error, the frame and the Hessenberg matrix are out of step.",
+                    );
             }
 
             // Recompute the true residual rather than trusting the estimate.
@@ -408,10 +447,22 @@ where
                 return reported_residual;
             }
 
-            if breakdown || hessenberg.is_empty() || residual == zero_real || !residual.is_finite()
-            {
+            if residual >= beta || !residual.is_finite() {
+                // The cycle did not improve on its starting point, so another
+                // cycle from the same state cannot either. Undo it.
+                *self.x = previous_x;
+                reported_residual = report(beta, rhs_norm, use_absolute_residual);
                 if self.print_debug {
                     print_fail(total_iter, reported_residual);
+                }
+                return reported_residual;
+            }
+
+            if residual == zero_real {
+                // Reachable only for a zero tolerance; the next cycle would
+                // divide by the residual norm.
+                if self.print_debug {
+                    print_success(total_iter, reported_residual);
                 }
                 return reported_residual;
             }
@@ -421,41 +472,6 @@ where
             print_fail(total_iter, reported_residual);
         }
         reported_residual
-    }
-
-    /// Orthogonalize `candidate` against the frame and return the projection
-    /// coefficients, one per basis vector.
-    ///
-    /// Two passes of classical Gram-Schmidt (CGS2) are used because they work
-    /// on the whole frame at once through [`FrameApply::adjoint_apply`] and
-    /// [`FrameApply::apply_into`], so array-backed frames run two dense
-    /// matrix-vector products per pass and no basis vector is copied.
-    fn orthogonalize(
-        frame: &ElementFrame<'a, Storage>,
-        candidate: &mut Element<Space>,
-    ) -> Vec<Scalar> {
-        let mut coefficients = Vec::new();
-        for pass in 0..2 {
-            let projection = frame
-                .adjoint_apply(candidate)
-                .expect("GMRES: the frame rejected a Krylov candidate.");
-            frame
-                .apply_into(
-                    -<Scalar as One>::one(),
-                    &SliceArray::from_shape(&projection, [projection.len()]),
-                    One::one(),
-                    candidate,
-                )
-                .expect("GMRES: the frame rejected the coefficient vector.");
-            if pass == 0 {
-                coefficients = projection;
-            } else {
-                for (total, correction) in coefficients.iter_mut().zip(projection) {
-                    *total += correction;
-                }
-            }
-        }
-        coefficients
     }
 }
 
@@ -468,22 +484,30 @@ fn report<Real: Float>(residual: Real, rhs_norm: Real, use_absolute_residual: bo
     }
 }
 
-/// Compute a Givens rotation that eliminates `lower` against `upper`.
+/// Whether `value` is negligible relative to `scale`, or either is not finite.
 ///
-/// The returned `(cosine, sine, pivot)` satisfy
+/// The threshold is `100 * epsilon` of the real type, as for the default
+/// [`crate::FrameQrOptions`]. An exact comparison with zero would never fire
+/// on rounded data and would let GMRES normalize round-off noise into basis
+/// vectors or divide by a vanishing pivot.
+fn degenerate<Real: Float>(value: Real, scale: Real) -> bool {
+    !value.is_finite()
+        || !scale.is_finite()
+        || value <= Real::from(100).unwrap() * Real::epsilon() * scale
+}
+
+/// Compute the Givens rotation that eliminates `lower` against `upper`.
+///
+/// `pivot` must be `hypot(|upper|, |lower|)`, which the caller has already
+/// checked to be usable. The returned `(cosine, sine)` satisfy
 /// `conj(cosine) * upper + conj(sine) * lower == pivot` and
-/// `-sine * upper + cosine * lower == 0`. A zero or non-finite pivot leaves the
-/// rotation as the identity and is reported to the caller through `pivot`.
+/// `-sine * upper + cosine * lower == 0`.
 fn givens_rotation<Scalar: RlstScalar>(
     upper: Scalar,
     lower: Scalar,
-) -> (Scalar, Scalar, Scalar::Real) {
-    let pivot = upper.abs().hypot(lower.abs());
-    if pivot == <Scalar::Real as Zero>::zero() || !pivot.is_finite() {
-        (<Scalar as One>::one(), <Scalar as Zero>::zero(), pivot)
-    } else {
-        (upper.div_real(pivot), lower.div_real(pivot), pivot)
-    }
+    pivot: Scalar::Real,
+) -> (Scalar, Scalar) {
+    (upper.div_real(pivot), lower.div_real(pivot))
 }
 
 /// Apply the rotation defined by `cosine` and `sine` to a pair of entries.
@@ -536,7 +560,7 @@ mod test {
         dense::array::DynArray,
         operator::{
             abstract_operator::Operator, algorithms::gmres::GmresIteration, element::Element,
-            space::zero_element,
+            interface::array_vector_space::ArrayVectorSpace, space::zero_element,
         },
     };
 
@@ -1011,5 +1035,100 @@ mod test {
 
         assert_eq!(residual, 1.0);
         assert_eq!(callback_count.get(), 0);
+    }
+
+    #[test]
+    fn solution_is_readable_after_run() {
+        let mut mat = DynArray::<f64, 2>::from_shape([2, 2]);
+        mat[[0, 1]] = 1.0;
+        mat[[1, 0]] = -1.0;
+        let op = Operator::from(&mat);
+        let mut rhs = zero_element(op.range());
+        rhs.imp_mut()[[0]] = 1.0;
+        rhs.imp_mut()[[1]] = 2.0;
+        let mut x = zero_element(op.domain());
+
+        let residual = GmresIteration::new(&op, &rhs, &mut x).set_tol(1E-12).run();
+
+        // The mutable borrow of `x` ends with `run`, so the solution is read
+        // directly rather than through a callback.
+        assert!(residual < 1E-12);
+        assert_relative_eq!(x.imp()[[0]], -2.0, epsilon = 1E-10);
+        assert_relative_eq!(x.imp()[[1]], 1.0, epsilon = 1E-10);
+    }
+
+    #[test]
+    fn near_breakdown_keeps_the_minimal_residual_solution() {
+        // A = diag(1, 0) and b = (1, 1). The Krylov space is exhausted after
+        // two steps with a rank-deficient Hessenberg matrix, and rounding
+        // leaves the breakdown quantities tiny rather than exactly zero. The
+        // minimal residual solution has x_0 = 1 and residual (0, 1).
+        let mut mat = DynArray::<f64, 2>::from_shape([2, 2]);
+        mat[[0, 0]] = 1.0;
+        let op = Operator::from(&mat);
+        let mut rhs = zero_element(op.range());
+        rhs.imp_mut()[[0]] = 1.0;
+        rhs.imp_mut()[[1]] = 1.0;
+        let mut x = zero_element(op.domain());
+        let steps = Cell::new(0);
+
+        let residual = GmresIteration::new(&op, &rhs, &mut x)
+            .set_tol(1E-12)
+            .set_max_iter(50)
+            .set_callable(|count, _| steps.set(count))
+            .run();
+
+        assert_relative_eq!(residual, 0.5_f64.sqrt(), epsilon = 1E-12);
+        assert!(steps.get() <= 2, "GMRES took {} steps", steps.get());
+        assert_relative_eq!(x.imp()[[0]], 1.0, epsilon = 1E-10);
+        assert!(x.imp()[[1]].is_finite());
+    }
+
+    #[test]
+    fn cycle_without_progress_is_undone() {
+        // An upper bidiagonal matrix with a rapidly decaying diagonal is
+        // numerically singular, so the least-squares update eventually
+        // amplifies rounding errors. `x` must never end up worse than the
+        // initial guess and the returned residual must belong to `x`.
+        let dim = 30;
+        let mut mat = DynArray::<f64, 2>::from_shape([dim, dim]);
+        for index in 0..dim {
+            mat[[index, index]] = 10f64.powi(-((index / 3) as i32));
+            if index + 1 < dim {
+                mat[[index, index + 1]] = 1.0;
+            }
+        }
+        let op = Operator::from(&mat);
+        let mut rng = ChaCha8Rng::seed_from_u64(5);
+        let mut rhs = zero_element(op.range());
+        rhs.imp_mut().fill_from_equally_distributed(&mut rng);
+        let mut x = zero_element(op.domain());
+
+        let residual = GmresIteration::new(&op, &rhs, &mut x)
+            .set_tol(1E-10)
+            .set_max_iter(200)
+            .run();
+
+        assert!(residual.is_finite());
+        assert!(
+            residual <= 1.0,
+            "residual {residual} exceeds the initial guess"
+        );
+        let mut check = rhs.clone();
+        op.apply(-1.0, &x, 1.0, &mut check);
+        assert_relative_eq!(check.norm() / rhs.norm(), residual, max_relative = 1E-8);
+    }
+
+    #[test]
+    #[should_panic(expected = "borrow the space of the right-hand side")]
+    fn storage_over_a_different_space_instance_is_rejected() {
+        let mat = non_symmetric_matrix(3);
+        let op = Operator::from(&mat);
+        let rhs = zero_element(op.range());
+        let mut x = zero_element(op.domain());
+        let other = ArrayVectorSpace::<f64>::new(3);
+
+        let _ = GmresIteration::new(&op, &rhs, &mut x)
+            .set_storage(ElementFrame::new(ArrayFrameImpl::new(&other)));
     }
 }
