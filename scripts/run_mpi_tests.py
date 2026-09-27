@@ -32,6 +32,9 @@ CASES = (
     "distributed-dot-rejection",
     "remap-layout-agreement",
     "layouts-and-consumers",
+    "ghost-variable-chunks",
+    "exchange-buffer-mismatch-panics",
+    "ghost-edge-topologies",
 )
 TIMEOUT_SECONDS = 30
 BUILD_TIMEOUT_SECONDS = 900

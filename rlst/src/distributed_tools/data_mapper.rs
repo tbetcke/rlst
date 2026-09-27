@@ -10,7 +10,7 @@ use std::{collections::HashMap, rc::Rc};
 use itertools::{Itertools, izip};
 use mpi::traits::{CommunicatorCollectives, Equivalence};
 
-use super::IndexLayout;
+use super::{ChunkSizes, GhostCommunicatorBuilder, IndexLayout};
 
 /// Maps global data to local data.
 pub struct Global2LocalDataMapper<'a, C: CommunicatorCollectives> {
@@ -18,28 +18,48 @@ pub struct Global2LocalDataMapper<'a, C: CommunicatorCollectives> {
     ghost_communicator: super::GhostCommunicator<usize>,
     ghost_to_position: HashMap<usize, usize>,
     required_dofs: Vec<usize>,
+    chunk_size: usize,
 }
 
 impl<'a, C: CommunicatorCollectives> Global2LocalDataMapper<'a, C> {
     /// Create a new data mapper.
     ///
-    /// The `required_dofs` are the dofs that are required on the local process.
-    pub fn new(index_layout: Rc<IndexLayout<'a, C>>, required_dofs: &[usize]) -> Self {
+    /// The `required_dofs` are the dofs that are required on the local process. Each dof is
+    /// associated with `chunk_size` consecutive values in the data vectors. The chunk size
+    /// must be positive and the same on every rank.
+    ///
+    /// This is a collective operation.
+    pub fn new(
+        index_layout: Rc<IndexLayout<'a, C>>,
+        required_dofs: &[usize],
+        chunk_size: usize,
+    ) -> Self {
         let comm = index_layout.comm();
         let rank = comm.rank() as usize;
 
         // First we go through the required dofs and get the ghosts
 
-        let valid = required_dofs
-            .iter()
-            .all(|&dof| index_layout.rank_from_index(dof).is_some());
+        let mut max_chunk_size = 0_usize;
+        comm.all_reduce_into(
+            &chunk_size,
+            &mut max_chunk_size,
+            mpi::collective::SystemOperation::max(),
+        );
+        let valid = chunk_size > 0
+            && chunk_size == max_chunk_size
+            && required_dofs
+                .iter()
+                .all(|&dof| index_layout.rank_from_index(dof).is_some());
         let mut all_valid = false;
         comm.all_reduce_into(
             &valid,
             &mut all_valid,
             mpi::collective::SystemOperation::logical_and(),
         );
-        assert!(all_valid, "required dof is outside the global layout");
+        assert!(
+            all_valid,
+            "required dof is outside the global layout or chunk sizes are invalid"
+        );
         let mut ghost_dofs = Vec::<usize>::new();
 
         for &dof in required_dofs {
@@ -52,22 +72,22 @@ impl<'a, C: CommunicatorCollectives> Global2LocalDataMapper<'a, C> {
 
         let ghost_dofs = ghost_dofs.iter().unique().copied().collect_vec();
 
-        // Get the ranks of the ghost
-
-        let ghost_owners = ghost_dofs
-            .iter()
-            .map(|&dof| index_layout.rank_from_index(dof).unwrap())
-            .collect_vec();
-
         // We now setup the ghost communicator
 
-        let ghost_communicator = super::GhostCommunicator::new(&ghost_dofs, &ghost_owners, comm);
+        let ghost_communicator = GhostCommunicatorBuilder::new()
+            .add_ghosts(
+                ghost_dofs
+                    .iter()
+                    .map(|&dof| (dof, index_layout.rank_from_index(dof).unwrap())),
+            )
+            .chunk_sizes(ChunkSizes::Uniform(chunk_size))
+            .build(comm);
 
         // We now create a dof to position array for the ghosts
 
         let ghost_to_position = HashMap::<usize, usize>::from_iter(
             ghost_communicator
-                .receive_indices
+                .receive_indices()
                 .iter()
                 .enumerate()
                 .map(|(i, &d)| (d, i)),
@@ -78,62 +98,45 @@ impl<'a, C: CommunicatorCollectives> Global2LocalDataMapper<'a, C> {
             ghost_communicator,
             ghost_to_position,
             required_dofs: required_dofs.to_vec(),
+            chunk_size,
         }
     }
 
     /// Map global data to the local required data
     ///
-    /// The input data is a vector of global data. A chunk size can be given in case multiple elements
-    /// are associated with each dof.
+    /// The input data is the vector of locally owned data, with `chunk_size` values for each
+    /// dof. The output holds the chunks of the required dofs in their given order.
+    ///
+    /// The input length is checked locally, without communication. If it is wrong, this rank
+    /// still takes part in the exchange with default values, so the other ranks complete
+    /// normally but receive default values from it, and then panics.
     pub fn map_data<T: Equivalence + Copy + Default + std::fmt::Debug>(
         &self,
         data: &[T],
-        chunk_size: usize,
     ) -> Vec<T> {
-        let expected_data_len = self.index_layout.number_of_local_indices() * chunk_size;
-        let expected_send_len = self.ghost_communicator.total_send_count() * chunk_size;
-        let expected_receive_len = self.ghost_communicator.total_receive_count() * chunk_size;
-        let output_len = self.required_dofs.len() * chunk_size;
-        let mut chunks = vec![0_usize; self.index_layout.comm().size() as usize];
-        self.index_layout
-            .comm()
-            .all_gather_into(&chunk_size, &mut chunks);
-        let valid = chunk_size > 0
-            && chunks.iter().all(|&candidate| candidate == chunk_size)
-            && expected_data_len == data.len();
-        let mut all_valid = false;
-        self.index_layout.comm().all_reduce_into(
-            &valid,
-            &mut all_valid,
-            mpi::collective::SystemOperation::logical_and(),
-        );
-        assert!(
-            all_valid,
-            "invalid or inconsistent mapper exchange metadata"
-        );
+        let chunk_size = self.chunk_size;
         let rank = self.index_layout.comm().rank() as usize;
-        let mut send_data = vec![T::default(); expected_send_len];
-        for (global_send_index, send_buffer_chunk) in izip!(
-            self.ghost_communicator.send_indices().iter(),
-            send_data.chunks_mut(chunk_size)
-        ) {
-            let local_start_index = self
-                .index_layout
-                .global2local(rank, *global_send_index)
-                .expect("ghost sender must own its requested index")
-                * chunk_size;
-            send_buffer_chunk
-                .copy_from_slice(&data[local_start_index..local_start_index + chunk_size]);
-        }
+        let data_valid = data.len() == self.index_layout.number_of_local_indices() * chunk_size;
 
-        let mut receive_data = vec![T::default(); expected_receive_len];
-        self.ghost_communicator.forward_send_values_by_chunks(
-            &send_data,
-            &mut receive_data,
-            chunk_size,
+        let send_buffer = self.ghost_communicator.send_buffer_from_fn(|index, chunk| {
+            if data_valid {
+                let local_start_index = self
+                    .index_layout
+                    .global2local(rank, index)
+                    .expect("ghost sender must own its requested index")
+                    * chunk_size;
+                chunk.copy_from_slice(&data[local_start_index..local_start_index + chunk_size]);
+            }
+        });
+        let receive_buffer = send_buffer.forward();
+        assert!(
+            data_valid,
+            "mapper input data has length {}, expected {}",
+            data.len(),
+            self.index_layout.number_of_local_indices() * chunk_size
         );
 
-        let mut output_data = vec![T::default(); output_len];
+        let mut output_data = vec![T::default(); self.required_dofs.len() * chunk_size];
         for (&dof, output_chunk) in izip!(
             self.required_dofs.iter(),
             output_data.chunks_mut(chunk_size)
@@ -148,9 +151,7 @@ impl<'a, C: CommunicatorCollectives> Global2LocalDataMapper<'a, C> {
                 output_chunk
                     .copy_from_slice(&data[local_dof * chunk_size..(local_dof + 1) * chunk_size]);
             } else {
-                let receive_start = self.ghost_to_position[&dof] * chunk_size;
-                output_chunk
-                    .copy_from_slice(&receive_data[receive_start..receive_start + chunk_size]);
+                output_chunk.copy_from_slice(receive_buffer.chunk(self.ghost_to_position[&dof]));
             }
         }
         output_data
@@ -159,6 +160,11 @@ impl<'a, C: CommunicatorCollectives> Global2LocalDataMapper<'a, C> {
     /// Return the index layout
     pub fn index_layout(&self) -> Rc<IndexLayout<'a, C>> {
         self.index_layout.clone()
+    }
+
+    /// Return the number of values associated with each dof.
+    pub fn chunk_size(&self) -> usize {
+        self.chunk_size
     }
 
     /// Return the ghost communicator

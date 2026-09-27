@@ -102,6 +102,55 @@ development version `0.8.0-dev`.
   `LinearSpace::axpy_inplace` and no longer allocates a scaled search direction
   per step.
 
+### Ghost communicator — migration required
+
+- `GhostCommunicator::new(&ghost_indices, &owning_ranks, comm)` has been replaced
+  by `GhostCommunicatorBuilder`. Ghosts are added one at a time with `add_ghost`
+  or as `(index, owner)` pairs with `add_ghosts`, and `build(comm)` creates the
+  communicator collectively. The builder assigns no positions: ghost values
+  arrive in the order of `receive_indices()`, grouped by ascending owning rank
+  and in insertion order within one owner, as before. Replace
+  `GhostCommunicator::new(&indices, &owners, comm)` with
+  `GhostCommunicatorBuilder::new().add_ghosts(indices.iter().copied().zip(owners.iter().copied())).build(comm)`.
+- Chunk sizes are now fixed when the communicator is built, with
+  `.chunk_sizes(ChunkSizes::Uniform(n))` (the default is `Uniform(1)`) or
+  `.chunk_sizes(ChunkSizes::PerIndex(Box::new(|index| ...)))`, with which each
+  owner gives the number of values for each of its indices. The size of a chunk
+  may vary per index and may be zero. `forward_send_values_by_chunks` and
+  `backward_send_values_by_chunks` have been removed; build a communicator with
+  `ChunkSizes::Uniform(chunk_size)` instead. `send_offsets()` and
+  `receive_offsets()` locate the chunk of each index, and `send_chunk_sizes()`
+  and `receive_chunk_sizes()` return the chunk sizes.
+- Added `GhostSendBuffer` and `GhostReceiveBuffer`, value buffers created by
+  the communicator with `send_buffer`, `send_buffer_from_fn`, or
+  `receive_buffer`. `GhostSendBuffer::forward` returns the received ghost values
+  and `GhostReceiveBuffer::backward` returns the values sent back to the owners.
+  Both give access to each chunk with `chunk`, `chunks`, and their mutable
+  variants. The buffers always have the communicator's layout, so these
+  exchanges cannot fail; they are the recommended way to exchange values.
+- Value exchanges no longer communicate across the whole communicator. The
+  slice-based `forward_send_values` and `backward_send_values` remain for
+  writing into existing storage, now require `T: Copy + Default`, and expect
+  slices of `send_buffer_len()` and `receive_buffer_len()` values. They check
+  the lengths locally; on a mismatch the rank still takes part in the exchange
+  with default values, so its neighbours do not block but receive default
+  values from it, and then panics. Invalid owners, a zero uniform chunk size,
+  uniform chunk sizes that disagree between an owner and a receiver, and value
+  counts beyond MPI's `i32` limit are rejected collectively by `build`.
+- All fields of `GhostCommunicator` are now private. Use the accessors, for
+  example `receive_indices()` in place of `receive_indices` and
+  `total_receive_count()` in place of `total_receive_count`. The send and
+  receive displacements are no longer exposed.
+- `Global2LocalDataMapper::new` and `DataPermutation::new` take the chunk size
+  as a new last argument, and `map_data`, `forward_permute`, and
+  `backward_permute` no longer take one. The constructors reject a zero chunk
+  size or chunk sizes that differ between ranks collectively. The exchanges no
+  longer communicate globally; on wrong buffer lengths they take part in the
+  exchange with default values and then panic on the offending rank.
+  Create one mapper or permutation per chunk size, for example
+  `DataPermutation::new(layout, &indices, 2)` followed by
+  `permutation.forward_permute(&data, &mut permuted)`.
+
 ## v0.7.0
 
 Changes since [v0.6.1](https://codeberg.org/rlst/rlst/releases/tag/v0.6.1),
