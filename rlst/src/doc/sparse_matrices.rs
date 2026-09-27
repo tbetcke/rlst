@@ -140,7 +140,7 @@
 //!
 //! # Direct sparse solves with UMFPACK
 //!
-//! The companion `rlst-suitesparse` crate added during 0.7 development factorizes real `f64`
+//! The companion `rlst-suitesparse` crate, added in RLST 0.7, factorizes real `f64`
 //! and complex `c64` CSR matrices with SuiteSparse UMFPACK. Call `factorize()` once and reuse the
 //! returned numeric factorization for multiple contiguous vector right-hand sides. Matrices must
 //! be nonempty and square; singularity is exposed through the factorization status.
