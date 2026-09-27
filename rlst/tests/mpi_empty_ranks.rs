@@ -1321,6 +1321,7 @@ fn ghost_variable_chunks<C: CommunicatorCollectives>(comm: &C) {
 /// instead of blocking.
 fn exchange_buffer_mismatch_panics<C: CommunicatorCollectives>(comm: &C) {
     let rank = comm.rank() as usize;
+    let size = comm.size() as usize;
     let mut builder = GhostCommunicatorBuilder::new();
     if rank != 0 {
         builder.add_ghost(0_usize, 0);
@@ -1336,6 +1337,63 @@ fn exchange_buffer_mismatch_panics<C: CommunicatorCollectives>(comm: &C) {
     .is_err();
     let ghost_ok = ghost_panicked == (rank == 0) && receive.iter().all(|&value| value == 0);
 
+    // The last rank passes a receive buffer with one value too many. Rank zero's values reach
+    // every other receiver, while the offending rank's own slice stays untouched.
+    let last = size - 1;
+    let send = vec![7_i32; ghosts.send_buffer_len()];
+    let mut receive = vec![-1_i32; ghosts.receive_buffer_len() + usize::from(rank == last)];
+    let receive_panicked = std::panic::catch_unwind(AssertUnwindSafe(|| {
+        ghosts.forward_send_values(&send, &mut receive);
+    }))
+    .is_err();
+    let receive_ok = receive_panicked == (rank == last)
+        && receive
+            .iter()
+            .all(|&value| value == if rank == last { -1 } else { 7 });
+
+    // In the backward direction, the last rank sends one value too many; its owner receives
+    // default values from it and the values of every other receiver.
+    let back_send = vec![3_i32; ghosts.receive_buffer_len() + usize::from(rank == last)];
+    let mut back_receive = vec![-1_i32; ghosts.send_buffer_len()];
+    let backward_panicked = std::panic::catch_unwind(AssertUnwindSafe(|| {
+        ghosts.backward_send_values(&back_send, &mut back_receive);
+    }))
+    .is_err();
+    // Rank zero's send slots are ordered by the requesting ranks 1, 2, ...
+    let backward_ok = backward_panicked == (rank == last)
+        && back_receive
+            .iter()
+            .enumerate()
+            .all(|(slot, &value)| value == if slot + 1 == last { 0 } else { 3 });
+
+    // Permutation over a ring: each rank takes the index of its successor. Rank zero passes
+    // one input value too many forwards, so its predecessor receives a default value.
+    let ring_layout = Rc::new(IndexLayout::from_local_counts(1, comm));
+    let permutation = DataPermutation::new(ring_layout, &[(rank + 1) % size], 1);
+    let forward_data = vec![10 + rank as i32; 1 + usize::from(rank == 0)];
+    let mut forward = [-1_i32];
+    let forward_panicked = std::panic::catch_unwind(AssertUnwindSafe(|| {
+        permutation.forward_permute(&forward_data, &mut forward);
+    }))
+    .is_err();
+    let permute_forward_ok = forward_panicked == (rank == 0)
+        && (rank == 0
+            || forward[0]
+                == if (rank + 1).is_multiple_of(size) {
+                    0
+                } else {
+                    10 + (rank as i32 + 1)
+                });
+    // Backwards, rank zero passes an output buffer that is too long, so its successor
+    // receives a default value.
+    let mut backward = vec![-1_i32; 1 + usize::from(rank == 0)];
+    let backward_permute_panicked = std::panic::catch_unwind(AssertUnwindSafe(|| {
+        permutation.backward_permute(&[100 + rank as i32], &mut backward);
+    }))
+    .is_err();
+    let permute_backward_ok = backward_permute_panicked == (rank == 0)
+        && (rank == 0 || backward[0] == if rank == 1 { 0 } else { 100 + rank as i32 - 1 });
+
     // Rank zero passes one value too many to the mapper; the others request its dof.
     let layout = Rc::new(IndexLayout::from_local_counts(1, comm));
     let required = if rank == 0 { Vec::new() } else { vec![0] };
@@ -1349,8 +1407,147 @@ fn exchange_buffer_mismatch_panics<C: CommunicatorCollectives>(comm: &C) {
 
     collective_assert(
         comm,
-        ghost_ok && mapper_ok,
+        ghost_ok
+            && receive_ok
+            && backward_ok
+            && mapper_ok
+            && permute_forward_ok
+            && permute_backward_ok,
         "a buffer mismatch must panic only on its rank, without blocking the neighbours",
+    );
+}
+
+/// Contract: ghosts owned by the requesting rank itself and duplicated ghosts are separate
+/// entries that are routed exactly in both directions, and chunk sizes whose value counts
+/// overflow `usize` or MPI's `i32` counts are rejected collectively by the build.
+fn ghost_edge_topologies<C: CommunicatorCollectives>(comm: &C) {
+    let rank = comm.rank() as usize;
+    let size = comm.size() as usize;
+    let owner = |index: usize| index % size;
+    // Each rank requests its own index and, twice, the index of its successor.
+    let requests =
+        |requester: usize| vec![requester, (requester + 1) % size, (requester + 1) % size];
+    let receive_order = |requester: usize| {
+        let mut order = requests(requester);
+        order.sort_by_key(|&index| owner(index));
+        order
+    };
+    let chunk_size = |index: usize| index % 2 + 1;
+
+    let ghosts = GhostCommunicatorBuilder::new()
+        .add_ghosts(
+            requests(rank)
+                .into_iter()
+                .map(|index| (index, owner(index))),
+        )
+        .chunk_sizes(ChunkSizes::PerIndex(Box::new(chunk_size)))
+        .build(comm);
+
+    let order_ok = ghosts.receive_indices() == receive_order(rank).as_slice();
+    let self_ok =
+        ghosts.in_ranks().contains(&(rank as i32)) && ghosts.out_ranks().contains(&(rank as i32));
+
+    // The block sent to each requester lists its requests for our indices, duplicates
+    // included, in its receive order.
+    let mut start = 0;
+    let mut routing_ok = true;
+    for (&requester, &count) in ghosts.out_ranks().iter().zip(ghosts.send_counts()) {
+        let expected = receive_order(requester as usize)
+            .into_iter()
+            .filter(|&index| owner(index) == rank)
+            .collect::<Vec<_>>();
+        routing_ok &= ghosts.send_indices()[start..start + count as usize] == expected;
+        start += count as usize;
+    }
+    routing_ok &= start == ghosts.total_send_count();
+
+    let value = |index: usize, k: usize| (10 * index + k) as i64;
+    let send = ghosts.send_buffer_from_fn(|index, chunk: &mut [i64]| {
+        for (k, entry) in chunk.iter_mut().enumerate() {
+            *entry = value(index, k);
+        }
+    });
+    let received = send.forward();
+    let forward_ok = received.chunks().all(|(index, chunk)| {
+        chunk.len() == chunk_size(index)
+            && chunk
+                .iter()
+                .enumerate()
+                .all(|(k, &entry)| entry == value(index, k))
+    });
+
+    // Filling a plain buffer chunk by chunk gives the same payload.
+    let mut refilled = ghosts.send_buffer::<i64>();
+    for i in 0..ghosts.total_send_count() {
+        let index = ghosts.send_indices()[i];
+        for (k, entry) in refilled.chunk_mut(i).iter_mut().enumerate() {
+            *entry = value(index, k);
+        }
+    }
+    let buffers_ok = std::ptr::eq(refilled.ghosts(), &ghosts)
+        && refilled.forward().into_vec() == received.as_slice();
+
+    // Receivers tag every value with their rank and the ghost's receive position, so the
+    // owner can check that each value comes back to the right slot.
+    let tag = |requester: usize, position: usize, k: usize| {
+        (1000 * (requester + 1) + 100 * position + k) as i64
+    };
+    let mut returned_values = ghosts.receive_buffer::<i64>();
+    for position in 0..ghosts.total_receive_count() {
+        for (k, entry) in returned_values.chunk_mut(position).iter_mut().enumerate() {
+            *entry = tag(rank, position, k);
+        }
+    }
+    let returned_raw = returned_values.as_slice().to_vec();
+    let returned = returned_values.backward();
+    let mut slot = 0;
+    let mut backward_ok = true;
+    for (&requester, &count) in ghosts.out_ranks().iter().zip(ghosts.send_counts()) {
+        let positions = receive_order(requester as usize)
+            .into_iter()
+            .enumerate()
+            .filter(|&(_, index)| owner(index) == rank)
+            .map(|(position, _)| position)
+            .collect::<Vec<_>>();
+        backward_ok &= positions.len() == count as usize;
+        for &position in &positions {
+            backward_ok &= returned
+                .chunk(slot)
+                .iter()
+                .enumerate()
+                .all(|(k, &entry)| entry == tag(requester as usize, position, k));
+            slot += 1;
+        }
+    }
+    backward_ok &= slot == ghosts.total_send_count();
+
+    // The slice path agrees with the owned buffers.
+    let mut slice_returned = vec![0_i64; ghosts.send_buffer_len()];
+    ghosts.backward_send_values(&returned_raw, &mut slice_returned);
+    backward_ok &= slice_returned == returned.as_slice();
+
+    // Every rank requests index zero twice, so rank zero owns at least two chunks.
+    let build_huge = |size: usize| {
+        std::panic::catch_unwind(AssertUnwindSafe(|| {
+            GhostCommunicatorBuilder::new()
+                .add_ghosts([(0_usize, 0), (0_usize, 0)])
+                .chunk_sizes(ChunkSizes::PerIndex(Box::new(move |_| size)))
+                .build(comm);
+        }))
+        .is_err()
+    };
+    let overflow_rejected = build_huge(i32::MAX as usize) && build_huge(usize::MAX / 2 + 1);
+
+    collective_assert(
+        comm,
+        order_ok
+            && self_ok
+            && routing_ok
+            && forward_ok
+            && buffers_ok
+            && backward_ok
+            && overflow_rejected,
+        "self-owned and duplicated ghosts must be routed exactly, and oversized chunks rejected",
     );
 }
 
@@ -1376,6 +1573,7 @@ fn main() {
         "layouts-and-consumers" => layouts_and_consumers(&world),
         "ghost-variable-chunks" => ghost_variable_chunks(&world),
         "exchange-buffer-mismatch-panics" => exchange_buffer_mismatch_panics(&world),
+        "ghost-edge-topologies" => ghost_edge_topologies(&world),
         _ => panic!("unknown RLST_MPI_EMPTY_CASE={case}"),
     }
 }

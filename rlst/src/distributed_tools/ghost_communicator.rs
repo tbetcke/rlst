@@ -192,6 +192,10 @@ impl<'a, I: Default + Copy + Equivalence> GhostCommunicatorBuilder<'a, I> {
     }
 
     /// Add the ghost `index`, owned by the rank `owner`.
+    ///
+    /// The owner may be the current rank; its values are then exchanged with itself. An index
+    /// may be added more than once: every occurrence is a separate ghost with its own chunk in
+    /// the receive buffer, and the owner sends and receives one chunk per occurrence.
     pub fn add_ghost(&mut self, index: I, owner: usize) -> &mut Self {
         self.ghosts.push((index, owner));
         self
@@ -824,5 +828,39 @@ impl<'g, I: Default + Copy + Equivalence, T: Equivalence + Copy + Default>
     /// Return the values as a vector.
     pub fn into_vec(self) -> Vec<T> {
         self.data
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::{offsets, value_counts};
+
+    #[test]
+    fn test_offsets() {
+        assert_eq!(offsets(&[]), Some(vec![0]));
+        assert_eq!(offsets(&[2, 0, 3]), Some(vec![0, 2, 2, 5]));
+        assert_eq!(offsets(&[usize::MAX, 1]), None);
+    }
+
+    #[test]
+    fn test_value_counts() {
+        // Two neighbours with two and one indices; chunk sizes 2, 0 and 3.
+        let offsets = [0, 2, 2, 5];
+        assert_eq!(
+            value_counts(&[2, 1], &offsets),
+            Some((vec![2, 3], vec![0, 2]))
+        );
+        assert_eq!(value_counts(&[], &[0]), Some((vec![], vec![])));
+        // A neighbour whose indices all have empty chunks.
+        assert_eq!(
+            value_counts(&[1, 2], &[0, 0, 4, 4]),
+            Some((vec![0, 4], vec![0, 0]))
+        );
+        let limit = i32::MAX as usize;
+        assert_eq!(
+            value_counts(&[1], &[0, limit]),
+            Some((vec![i32::MAX], vec![0]))
+        );
+        assert_eq!(value_counts(&[1], &[0, limit + 1]), None);
     }
 }
