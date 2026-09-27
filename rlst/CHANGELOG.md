@@ -1,10 +1,9 @@
 # Changelog
 
-## v0.8.0 (unreleased)
+## v0.8.0
 
 Changes since [v0.7.0](https://codeberg.org/rlst/rlst/releases/tag/v0.7.0).
-All workspace crates (`rlst`, `rlst-proc-macro`, and `rlst-suitesparse`) use
-development version `0.8.0-dev`.
+All workspace crates (`rlst`, `rlst-proc-macro`, and `rlst-suitesparse`) use version 0.8.0.
 
 ### Frames of elements — migration required
 
@@ -150,6 +149,25 @@ development version `0.8.0-dev`.
   Create one mapper or permutation per chunk size, for example
   `DataPermutation::new(layout, &indices, 2)` followed by
   `permutation.forward_permute(&data, &mut permuted)`.
+
+### Dependencies, documentation, and build improvements
+
+- Checked all workspace dependencies against their latest releases. Every
+  requirement already targets the newest release series except the `cc` build
+  dependency, which now requires 1.5. There are no other version changes; in
+  particular `rand` stays at 0.10, `syn` at 3, and Burn integration at 0.21.
+- The frame types `ElementFrame`, `GenericFrameImpl`, `ArrayFrameImpl`,
+  `FrameQr`, `FrameQrDecomposition`, and `FrameQrOptions` are re-exported from
+  the crate root. `distributed_tools` re-exports `GhostCommunicatorBuilder`,
+  `ChunkSizes`, `GhostSendBuffer`, and `GhostReceiveBuffer`.
+- The abstract linear algebra guide gained sections on frames, borrowing frame
+  columns, rank-adaptive pivoted QR, and GMRES; the distributed computations
+  guide and the `ghost_communicator` example now use the builder and exchange
+  buffers.
+- The separate documentation changelog has been merged into this file, which
+  is now rendered as the crate's changelog documentation page.
+- The bounded MPI regression runner covers variable ghost chunk sizes, buffer
+  length mismatches, and edge-case ghost topologies.
 
 ## v0.7.0
 

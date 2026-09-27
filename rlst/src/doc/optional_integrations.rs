@@ -9,7 +9,7 @@
 //! `fftw_mkl`. The system backend needs both single- and double-precision FFTW libraries. FFTW is
 //! GPL-licensed; review the licensing implications before distributing linked binaries.
 //!
-//! FFT plans store pointers into the planned array. In the 0.7 development API, `borrow_mut()`
+//! FFT plans store pointers into the planned array. Since RLST 0.7, `borrow_mut()`
 //! therefore returns an `FftMutGuard`: mutate elements through `data_mut()`, rather than replacing
 //! the array or changing its layout while a plan exists.
 //!
@@ -26,7 +26,7 @@
 //!
 //! # Burn tensors
 //!
-//! Enable `burn` to expose `rlst::interface::burn`. RLST 0.7 development uses Burn 0.21; a
+//! Enable `burn` to expose `rlst::interface::burn`. RLST 0.8 uses Burn 0.21; a
 //! downstream application should select a compatible Burn 0.21 backend. Conversions consume and
 //! copy their input while preserving shape: tensors become row-major RLST arrays, and RLST arrays
 //! are evaluated in row-major order on the backend's default device.
