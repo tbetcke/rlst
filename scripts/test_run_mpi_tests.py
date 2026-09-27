@@ -23,13 +23,10 @@ vars(runner).update(
 )
 
 
-def write_python_fixture(
-    path: Path, marker: Path, exit_code: int, hang: bool, output: str = ""
-) -> None:
+def write_python_fixture(path: Path, marker: Path, exit_code: int, hang: bool) -> None:
     path.write_text(
         "#!/usr/bin/env python3\n"
-        "import os, signal, subprocess, sys, time\n"
-        f"sys.stdout.write({output!r}); sys.stdout.flush()\n"
+        "import os, signal, subprocess, time\n"
         "child = subprocess.Popen(\n"
         "    [\"sh\", \"-c\", \"trap '' TERM; exec sleep 30\"],\n"
         "    stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,\n"
@@ -118,43 +115,6 @@ with tempfile.TemporaryDirectory() as temporary_directory:
         if success or "timeout after" not in output:
             raise AssertionError("timeout was not reported as a timeout")
         assert_stopped(wait_for_path(marker), "timeout cleanup")
-
-        # An expected-abort case passes only for a non-zero exit that prints its
-        # marker, and never for a timeout, success, or an unrelated failure.
-        marker = temporary / "abort.pid"
-        write_python_fixture(
-            temporary / "mpiexec", marker, exit_code=1, hang=False, output="abort marker"
-        )
-        success, output = runner.run_expected_abort(
-            "unused-executable", 1, "fixture", "abort marker"
-        )
-        if not success:
-            raise AssertionError(f"expected abort was not accepted: {output!r}")
-        assert_stopped(wait_for_path(marker), "expected abort cleanup")
-        success, output = runner.run_expected_abort(
-            "unused-executable", 1, "fixture", "other marker"
-        )
-        if success:
-            raise AssertionError("abort without its marker was accepted")
-        marker = temporary / "abort-success.pid"
-        write_python_fixture(
-            temporary / "mpiexec", marker, exit_code=0, hang=False, output="abort marker"
-        )
-        success, output = runner.run_expected_abort(
-            "unused-executable", 1, "fixture", "abort marker"
-        )
-        if success:
-            raise AssertionError("successful exit was accepted as an abort")
-        marker = temporary / "abort-timeout.pid"
-        write_python_fixture(
-            temporary / "mpiexec", marker, exit_code=1, hang=True, output="abort marker"
-        )
-        success, output = runner.run_expected_abort(
-            "unused-executable", 1, "fixture", "abort marker"
-        )
-        if success or "timeout after" not in output:
-            raise AssertionError("timeout was accepted as an abort")
-        assert_stopped(wait_for_path(marker), "expected abort timeout cleanup")
 
         # A failed Cargo build owns the same kind of group and requires cleanup.
         marker = temporary / "build-failure.pid"

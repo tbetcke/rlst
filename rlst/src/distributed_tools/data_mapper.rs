@@ -10,7 +10,6 @@ use std::{collections::HashMap, rc::Rc};
 use itertools::{Itertools, izip};
 use mpi::traits::{CommunicatorCollectives, Equivalence};
 
-use super::ghost_communicator::abort_on_len_mismatch;
 use super::{ChunkSizes, GhostCommunicatorBuilder, IndexLayout};
 
 /// Maps global data to local data.
@@ -108,43 +107,36 @@ impl<'a, C: CommunicatorCollectives> Global2LocalDataMapper<'a, C> {
     /// The input data is the vector of locally owned data, with `chunk_size` values for each
     /// dof. The output holds the chunks of the required dofs in their given order.
     ///
-    /// The input length is checked locally, without communication. If it is wrong, the MPI job
-    /// is aborted with `MPI_Abort`.
+    /// The input length is checked locally, without communication. If it is wrong, this rank
+    /// still takes part in the exchange with default values, so the other ranks complete
+    /// normally but receive default values from it, and then panics.
     pub fn map_data<T: Equivalence + Copy + Default + std::fmt::Debug>(
         &self,
         data: &[T],
     ) -> Vec<T> {
         let chunk_size = self.chunk_size;
-        let expected_data_len = self.index_layout.number_of_local_indices() * chunk_size;
-        let expected_send_len = self.ghost_communicator.send_buffer_len();
-        let expected_receive_len = self.ghost_communicator.receive_buffer_len();
-        let output_len = self.required_dofs.len() * chunk_size;
-        abort_on_len_mismatch(
-            self.index_layout.comm(),
-            "mapper input data",
-            expected_data_len,
-            data.len(),
-        );
         let rank = self.index_layout.comm().rank() as usize;
-        let mut send_data = vec![T::default(); expected_send_len];
-        for (global_send_index, send_buffer_chunk) in izip!(
-            self.ghost_communicator.send_indices().iter(),
-            send_data.chunks_mut(chunk_size)
-        ) {
-            let local_start_index = self
-                .index_layout
-                .global2local(rank, *global_send_index)
-                .expect("ghost sender must own its requested index")
-                * chunk_size;
-            send_buffer_chunk
-                .copy_from_slice(&data[local_start_index..local_start_index + chunk_size]);
-        }
+        let data_valid = data.len() == self.index_layout.number_of_local_indices() * chunk_size;
 
-        let mut receive_data = vec![T::default(); expected_receive_len];
-        self.ghost_communicator
-            .forward_send_values(&send_data, &mut receive_data);
+        let send_buffer = self.ghost_communicator.send_buffer_from_fn(|index, chunk| {
+            if data_valid {
+                let local_start_index = self
+                    .index_layout
+                    .global2local(rank, index)
+                    .expect("ghost sender must own its requested index")
+                    * chunk_size;
+                chunk.copy_from_slice(&data[local_start_index..local_start_index + chunk_size]);
+            }
+        });
+        let receive_buffer = send_buffer.forward();
+        assert!(
+            data_valid,
+            "mapper input data has length {}, expected {}",
+            data.len(),
+            self.index_layout.number_of_local_indices() * chunk_size
+        );
 
-        let mut output_data = vec![T::default(); output_len];
+        let mut output_data = vec![T::default(); self.required_dofs.len() * chunk_size];
         for (&dof, output_chunk) in izip!(
             self.required_dofs.iter(),
             output_data.chunks_mut(chunk_size)
@@ -159,9 +151,7 @@ impl<'a, C: CommunicatorCollectives> Global2LocalDataMapper<'a, C> {
                 output_chunk
                     .copy_from_slice(&data[local_dof * chunk_size..(local_dof + 1) * chunk_size]);
             } else {
-                let receive_start = self.ghost_to_position[&dof] * chunk_size;
-                output_chunk
-                    .copy_from_slice(&receive_data[receive_start..receive_start + chunk_size]);
+                output_chunk.copy_from_slice(receive_buffer.chunk(self.ghost_to_position[&dof]));
             }
         }
         output_data

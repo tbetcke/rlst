@@ -12,7 +12,8 @@
 //! 0, 1, 2 from the first process as ghosts.
 //!
 //! The example finally builds a second communicator in which the owners
-//! choose a different number of values for each index.
+//! choose a different number of values for each index, and exchanges values
+//! in buffers created by the communicator instead of slices.
 
 #[cfg(not(feature = "mpi"))]
 fn main() {
@@ -192,26 +193,21 @@ pub fn main() {
         .chunk_sizes(ChunkSizes::PerIndex(Box::new(|index: usize| index % 3 + 1)))
         .build(&world);
 
-    // The owners fill their send buffer. The values of the `i`-th send index
-    // are at `send_offsets()[i]..send_offsets()[i + 1]`.
+    // Instead of slices, we now use buffers created by the communicator. They
+    // always have its layout, so an exchange cannot fail because of a wrong
+    // buffer length. The owners fill the chunk of each index they send.
 
-    let offsets = chunked_comm.send_offsets();
-    let mut chunked_data = vec![0; chunked_comm.send_buffer_len()];
-    for (i, &index) in chunked_comm.send_indices().iter().enumerate() {
-        for (k, value) in chunked_data[offsets[i]..offsets[i + 1]]
-            .iter_mut()
-            .enumerate()
-        {
+    let send_buffer = chunked_comm.send_buffer_from_fn(|index, chunk: &mut [usize]| {
+        for (k, value) in chunk.iter_mut().enumerate() {
             *value = 100 * index + k;
         }
-    }
+    });
 
-    let mut chunked_received = vec![0; chunked_comm.receive_buffer_len()];
-    chunked_comm.forward_send_values(&chunked_data, &mut chunked_received);
+    let receive_buffer = send_buffer.forward();
 
-    let offsets = chunked_comm.receive_offsets();
-    for (i, &index) in chunked_comm.receive_indices().iter().enumerate() {
-        let chunk = &chunked_received[offsets[i]..offsets[i + 1]];
+    // The received chunks come in the order of `receive_indices()`.
+
+    for (index, chunk) in receive_buffer.chunks() {
         assert_eq!(chunk.len(), index % 3 + 1);
         for (k, &value) in chunk.iter().enumerate() {
             assert_eq!(value, 100 * index + k);
@@ -223,13 +219,12 @@ pub fn main() {
             "Rank 2 received indices {:?} with offsets {:?}: {:?}",
             chunked_comm.receive_indices(),
             chunked_comm.receive_offsets(),
-            chunked_received
+            receive_buffer.as_slice()
         );
     }
 
     // Sending the chunks back reproduces the original send buffer.
 
-    let mut chunked_returned = vec![0; chunked_comm.send_buffer_len()];
-    chunked_comm.backward_send_values(&chunked_received, &mut chunked_returned);
-    assert_eq!(chunked_returned, chunked_data);
+    let returned = receive_buffer.backward();
+    assert_eq!(returned.as_slice(), send_buffer.as_slice());
 }

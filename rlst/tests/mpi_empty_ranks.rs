@@ -1271,6 +1271,31 @@ fn ghost_variable_chunks<C: CommunicatorCollectives>(comm: &C) {
         .zip(&send_data)
         .all(|(&back, &sent)| back == -sent);
 
+    // The owned buffers give the same payloads and round-trip in both directions.
+    let owned_send = ghost_comm.send_buffer_from_fn(|index, chunk: &mut [i64]| {
+        for (k, entry) in chunk.iter_mut().enumerate() {
+            *entry = value(index, k);
+        }
+    });
+    let owned_received = owned_send.forward();
+    let mut owned_returned_values = ghost_comm.receive_buffer::<i64>();
+    for ((index, chunk), (received_index, received_chunk)) in owned_returned_values
+        .chunks_mut()
+        .zip(owned_received.chunks())
+    {
+        assert_eq!(index, received_index);
+        for (entry, &received_entry) in chunk.iter_mut().zip(received_chunk) {
+            *entry = -received_entry;
+        }
+    }
+    let owned_returned = owned_returned_values.backward();
+    let owned_ok = owned_send.as_slice() == send_data.as_slice()
+        && owned_received.as_slice() == received.as_slice()
+        && owned_returned.as_slice() == returned.as_slice()
+        && (0..ghost_comm.total_receive_count()).all(|i| {
+            owned_received.chunk(i) == &received[receive_offsets[i]..receive_offsets[i + 1]]
+        });
+
     // Every odd rank requests every index it does not own.
     let requesters = |index: usize| {
         (0..size)
@@ -1286,45 +1311,46 @@ fn ghost_variable_chunks<C: CommunicatorCollectives>(comm: &C) {
 
     collective_assert(
         comm,
-        order_ok && layout_ok && forward_ok && backward_ok && count_ok,
+        order_ok && layout_ok && forward_ok && backward_ok && owned_ok && count_ok,
         "variable ghost chunks must keep owner-declared sizes, owner-grouped order, and exact payloads in both directions",
     );
 }
 
-/// Contract: a ghost exchange with a wrong local buffer length aborts the whole MPI job
-/// instead of stranding the peers. Run by the MPI runner as an expected-abort case.
-fn ghost_buffer_mismatch_aborts<C: CommunicatorCollectives>(comm: &C) {
+/// Contract: an exchange with a wrong local buffer length panics only on that rank, after
+/// it has taken part in the exchange, so its neighbours complete with default values
+/// instead of blocking.
+fn exchange_buffer_mismatch_panics<C: CommunicatorCollectives>(comm: &C) {
     let rank = comm.rank() as usize;
     let mut builder = GhostCommunicatorBuilder::new();
     if rank != 0 {
         builder.add_ghost(0_usize, 0);
     }
     let ghosts = builder.build(comm);
-    let send = vec![1_i32; ghosts.send_buffer_len()];
-    // Rank zero sends to every other rank, which would block without the abort.
-    let receive_len = ghosts.receive_buffer_len() + usize::from(rank == 0);
-    let mut receive = vec![0_i32; receive_len];
-    ghosts.forward_send_values(&send, &mut receive);
-    collective_assert(
-        comm,
-        false,
-        "a ghost buffer mismatch must abort the MPI job",
-    );
-}
 
-/// Contract: a mapper exchange with a wrong local input length aborts the whole MPI job.
-/// Run by the MPI runner as an expected-abort case.
-fn mapper_buffer_mismatch_aborts<C: CommunicatorCollectives>(comm: &C) {
-    let rank = comm.rank() as usize;
-    let size = comm.size() as usize;
+    // Rank zero sends to every other rank, with one extra value in its send buffer.
+    let send = vec![7_i32; ghosts.send_buffer_len() + usize::from(rank == 0)];
+    let mut receive = vec![-1_i32; ghosts.receive_buffer_len()];
+    let ghost_panicked = std::panic::catch_unwind(AssertUnwindSafe(|| {
+        ghosts.forward_send_values(&send, &mut receive);
+    }))
+    .is_err();
+    let ghost_ok = ghost_panicked == (rank == 0) && receive.iter().all(|&value| value == 0);
+
+    // Rank zero passes one value too many to the mapper; the others request its dof.
     let layout = Rc::new(IndexLayout::from_local_counts(1, comm));
-    let mapper = Global2LocalDataMapper::new(layout, &[(rank + 1) % size], 1);
-    let data = vec![rank as i32; 1 + usize::from(rank == 0)];
-    mapper.map_data(&data);
+    let required = if rank == 0 { Vec::new() } else { vec![0] };
+    let mapper = Global2LocalDataMapper::new(layout, &required, 1);
+    let data = vec![rank as i32 + 5; 1 + usize::from(rank == 0)];
+    let mapped = std::panic::catch_unwind(AssertUnwindSafe(|| mapper.map_data(&data)));
+    let mapper_ok = match mapped {
+        Err(_) => rank == 0,
+        Ok(mapped) => rank != 0 && mapped == [0],
+    };
+
     collective_assert(
         comm,
-        false,
-        "a mapper buffer mismatch must abort the MPI job",
+        ghost_ok && mapper_ok,
+        "a buffer mismatch must panic only on its rank, without blocking the neighbours",
     );
 }
 
@@ -1349,8 +1375,7 @@ fn main() {
         "remap-layout-agreement" => remap_layout_agreement(&world),
         "layouts-and-consumers" => layouts_and_consumers(&world),
         "ghost-variable-chunks" => ghost_variable_chunks(&world),
-        "ghost-buffer-mismatch-aborts" => ghost_buffer_mismatch_aborts(&world),
-        "mapper-buffer-mismatch-aborts" => mapper_buffer_mismatch_aborts(&world),
+        "exchange-buffer-mismatch-panics" => exchange_buffer_mismatch_panics(&world),
         _ => panic!("unknown RLST_MPI_EMPTY_CASE={case}"),
     }
 }

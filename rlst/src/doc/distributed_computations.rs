@@ -114,15 +114,23 @@
 //! [ChunkSizes](crate::distributed_tools::ghost_communicator::ChunkSizes): either a uniform chunk size, or a function with which each owner
 //! determines the chunk size of each of its indices. The chunk of the `i`-th receive index is at
 //! `receive_offsets()[i]..receive_offsets()[i + 1]` in a receive buffer of length `receive_buffer_len()`, and correspondingly for send buffers.
-//! Once built, ghost data is communicated with the following methods.
 //!
-//! - [GhostCommunicator::forward_send_values](crate::distributed_tools::ghost_communicator::GhostCommunicator::forward_send_values):
-//!   Each process forward sends data to the processes that require them.
-//! - [GhostCommunicator::backward_send_values](crate::distributed_tools::ghost_communicator::GhostCommunicator::backward_send_values):
-//!   Send data from the ghost processes backwards to the owners.
+//! Ghost data is exchanged in buffers created by the communicator. Their layout always matches the communicator, so an exchange cannot fail
+//! because of a wrong buffer length.
 //!
-//! Only the neighbouring processes communicate in these exchanges. The buffer lengths are checked locally; if they are wrong, the MPI job is
-//! aborted with `MPI_Abort`, since the neighbours could otherwise block. Invalid metadata, such as unknown owners or disagreeing uniform chunk
+//! - [GhostCommunicator::send_buffer_from_fn](crate::distributed_tools::ghost_communicator::GhostCommunicator::send_buffer_from_fn) (or
+//!   [send_buffer](crate::distributed_tools::ghost_communicator::GhostCommunicator::send_buffer)): the owners fill the chunk of each index they send.
+//! - [GhostSendBuffer::forward](crate::distributed_tools::ghost_communicator::GhostSendBuffer::forward): each process forward sends data to the processes that require them and
+//!   receives a [GhostReceiveBuffer](crate::distributed_tools::ghost_communicator::GhostReceiveBuffer) whose chunks follow `receive_indices()`.
+//! - [GhostReceiveBuffer::backward](crate::distributed_tools::ghost_communicator::GhostReceiveBuffer::backward): send data from the ghost processes backwards to the owners.
+//!   Receivers can start from [GhostCommunicator::receive_buffer](crate::distributed_tools::ghost_communicator::GhostCommunicator::receive_buffer).
+//!
+//! To exchange directly into existing storage, [GhostCommunicator::forward_send_values](crate::distributed_tools::ghost_communicator::GhostCommunicator::forward_send_values) and
+//! [GhostCommunicator::backward_send_values](crate::distributed_tools::ghost_communicator::GhostCommunicator::backward_send_values) take slices instead. Their lengths are checked
+//! locally. If a slice has the wrong length, the rank still takes part in the exchange with default values, so its neighbours do not block but
+//! receive default values from it, and then panics.
+//!
+//! Only the neighbouring processes communicate in these exchanges. Invalid metadata, such as unknown owners or disagreeing uniform chunk
 //! sizes, is rejected collectively when the communicator is built.
 //!
 //! A complete worked out example for the use of the ghost communicator can be found in `examples/ghost_communicator.rs`.

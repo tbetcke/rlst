@@ -8,7 +8,6 @@ use std::rc::Rc;
 use itertools::izip;
 use mpi::traits::{Communicator, CommunicatorCollectives, Equivalence};
 
-use super::ghost_communicator::abort_on_len_mismatch;
 use super::{
     ChunkSizes, GhostCommunicatorBuilder, array_tools::all_to_allv, index_layout::IndexLayout,
 };
@@ -157,15 +156,13 @@ impl<'a, C: Communicator> DataPermutation<'a, C> {
         }
     }
 
-    /// Abort the MPI job if the input or output buffer of a permutation has the wrong length.
-    fn check_buffers(&self, data_len: [usize; 2], expected_len: [usize; 2]) {
-        let comm = self.index_layout.comm();
-        abort_on_len_mismatch(comm, "permutation input data", expected_len[0], data_len[0]);
-        abort_on_len_mismatch(
-            comm,
-            "permutation output data",
-            expected_len[1],
-            data_len[1],
+    /// Panic unless the input and output buffers of a permutation have their expected lengths.
+    ///
+    /// Called after the ghost exchange, so that a rank with wrong buffers still takes part.
+    fn check_buffers(data_len: [usize; 2], expected_len: [usize; 2]) {
+        assert!(
+            data_len == expected_len,
+            "permutation input and output data have lengths {data_len:?}, expected {expected_len:?}"
         );
     }
 
@@ -177,39 +174,37 @@ impl<'a, C: Communicator> DataPermutation<'a, C> {
     /// Permute data from the layout given by the `index_set` to the custom index layout.
     ///
     /// Both buffers hold `chunk_size` values per index. Their lengths are checked locally,
-    /// without communication. If they are wrong, the MPI job is aborted with `MPI_Abort`.
+    /// without communication. If they are wrong, this rank still takes part in the exchange
+    /// with default values, so the other ranks complete normally but receive default values
+    /// from it, and then panics.
     pub fn forward_permute<T: Equivalence + Copy + Default>(
         &self,
         data: &[T],
         permuted_data: &mut [T],
     ) {
         let chunk_size = self.chunk_size;
-        let expected_data_len = self.index_layout.number_of_local_indices() * chunk_size;
-        let expected_output_len = self.nindices * chunk_size;
-        let expected_send_len = self.ghost_communicator.send_buffer_len();
-        let expected_receive_len = self.ghost_communicator.receive_buffer_len();
-        self.check_buffers(
-            [data.len(), permuted_data.len()],
-            [expected_data_len, expected_output_len],
-        );
+        let lengths = [data.len(), permuted_data.len()];
+        let expected_lengths = [
+            self.index_layout.number_of_local_indices() * chunk_size,
+            self.nindices * chunk_size,
+        ];
+        let valid = lengths == expected_lengths;
 
         // We first need to get the send data. This is quite easy. We can just
         // use the global2local method from the index layout.
 
-        let mut send_data = Vec::<T>::with_capacity(expected_send_len);
-
-        for &index in self.ghost_communicator.send_indices() {
-            let local_start_index =
-                chunk_size * self.index_layout.global2local(self.my_rank, index).unwrap();
-            let local_end_index = local_start_index + chunk_size;
-            send_data.extend_from_slice(&data[local_start_index..local_end_index]);
-        }
+        let send_buffer = self.ghost_communicator.send_buffer_from_fn(|index, chunk| {
+            if valid {
+                let local_start_index =
+                    chunk_size * self.index_layout.global2local(self.my_rank, index).unwrap();
+                chunk.copy_from_slice(&data[local_start_index..local_start_index + chunk_size]);
+            }
+        });
 
         // Now we do the data exchange across ranks.
 
-        let mut received_data = vec![T::default(); expected_receive_len];
-        self.ghost_communicator
-            .forward_send_values(&send_data, &mut received_data);
+        let receive_buffer = send_buffer.forward();
+        Self::check_buffers(lengths, expected_lengths);
 
         // The data exchange is done. Now we have to fit everything back together to get to our custom data layout.
 
@@ -222,10 +217,9 @@ impl<'a, C: Communicator> DataPermutation<'a, C> {
 
         // Now we iterate through the ghost data and assign it to the right position in the permuted data.
 
-        for (&permuted_index, chunk) in izip!(
-            &self.receive_to_custom_map,
-            received_data.chunks(chunk_size)
-        ) {
+        for (&permuted_index, (_, chunk)) in
+            izip!(&self.receive_to_custom_map, receive_buffer.chunks())
+        {
             permuted_data[chunk_size * permuted_index..chunk_size * (1 + permuted_index)]
                 .copy_from_slice(chunk);
         }
@@ -234,44 +228,41 @@ impl<'a, C: Communicator> DataPermutation<'a, C> {
     /// Permute data from the custom index layout to the layout given by the `index_set`.
     ///
     /// Both buffers hold `chunk_size` values per index. Their lengths are checked locally,
-    /// without communication. If they are wrong, the MPI job is aborted with `MPI_Abort`.
+    /// without communication. If they are wrong, this rank still takes part in the exchange
+    /// with default values, so the other ranks complete normally but receive default values
+    /// from it, and then panics.
     pub fn backward_permute<T: Equivalence + Copy + Default>(
         &self,
         data: &[T],
         permuted_data: &mut [T],
     ) {
         let chunk_size = self.chunk_size;
-        let expected_data_len = self.nindices * chunk_size;
-        let expected_output_len = self.index_layout.number_of_local_indices() * chunk_size;
-        let expected_send_len = self.ghost_communicator.send_buffer_len();
-        let expected_receive_len = self.ghost_communicator.receive_buffer_len();
-        self.check_buffers(
-            [data.len(), permuted_data.len()],
-            [expected_data_len, expected_output_len],
-        );
+        let lengths = [data.len(), permuted_data.len()];
+        let expected_lengths = [
+            self.nindices * chunk_size,
+            self.index_layout.number_of_local_indices() * chunk_size,
+        ];
+        let valid = lengths == expected_lengths;
 
         // We need to fill up the receive indices as this is the data that is sent around.
-        let mut receive_data = Vec::<T>::with_capacity(expected_receive_len);
-        for &custom_index in self.receive_to_custom_map.iter() {
-            receive_data.extend_from_slice(
-                &data[custom_index * chunk_size..(1 + custom_index) * chunk_size],
-            )
+        let mut receive_buffer = self.ghost_communicator.receive_buffer();
+        if valid {
+            for (&custom_index, (_, chunk)) in
+                izip!(&self.receive_to_custom_map, receive_buffer.chunks_mut())
+            {
+                chunk.copy_from_slice(
+                    &data[custom_index * chunk_size..(1 + custom_index) * chunk_size],
+                );
+            }
         }
 
-        // We can now send back the receive indices.
-
-        let mut send_data = vec![T::default(); expected_send_len];
-
         // We now send data backwards from receiver to sender.
-        self.ghost_communicator
-            .backward_send_values(&receive_data, &mut send_data);
+        let send_buffer = receive_buffer.backward();
+        Self::check_buffers(lengths, expected_lengths);
 
         // We now go through the send indices and fill the output data with the corresponding values.
 
-        for (&index, chunk) in izip!(
-            self.ghost_communicator.send_indices(),
-            send_data.chunks(chunk_size)
-        ) {
+        for (index, chunk) in send_buffer.chunks() {
             let local_start_index =
                 chunk_size * self.index_layout.global2local(self.my_rank, index).unwrap();
             let local_end_index = local_start_index + chunk_size;

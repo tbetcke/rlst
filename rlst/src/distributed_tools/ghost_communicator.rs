@@ -8,6 +8,9 @@
 //!
 //! Communicators are created with [GhostCommunicatorBuilder]. Every index may carry a chunk of
 //! several values; the chunk sizes are fixed when the communicator is built, see [ChunkSizes].
+//! Values are exchanged in buffers created by the communicator, [GhostSendBuffer] and
+//! [GhostReceiveBuffer], whose layout always matches it. Slice-based exchanges are available
+//! for callers that need to write into existing storage.
 //!
 //! # Example
 //!
@@ -19,29 +22,6 @@ use mpi_sys;
 
 use mpi::topology::SimpleCommunicator;
 use mpi::traits::{AsRaw, Communicator, CommunicatorCollectives, Equivalence, FromRaw};
-
-/// Marker printed before a ghost exchange aborts because of a local buffer length mismatch.
-const BUFFER_MISMATCH_MARKER: &str = "ghost exchange buffer mismatch";
-
-/// Abort the MPI job if a local exchange buffer does not have its expected length.
-///
-/// Value exchanges check their buffers locally, without communication. A rank with wrong
-/// buffers cannot notify its peers, which would then block in the exchange, so it aborts
-/// the whole job with `MPI_Abort` instead of panicking.
-pub(crate) fn abort_on_len_mismatch<C: Communicator>(
-    comm: &C,
-    buffer: &str,
-    expected: usize,
-    actual: usize,
-) {
-    if expected != actual {
-        eprintln!(
-            "{BUFFER_MISMATCH_MARKER} on rank {}: {buffer} has length {actual}, expected {expected}; aborting the MPI job",
-            comm.rank()
-        );
-        comm.abort(1);
-    }
-}
 
 /// Neighbourhood all-to-all exchange with variable counts.
 ///
@@ -511,75 +491,338 @@ impl<I: Default + Copy + Equivalence> GhostCommunicator<I> {
         &self.backward_comm
     }
 
-    /// Forward send values.
+    /// Create a send buffer with default values, laid out by [send_offsets](Self::send_offsets).
+    pub fn send_buffer<T: Equivalence + Copy + Default>(&self) -> GhostSendBuffer<'_, I, T> {
+        GhostSendBuffer {
+            ghosts: self,
+            data: vec![T::default(); self.send_buffer_len()],
+        }
+    }
+
+    /// Create a send buffer and fill the chunk of each send index with `fill`.
     ///
-    /// This updates ghosts on the receiver process with the values of the ghosts from
-    /// their owning process. `out_values` must have [send_buffer_len](Self::send_buffer_len)
-    /// values and `in_values` must have [receive_buffer_len](Self::receive_buffer_len) values.
+    /// `fill` is called once per index in [send_indices](Self::send_indices), in order, with
+    /// the global index and its chunk of default values.
+    pub fn send_buffer_from_fn<T: Equivalence + Copy + Default>(
+        &self,
+        mut fill: impl FnMut(I, &mut [T]),
+    ) -> GhostSendBuffer<'_, I, T> {
+        let mut buffer = self.send_buffer();
+        for (index, chunk) in buffer.chunks_mut() {
+            fill(index, chunk);
+        }
+        buffer
+    }
+
+    /// Create a receive buffer with default values, laid out by
+    /// [receive_offsets](Self::receive_offsets).
     ///
-    /// The buffer lengths are checked locally, without communication. If they are wrong, the
-    /// MPI job is aborted with `MPI_Abort`. This cannot be caught with `catch_unwind`.
-    pub fn forward_send_values<T: Equivalence>(&self, out_values: &[T], in_values: &mut [T]) {
-        abort_on_len_mismatch(
-            &self.forward_comm,
-            "forward send buffer",
-            self.send_buffer_len(),
-            out_values.len(),
-        );
-        abort_on_len_mismatch(
-            &self.forward_comm,
-            "forward receive buffer",
-            self.receive_buffer_len(),
-            in_values.len(),
-        );
-        // SAFETY: The value counts and displacements partition buffers of the checked lengths
-        // over the neighbours of the forward communicator.
-        unsafe {
-            neighbor_alltoallv(
+    /// Receivers fill such a buffer to send updated ghost values back to their owners with
+    /// [GhostReceiveBuffer::backward].
+    pub fn receive_buffer<T: Equivalence + Copy + Default>(&self) -> GhostReceiveBuffer<'_, I, T> {
+        GhostReceiveBuffer {
+            ghosts: self,
+            data: vec![T::default(); self.receive_buffer_len()],
+        }
+    }
+
+    /// Exchange buffers whose lengths match `direction`.
+    fn exchange<T: Equivalence>(
+        &self,
+        direction: Direction,
+        out_values: &[T],
+        in_values: &mut [T],
+    ) {
+        let (comm, out_counts, out_displacements, in_counts, in_displacements) = match direction {
+            Direction::Forward => (
                 &self.forward_comm,
-                out_values,
                 &self.send_value_counts,
                 &self.send_value_displacements,
-                in_values,
                 &self.receive_value_counts,
                 &self.receive_value_displacements,
+            ),
+            Direction::Backward => (
+                &self.backward_comm,
+                &self.receive_value_counts,
+                &self.receive_value_displacements,
+                &self.send_value_counts,
+                &self.send_value_displacements,
+            ),
+        };
+        let (out_len, in_len) = self.buffer_lens(direction);
+        assert!(
+            out_values.len() == out_len && in_values.len() == in_len,
+            "ghost exchange buffers must match the communicator layout"
+        );
+        // SAFETY: The value counts and displacements partition buffers of exactly these
+        // lengths over the neighbours of the communicator for this direction.
+        unsafe {
+            neighbor_alltoallv(
+                comm,
+                out_values,
+                out_counts,
+                out_displacements,
+                in_values,
+                in_counts,
+                in_displacements,
             );
         }
     }
 
-    /// Backward send values.
+    /// Expected lengths of the outgoing and incoming buffer for `direction`.
+    fn buffer_lens(&self, direction: Direction) -> (usize, usize) {
+        match direction {
+            Direction::Forward => (self.send_buffer_len(), self.receive_buffer_len()),
+            Direction::Backward => (self.receive_buffer_len(), self.send_buffer_len()),
+        }
+    }
+
+    /// Exchange caller-provided slices, taking part in the exchange even if they are wrong.
+    ///
+    /// A slice with the wrong length is replaced by a scratch buffer of default values, so the
+    /// neighbours complete the exchange; the rank then panics.
+    fn exchange_or_panic<T: Equivalence + Copy + Default>(
+        &self,
+        direction: Direction,
+        out_values: &[T],
+        in_values: &mut [T],
+    ) {
+        let (out_len, in_len) = self.buffer_lens(direction);
+        let (out_actual, in_actual) = (out_values.len(), in_values.len());
+        let scratch_out;
+        let out_values = if out_actual == out_len {
+            out_values
+        } else {
+            scratch_out = vec![T::default(); out_len];
+            &scratch_out
+        };
+        if in_actual == in_len {
+            self.exchange(direction, out_values, in_values);
+        } else {
+            let mut scratch_in = vec![T::default(); in_len];
+            self.exchange(direction, out_values, &mut scratch_in);
+        }
+        assert!(
+            out_actual == out_len && in_actual == in_len,
+            "ghost exchange buffer mismatch in {direction:?} exchange: outgoing buffer has length {out_actual}, expected {out_len}; incoming buffer has length {in_actual}, expected {in_len}"
+        );
+    }
+
+    /// Forward send values from caller-provided slices.
+    ///
+    /// This updates ghosts on the receiver process with the values of the ghosts from
+    /// their owning process. `out_values` must have [send_buffer_len](Self::send_buffer_len)
+    /// values and `in_values` must have [receive_buffer_len](Self::receive_buffer_len) values.
+    /// Prefer [GhostSendBuffer::forward], whose buffers always have the right lengths; use
+    /// this method to receive directly into existing storage.
+    ///
+    /// The lengths are checked locally, without communication. If a slice has the wrong
+    /// length, this rank still takes part in the exchange with default values in its place,
+    /// so its neighbours complete normally but receive default values from it, and then
+    /// panics.
+    pub fn forward_send_values<T: Equivalence + Copy + Default>(
+        &self,
+        out_values: &[T],
+        in_values: &mut [T],
+    ) {
+        self.exchange_or_panic(Direction::Forward, out_values, in_values);
+    }
+
+    /// Backward send values from caller-provided slices.
     ///
     /// This back propagates updated ghost values from the receiver to the original owning
     /// process. `out_values` must have [receive_buffer_len](Self::receive_buffer_len) values
-    /// and `in_values` must have [send_buffer_len](Self::send_buffer_len) values.
+    /// and `in_values` must have [send_buffer_len](Self::send_buffer_len) values. Prefer
+    /// [GhostReceiveBuffer::backward], whose buffers always have the right lengths.
     ///
-    /// The buffer lengths are checked locally, without communication. If they are wrong, the
-    /// MPI job is aborted with `MPI_Abort`. This cannot be caught with `catch_unwind`.
-    pub fn backward_send_values<T: Equivalence>(&self, out_values: &[T], in_values: &mut [T]) {
-        abort_on_len_mismatch(
-            &self.backward_comm,
-            "backward send buffer",
-            self.receive_buffer_len(),
-            out_values.len(),
-        );
-        abort_on_len_mismatch(
-            &self.backward_comm,
-            "backward receive buffer",
-            self.send_buffer_len(),
-            in_values.len(),
-        );
-        // SAFETY: The value counts and displacements partition buffers of the checked lengths
-        // over the neighbours of the backward communicator.
-        unsafe {
-            neighbor_alltoallv(
-                &self.backward_comm,
-                out_values,
-                &self.receive_value_counts,
-                &self.receive_value_displacements,
-                in_values,
-                &self.send_value_counts,
-                &self.send_value_displacements,
-            );
-        }
+    /// Wrong lengths are handled as for [forward_send_values](Self::forward_send_values): this
+    /// rank takes part in the exchange with default values and then panics.
+    pub fn backward_send_values<T: Equivalence + Copy + Default>(
+        &self,
+        out_values: &[T],
+        in_values: &mut [T],
+    ) {
+        self.exchange_or_panic(Direction::Backward, out_values, in_values);
+    }
+}
+
+/// Direction of a ghost exchange.
+#[derive(Clone, Copy, Debug)]
+enum Direction {
+    /// From the owners to the ghosts.
+    Forward,
+    /// From the ghosts back to the owners.
+    Backward,
+}
+
+/// Iterate over the chunks of `data`, laid out by `offsets`, together with their indices.
+fn chunks<'s, I: Copy, T>(
+    indices: &'s [I],
+    offsets: &'s [usize],
+    data: &'s [T],
+) -> impl Iterator<Item = (I, &'s [T])> {
+    indices
+        .iter()
+        .zip(offsets.windows(2))
+        .map(move |(&index, range)| (index, &data[range[0]..range[1]]))
+}
+
+/// Iterate mutably over the chunks of `data`, laid out by `sizes`, with their indices.
+fn chunks_mut<'s, I: Copy, T>(
+    indices: &'s [I],
+    sizes: &'s [usize],
+    mut data: &'s mut [T],
+) -> impl Iterator<Item = (I, &'s mut [T])> {
+    indices.iter().zip(sizes).map(move |(&index, &size)| {
+        let (chunk, rest) = std::mem::take(&mut data).split_at_mut(size);
+        data = rest;
+        (index, chunk)
+    })
+}
+
+/// Values of the [send indices](GhostCommunicator::send_indices) of a ghost communicator.
+///
+/// Created by [GhostCommunicator::send_buffer] or [GhostCommunicator::send_buffer_from_fn],
+/// or returned by [GhostReceiveBuffer::backward]. The buffer always has the layout of its
+/// communicator, so exchanging it cannot fail.
+pub struct GhostSendBuffer<'g, I: Default + Copy + Equivalence, T> {
+    ghosts: &'g GhostCommunicator<I>,
+    data: Vec<T>,
+}
+
+impl<'g, I: Default + Copy + Equivalence, T: Equivalence + Copy + Default>
+    GhostSendBuffer<'g, I, T>
+{
+    /// Send the values to the ghosts on the receiving processes.
+    ///
+    /// This is a neighbourhood collective: every rank of the communicator must call it.
+    pub fn forward(&self) -> GhostReceiveBuffer<'g, I, T> {
+        let mut received = self.ghosts.receive_buffer();
+        self.ghosts
+            .exchange(Direction::Forward, &self.data, &mut received.data);
+        received
+    }
+
+    /// Return the ghost communicator of this buffer.
+    pub fn ghosts(&self) -> &'g GhostCommunicator<I> {
+        self.ghosts
+    }
+
+    /// Return all values.
+    pub fn as_slice(&self) -> &[T] {
+        &self.data
+    }
+
+    /// Return all values mutably.
+    pub fn as_mut_slice(&mut self) -> &mut [T] {
+        &mut self.data
+    }
+
+    /// Return the values of the `i`-th send index.
+    pub fn chunk(&self, i: usize) -> &[T] {
+        let offsets = self.ghosts.send_offsets();
+        &self.data[offsets[i]..offsets[i + 1]]
+    }
+
+    /// Return the values of the `i`-th send index mutably.
+    pub fn chunk_mut(&mut self, i: usize) -> &mut [T] {
+        let offsets = self.ghosts.send_offsets();
+        &mut self.data[offsets[i]..offsets[i + 1]]
+    }
+
+    /// Iterate over the send indices together with their values.
+    pub fn chunks(&self) -> impl Iterator<Item = (I, &[T])> {
+        chunks(
+            self.ghosts.send_indices(),
+            self.ghosts.send_offsets(),
+            &self.data,
+        )
+    }
+
+    /// Iterate over the send indices together with their values, mutably.
+    pub fn chunks_mut(&mut self) -> impl Iterator<Item = (I, &mut [T])> {
+        chunks_mut(
+            self.ghosts.send_indices(),
+            self.ghosts.send_chunk_sizes(),
+            &mut self.data,
+        )
+    }
+
+    /// Return the values as a vector.
+    pub fn into_vec(self) -> Vec<T> {
+        self.data
+    }
+}
+
+/// Values of the [receive indices](GhostCommunicator::receive_indices) of a ghost communicator.
+///
+/// Returned by [GhostSendBuffer::forward] or created by [GhostCommunicator::receive_buffer].
+/// The buffer always has the layout of its communicator, so exchanging it cannot fail.
+pub struct GhostReceiveBuffer<'g, I: Default + Copy + Equivalence, T> {
+    ghosts: &'g GhostCommunicator<I>,
+    data: Vec<T>,
+}
+
+impl<'g, I: Default + Copy + Equivalence, T: Equivalence + Copy + Default>
+    GhostReceiveBuffer<'g, I, T>
+{
+    /// Send the ghost values back to their owning processes.
+    ///
+    /// This is a neighbourhood collective: every rank of the communicator must call it.
+    pub fn backward(&self) -> GhostSendBuffer<'g, I, T> {
+        let mut returned = self.ghosts.send_buffer();
+        self.ghosts
+            .exchange(Direction::Backward, &self.data, &mut returned.data);
+        returned
+    }
+
+    /// Return the ghost communicator of this buffer.
+    pub fn ghosts(&self) -> &'g GhostCommunicator<I> {
+        self.ghosts
+    }
+
+    /// Return all values.
+    pub fn as_slice(&self) -> &[T] {
+        &self.data
+    }
+
+    /// Return all values mutably.
+    pub fn as_mut_slice(&mut self) -> &mut [T] {
+        &mut self.data
+    }
+
+    /// Return the values of the `i`-th receive index.
+    pub fn chunk(&self, i: usize) -> &[T] {
+        let offsets = self.ghosts.receive_offsets();
+        &self.data[offsets[i]..offsets[i + 1]]
+    }
+
+    /// Return the values of the `i`-th receive index mutably.
+    pub fn chunk_mut(&mut self, i: usize) -> &mut [T] {
+        let offsets = self.ghosts.receive_offsets();
+        &mut self.data[offsets[i]..offsets[i + 1]]
+    }
+
+    /// Iterate over the receive indices together with their values.
+    pub fn chunks(&self) -> impl Iterator<Item = (I, &[T])> {
+        chunks(
+            self.ghosts.receive_indices(),
+            self.ghosts.receive_offsets(),
+            &self.data,
+        )
+    }
+
+    /// Iterate over the receive indices together with their values, mutably.
+    pub fn chunks_mut(&mut self) -> impl Iterator<Item = (I, &mut [T])> {
+        chunks_mut(
+            self.ghosts.receive_indices(),
+            self.ghosts.receive_chunk_sizes(),
+            &mut self.data,
+        )
+    }
+
+    /// Return the values as a vector.
+    pub fn into_vec(self) -> Vec<T> {
+        self.data
     }
 }
