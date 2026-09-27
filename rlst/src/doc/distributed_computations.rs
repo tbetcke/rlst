@@ -101,17 +101,29 @@
 //! We are often in situations where we need data associated with indices on other processes. These indices are called ghost indices.
 //! Underlying this is the pattern of a communication graph in which a process `j` receives data from all processes that are original owners of
 //! ghost indices that `j` requires and in which `j` sends out data to all processes who have ghost indices from process `j`. A ghost communicator
-//! is instantiated by calling [GhostCommunicator::new](crate::distributed_tools::ghost_communicator::GhostCommunicator::new) with the global indices
-//! of the ghosts that the process needs and the owners of those indices. Once instantiated ghost data can be communicated with the following methods.
+//! is created with a [GhostCommunicatorBuilder](crate::distributed_tools::ghost_communicator::GhostCommunicatorBuilder): each process adds the
+//! global indices of the ghosts it needs together with their owning ranks, and then calls the collective
+//! [build](crate::distributed_tools::ghost_communicator::GhostCommunicatorBuilder::build) method.
+//!
+//! The builder does not assign positions to the ghosts. The order in which ghost values arrive is given by
+//! [GhostCommunicator::receive_indices](crate::distributed_tools::ghost_communicator::GhostCommunicator::receive_indices): the ghosts are
+//! grouped by ascending owning rank and keep their insertion order within one owner. The owners send the values of
+//! [GhostCommunicator::send_indices](crate::distributed_tools::ghost_communicator::GhostCommunicator::send_indices) in that order.
+//!
+//! Each index may carry several values. The number of values is fixed when the communicator is built, with
+//! [ChunkSizes](crate::distributed_tools::ghost_communicator::ChunkSizes): either a uniform chunk size, or a function with which each owner
+//! determines the chunk size of each of its indices. The chunk of the `i`-th receive index is at
+//! `receive_offsets()[i]..receive_offsets()[i + 1]` in a receive buffer of length `receive_buffer_len()`, and correspondingly for send buffers.
+//! Once built, ghost data is communicated with the following methods.
 //!
 //! - [GhostCommunicator::forward_send_values](crate::distributed_tools::ghost_communicator::GhostCommunicator::forward_send_values):
 //!   Each process forward sends data to the processes that require them.
-//! - [GhostCommunicator::forward_send_values_by_chunks](crate::distributed_tools::ghost_communicator::GhostCommunicator::forward_send_values_by_chunks):
-//!   Forward send values by chunks. Use this if more than one data item is associated with an index.
 //! - [GhostCommunicator::backward_send_values](crate::distributed_tools::ghost_communicator::GhostCommunicator::backward_send_values):
 //!   Send data from the ghost processes backwards to the owners.
-//! - [GhostCommunicator::backward_send_values_by_chunks](crate::distributed_tools::ghost_communicator::GhostCommunicator::backward_send_values_by_chunks):
-//!   Send data from the ghost processes backwards to the owners by chunks. Use this if more than one data item is associated with an index.
+//!
+//! Only the neighbouring processes communicate in these exchanges. The buffer lengths are checked locally; if they are wrong, the MPI job is
+//! aborted with `MPI_Abort`, since the neighbours could otherwise block. Invalid metadata, such as unknown owners or disagreeing uniform chunk
+//! sizes, is rejected collectively when the communicator is built.
 //!
 //! A complete worked out example for the use of the ghost communicator can be found in `examples/ghost_communicator.rs`.
 //!
@@ -121,9 +133,9 @@
 //! may need the indices `5, 6, 7, 8, 9`. Notice that 5 and 6 are repeated for both processes.
 //! The [Global2LocalDataMapper](crate::distributed_tools::data_mapper::Global2LocalDataMapper) manages this communication
 //! pattern. It is instantiated with [Global2LocalDataMapper::new](crate::distributed_tools::data_mapper::Global2LocalDataMapper) which takes the
-//! index layout and the required global dofs.
+//! index layout, the required global dofs, and the chunk size, which is the number of values associated with each dof.
 //! The method [Global2LocalDataMapper::map_data](crate::distributed_tools::data_mapper::Global2LocalDataMapper::map_data) then maps a vector of global data
-//! to the required local data. A chunk size can be given if each index is associated with multiple elements in the data vector.
+//! to the required local data.
 //!
 //! ## Data permutations
 //!
@@ -132,4 +144,4 @@
 //! a permutation of the original layout. Each index still occurs exactly once. The [DataPermutation](crate::distributed_tools::permutation::DataPermutation)
 //! type provides [forward_permute](crate::distributed_tools::permutation::DataPermutation::forward_permute) and a
 //! [backward_permute](crate::distributed_tools::permutation::DataPermutation::backward_permute) method to map data from a given index layout to a custom
-//! permutation and back.
+//! permutation and back. As for the mapper, the chunk size is given when the permutation is created.

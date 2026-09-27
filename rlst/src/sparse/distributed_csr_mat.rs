@@ -29,7 +29,9 @@ use crate::dense::array::DynArray;
 use crate::dense::base_array::BaseArray;
 use crate::dense::data_container::VectorContainer;
 use crate::dense::macros::direct::Product;
-use crate::distributed_tools::{GhostCommunicator, IndexLayout, all_to_allv, sort_to_bins};
+use crate::distributed_tools::{
+    GhostCommunicator, GhostCommunicatorBuilder, IndexLayout, all_to_allv, sort_to_bins,
+};
 use crate::{
     AijIteratorByValue, AsMatrixApply, BaseItem, FromAijDistributed, Nonzeros, Shape,
     SparseMatrixType, UnsafeDisjointRandom1DAccessMut, UnsafeRandom1DAccessByValue,
@@ -90,20 +92,14 @@ where
 
         let my_rank = comm.rank() as usize;
 
-        let domain_ghost_dofs: Vec<usize> = indices
-            .iter_value()
-            .unique()
-            .filter(|&dof| domain_layout.rank_from_index(dof).unwrap() != my_rank)
-            .collect();
-
-        let ranks = domain_ghost_dofs
-            .iter()
-            .map(|dof| domain_layout.rank_from_index(*dof).unwrap())
-            .collect::<Vec<_>>();
-
-        let domain_ghosts = GhostCommunicator::new(&domain_ghost_dofs, &ranks, comm);
+        let domain_ghosts = GhostCommunicatorBuilder::new()
+            .add_ghosts(indices.iter_value().unique().filter_map(|dof| {
+                let owner = domain_layout.rank_from_index(dof).unwrap();
+                (owner != my_rank).then_some((dof, owner))
+            }))
+            .build(comm);
         let local_dof_count =
-            domain_layout.number_of_local_indices() + domain_ghosts.total_receive_count;
+            domain_layout.number_of_local_indices() + domain_ghosts.total_receive_count();
         let mut global2local = HashMap::new();
 
         // We need to transform the indices vector of the CSR matrix from global indexing to
@@ -117,7 +113,7 @@ where
             global2local.insert(index, count);
             count += 1;
         }
-        for index in &domain_ghosts.receive_indices {
+        for index in domain_ghosts.receive_indices() {
             global2local.insert(*index, count);
             count += 1;
         }
@@ -486,7 +482,7 @@ where
         let mut out_values = vec![Self::Item::default(); self.domain_ghosts.total_send_count()];
         for (out, out_index) in izip!(
             out_values.iter_mut(),
-            self.domain_ghosts.send_indices.iter()
+            self.domain_ghosts.send_indices().iter()
         ) {
             *out = x
                 .local

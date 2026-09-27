@@ -4,6 +4,10 @@
 Each invocation runs one case in a separate MPI process session. Failures clean up
 that complete session with TERM followed by KILL, so an exited launcher or closed
 pipe cannot leave its ranks running.
+
+Expected-abort cases must terminate the MPI job with a non-zero status and print
+their marker within the timeout. A timeout means that peers were left blocked and
+is reported as a failure.
 """
 
 import json
@@ -32,7 +36,13 @@ CASES = (
     "distributed-dot-rejection",
     "remap-layout-agreement",
     "layouts-and-consumers",
+    "ghost-variable-chunks",
 )
+# Cases that must abort the MPI job, mapped to the marker their output must contain.
+EXPECTED_ABORT_CASES = {
+    "ghost-buffer-mismatch-aborts": "ghost exchange buffer mismatch",
+    "mapper-buffer-mismatch-aborts": "ghost exchange buffer mismatch",
+}
 TIMEOUT_SECONDS = 30
 BUILD_TIMEOUT_SECONDS = 900
 TERM_GRACE_SECONDS = 5
@@ -141,6 +151,20 @@ def build_executable() -> str:
 
 def run_bounded(executable: str, ranks: int, case: str) -> tuple[bool, str]:
     """Run one MPI case, terminating its entire process group on failure."""
+    status, output = run_bounded_status(executable, ranks, case)
+    return status == "passed", output
+
+
+def run_expected_abort(
+    executable: str, ranks: int, case: str, marker: str
+) -> tuple[bool, str]:
+    """Run one MPI case that must abort the job, without timing out, printing `marker`."""
+    status, output = run_bounded_status(executable, ranks, case)
+    return status == "failed" and marker in output, output
+
+
+def run_bounded_status(executable: str, ranks: int, case: str) -> tuple[str, str]:
+    """Run one MPI case and return "passed", "failed", or "timeout" with its output."""
     command = ["mpiexec", "--oversubscribe", "-n", str(ranks), executable]
     environment = os.environ | {
         "RLST_MPI_EMPTY_CASE": case,
@@ -164,23 +188,28 @@ def run_bounded(executable: str, ranks: int, case: str) -> tuple[bool, str]:
         launcher_returncode = process.poll()
         output = stop_process_group(process)
         if launcher_returncode is not None:
-            return False, output
-        return False, f"timeout after {TIMEOUT_SECONDS}s\n{output}"
+            return "timeout", output
+        return "timeout", f"timeout after {TIMEOUT_SECONDS}s\n{output}"
     if process.returncode:
         output += stop_process_group(process)
-        return False, output
+        return "failed", output
     # A launcher can report success before a detached-pipe descendant exits.
     # The runner owns the session, so do not leave such a descendant behind.
     stop_process_group(process)
-    return True, output
+    return "passed", output
 
 
 def main() -> int:
     executable = build_executable()
     failures = []
     for ranks in RANKS:
-        for case in CASES:
-            success, output = run_bounded(executable, ranks, case)
+        for case in CASES + tuple(EXPECTED_ABORT_CASES):
+            if case in EXPECTED_ABORT_CASES:
+                success, output = run_expected_abort(
+                    executable, ranks, case, EXPECTED_ABORT_CASES[case]
+                )
+            else:
+                success, output = run_bounded(executable, ranks, case)
             status = "passed" if success else "failed"
             print(f"[{status}] ranks={ranks} case={case}")
             if output:

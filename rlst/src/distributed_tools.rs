@@ -10,6 +10,6 @@ pub mod permutation;
 
 pub use array_tools::{all_to_allv, displacements, scatterv, scatterv_root, sort_to_bins};
 pub use data_mapper::Global2LocalDataMapper;
-pub use ghost_communicator::GhostCommunicator;
+pub use ghost_communicator::{ChunkSizes, GhostCommunicator, GhostCommunicatorBuilder};
 pub use index_layout::IndexLayout;
 pub use permutation::DataPermutation;

@@ -13,7 +13,8 @@ use mpi::{
 };
 use rand::{SeedableRng, rngs::StdRng};
 use rlst::distributed_tools::{
-    DataPermutation, GhostCommunicator, Global2LocalDataMapper, IndexLayout, all_to_allv,
+    ChunkSizes, DataPermutation, GhostCommunicatorBuilder, Global2LocalDataMapper, IndexLayout,
+    all_to_allv,
     array_tools::{
         communicate_back, gather_to_all, gather_to_rank, global_inclusive_cumsum, global_max,
         global_min, is_sorted_array, scatterv, scatterv_root,
@@ -283,13 +284,13 @@ fn mapper_and_permutation<C: CommunicatorCollectives>(comm: &C) {
     let size = comm.size() as usize;
     let layout = Rc::new(IndexLayout::from_local_counts(1, comm));
     let requested = [(rank + 1) % size];
-    let mapper = Global2LocalDataMapper::new(layout.clone(), &requested);
-    let mapped = mapper.map_data(&[rank as i32, -(rank as i32)], 2);
-    let permutation = DataPermutation::new(layout.clone(), &requested);
+    let mapper = Global2LocalDataMapper::new(layout.clone(), &requested, 2);
+    let mapped = mapper.map_data(&[rank as i32, -(rank as i32)]);
+    let permutation = DataPermutation::new(layout.clone(), &requested, 2);
     let mut forward = [0_i32; 2];
-    permutation.forward_permute(&[rank as i32, -(rank as i32)], &mut forward, 2);
+    permutation.forward_permute(&[rank as i32, -(rank as i32)], &mut forward);
     let mut backward = [0_i32; 2];
-    permutation.backward_permute(&forward, &mut backward, 2);
+    permutation.backward_permute(&forward, &mut backward);
 
     // Validation routes this deliberately owner-unsorted list separately from
     // the caller-visible permutation order. Rank zero's two entries have
@@ -303,11 +304,11 @@ fn mapper_and_permutation<C: CommunicatorCollectives>(comm: &C) {
     } else {
         vec![rank]
     };
-    let unordered = DataPermutation::new(layout, &unordered_custom);
+    let unordered = DataPermutation::new(layout, &unordered_custom, 1);
     let mut unordered_forward = vec![0_i32; unordered_custom.len()];
-    unordered.forward_permute(&[rank as i32], &mut unordered_forward, 1);
+    unordered.forward_permute(&[rank as i32], &mut unordered_forward);
     let mut unordered_backward = vec![0_i32; 1];
-    unordered.backward_permute(&unordered_forward, &mut unordered_backward, 1);
+    unordered.backward_permute(&unordered_forward, &mut unordered_backward);
     let unordered_ok = unordered_forward
         == if size == 1 {
             vec![0]
@@ -405,17 +406,49 @@ fn rooted_and_aij_rejection<C: CommunicatorCollectives>(comm: &C) {
 /// Contract: invalid permutation and ghost metadata is rejected after every rank participates.
 fn collective_metadata_rejection<C: CommunicatorCollectives>(comm: &C) {
     let rank = comm.rank() as usize;
+    let size = comm.size() as usize;
     let empty_layout = Rc::new(IndexLayout::from_local_counts(0, comm));
-    let empty_permutation = DataPermutation::new(empty_layout, &[]);
     let zero_chunk_rejected = std::panic::catch_unwind(AssertUnwindSafe(|| {
-        empty_permutation.forward_permute::<i32>(&[], &mut [], 0);
+        DataPermutation::new(empty_layout.clone(), &[], 0);
     }))
-    .is_err();
-    let positive_disagreement_rejected = if comm.size() == 1 {
+    .is_err()
+        && std::panic::catch_unwind(AssertUnwindSafe(|| {
+            Global2LocalDataMapper::new(empty_layout.clone(), &[], 0);
+        }))
+        .is_err()
+        && std::panic::catch_unwind(AssertUnwindSafe(|| {
+            GhostCommunicatorBuilder::<usize>::new()
+                .chunk_sizes(ChunkSizes::Uniform(0))
+                .build(comm);
+        }))
+        .is_err();
+    // Chunk sizes are agreed at construction, even between ranks without ghost traffic.
+    let positive_disagreement_rejected = if size == 1 {
+        true
+    } else {
+        let chunk_size = if rank == 0 { 1 } else { 2 };
+        std::panic::catch_unwind(AssertUnwindSafe(|| {
+            DataPermutation::new(empty_layout.clone(), &[], chunk_size);
+        }))
+        .is_err()
+            && std::panic::catch_unwind(AssertUnwindSafe(|| {
+                Global2LocalDataMapper::new(empty_layout.clone(), &[], chunk_size);
+            }))
+            .is_err()
+    };
+    // A receiver that declares a different uniform chunk size than the owner of its ghost
+    // is rejected, including on ranks that are not part of the mismatched pair.
+    let ghost_disagreement_rejected = if size == 1 {
         true
     } else {
         std::panic::catch_unwind(AssertUnwindSafe(|| {
-            empty_permutation.forward_permute::<i32>(&[], &mut [], if rank == 0 { 1 } else { 2 });
+            let mut builder = GhostCommunicatorBuilder::<usize>::new();
+            if rank == 1 {
+                builder.add_ghost(0, 0);
+            }
+            builder
+                .chunk_sizes(ChunkSizes::Uniform(if rank == 0 { 1 } else { 2 }))
+                .build(comm);
         }))
         .is_err()
     };
@@ -429,38 +462,35 @@ fn collective_metadata_rejection<C: CommunicatorCollectives>(comm: &C) {
     }))
     .is_err();
     let duplicate_rejected = std::panic::catch_unwind(AssertUnwindSafe(|| {
-        DataPermutation::new(layout.clone(), &[rank, rank]);
+        DataPermutation::new(layout.clone(), &[rank, rank], 1);
     }))
     .is_err();
     let missing_coverage_rejected = std::panic::catch_unwind(AssertUnwindSafe(|| {
         let incomplete: &[usize] = if rank == 0 { &[0] } else { &[] };
-        DataPermutation::new(layout.clone(), incomplete);
+        DataPermutation::new(layout.clone(), incomplete, 1);
     }))
     .is_err();
     let mapper_index_rejected = std::panic::catch_unwind(AssertUnwindSafe(|| {
-        Global2LocalDataMapper::new(layout.clone(), &[layout.number_of_global_indices()]);
-    }))
-    .is_err();
-    let mapper = Global2LocalDataMapper::new(layout.clone(), &[rank]);
-    let mapper_buffer_rejected = std::panic::catch_unwind(AssertUnwindSafe(|| {
-        mapper.map_data::<i32>(&[], 1);
+        Global2LocalDataMapper::new(layout.clone(), &[layout.number_of_global_indices()], 1);
     }))
     .is_err();
     let invalid_owner_rejected = std::panic::catch_unwind(AssertUnwindSafe(|| {
-        GhostCommunicator::new(&[0_usize], &[comm.size() as usize], comm);
+        GhostCommunicatorBuilder::new()
+            .add_ghost(0_usize, size)
+            .build(comm);
     }))
     .is_err();
     collective_assert(
         comm,
         zero_chunk_rejected
             && positive_disagreement_rejected
+            && ghost_disagreement_rejected
             && invalid_count_rejected
             && duplicate_rejected
             && missing_coverage_rejected
             && mapper_index_rejected
-            && mapper_buffer_rejected
             && invalid_owner_rejected,
-        "invalid counts, owners, mapper indices/buffers, chunks, and permutation coverage must be rejected independently before payload communication",
+        "invalid counts, owners, mapper indices, chunks, and permutation coverage must be rejected independently at construction",
     );
 }
 
@@ -491,13 +521,13 @@ fn expanded_empty_contracts<C: CommunicatorCollectives>(comm: &C) {
         comm,
     ));
     let required = if rank == 0 { Vec::new() } else { vec![0, 1] };
-    let mapper = Global2LocalDataMapper::new(concentrated.clone(), &required);
+    let mapper = Global2LocalDataMapper::new(concentrated.clone(), &required, 1);
     let mapper_input = if rank == 0 {
         vec![10_i32, 20]
     } else {
         Vec::new()
     };
-    let mapped = mapper.map_data(&mapper_input, 1);
+    let mapped = mapper.map_data(&mapper_input);
     let mapper_ok = if rank == 0 {
         mapped.is_empty()
     } else {
@@ -511,16 +541,16 @@ fn expanded_empty_contracts<C: CommunicatorCollectives>(comm: &C) {
     } else {
         Vec::new()
     };
-    let permutation = DataPermutation::new(concentrated.clone(), &custom);
+    let permutation = DataPermutation::new(concentrated.clone(), &custom, 1);
     let mut forward = vec![0_i32; custom.len()];
-    permutation.forward_permute(&mapper_input, &mut forward, 1);
+    permutation.forward_permute(&mapper_input, &mut forward);
     let mut backward = vec![0_i32; mapper_input.len()];
-    permutation.backward_permute(&forward, &mut backward, 1);
+    permutation.backward_permute(&forward, &mut backward);
     let empty_layout = Rc::new(IndexLayout::from_local_counts(0, comm));
-    let empty_permutation = DataPermutation::new(empty_layout, &[]);
+    let empty_permutation = DataPermutation::new(empty_layout, &[], 1);
     let mut empty: [i32; 0] = [];
-    empty_permutation.forward_permute::<i32>(&[], &mut empty, 1);
-    empty_permutation.backward_permute::<i32>(&empty, &mut [], 1);
+    empty_permutation.forward_permute::<i32>(&[], &mut empty);
+    empty_permutation.backward_permute::<i32>(&empty, &mut []);
     let permutation_ok = (if comm.size() == 1 || rank == 1 {
         forward == [10, 20]
     } else {
@@ -544,14 +574,23 @@ fn expanded_empty_contracts<C: CommunicatorCollectives>(comm: &C) {
         expanded.is_empty() && embedding.extract_embedded_data(&expanded, 1).is_empty()
     };
 
-    let ghosts_indices = if rank == 0 { Vec::new() } else { vec![0_usize] };
-    let ghosts = GhostCommunicator::new(&ghosts_indices, &vec![0; ghosts_indices.len()], comm);
+    let ghost_builder = |chunk_size| {
+        let mut builder = GhostCommunicatorBuilder::new();
+        if rank != 0 {
+            builder.add_ghost(0_usize, 0);
+        }
+        builder
+            .chunk_sizes(ChunkSizes::Uniform(chunk_size))
+            .build(comm)
+    };
+    let ghosts = ghost_builder(1);
+    let chunked = ghost_builder(2);
     // Exercise both directions and chunk sizes one/two for every supported
     // value representation.  The one-way topology also covers send-only,
     // receive-only, and isolated ranks.
-    let sent_f32 = vec![1.5_f32; ghosts.total_send_count() * 2];
-    let mut received_f32 = vec![0_f32; ghosts.total_receive_count() * 2];
-    ghosts.forward_send_values_by_chunks(&sent_f32, &mut received_f32, 2);
+    let sent_f32 = vec![1.5_f32; chunked.send_buffer_len()];
+    let mut received_f32 = vec![0_f32; chunked.receive_buffer_len()];
+    chunked.forward_send_values(&sent_f32, &mut received_f32);
     let mut received_f32_scalar = vec![0_f32; ghosts.total_receive_count()];
     ghosts.forward_send_values(
         &vec![1.5_f32; ghosts.total_send_count()],
@@ -562,11 +601,10 @@ fn expanded_empty_contracts<C: CommunicatorCollectives>(comm: &C) {
         &vec![2.5_f32; ghosts.total_receive_count()],
         &mut backward_f32_scalar,
     );
-    let mut backward_f32 = vec![0_f32; ghosts.total_send_count() * 2];
-    ghosts.backward_send_values_by_chunks(
-        &vec![2.5_f32; ghosts.total_receive_count() * 2],
+    let mut backward_f32 = vec![0_f32; chunked.send_buffer_len()];
+    chunked.backward_send_values(
+        &vec![2.5_f32; chunked.receive_buffer_len()],
         &mut backward_f32,
-        2,
     );
 
     let mut received_f64_scalar = vec![0_f64; ghosts.total_receive_count()];
@@ -574,22 +612,17 @@ fn expanded_empty_contracts<C: CommunicatorCollectives>(comm: &C) {
         &vec![4.0_f64; ghosts.total_send_count()],
         &mut received_f64_scalar,
     );
-    let mut received_f64 = vec![0_f64; ghosts.total_receive_count() * 2];
-    ghosts.forward_send_values_by_chunks(
-        &vec![4.0_f64; ghosts.total_send_count() * 2],
-        &mut received_f64,
-        2,
-    );
+    let mut received_f64 = vec![0_f64; chunked.receive_buffer_len()];
+    chunked.forward_send_values(&vec![4.0_f64; chunked.send_buffer_len()], &mut received_f64);
     let mut backward_f64_scalar = vec![0_f64; ghosts.total_send_count()];
     ghosts.backward_send_values(
         &vec![7.0_f64; ghosts.total_receive_count()],
         &mut backward_f64_scalar,
     );
-    let mut backward_f64 = vec![0_f64; ghosts.total_send_count() * 2];
-    ghosts.backward_send_values_by_chunks(
-        &vec![7.0_f64; ghosts.total_receive_count() * 2],
+    let mut backward_f64 = vec![0_f64; chunked.send_buffer_len()];
+    chunked.backward_send_values(
+        &vec![7.0_f64; chunked.receive_buffer_len()],
         &mut backward_f64,
-        2,
     );
 
     let complex = rlst::c64::new(3.0, -2.0);
@@ -598,11 +631,10 @@ fn expanded_empty_contracts<C: CommunicatorCollectives>(comm: &C) {
         &vec![complex; ghosts.total_send_count()],
         &mut received_complex_scalar,
     );
-    let mut received_complex = vec![rlst::c64::new(0.0, 0.0); ghosts.total_receive_count() * 2];
-    ghosts.forward_send_values_by_chunks(
-        &vec![complex; ghosts.total_send_count() * 2],
+    let mut received_complex = vec![rlst::c64::new(0.0, 0.0); chunked.receive_buffer_len()];
+    chunked.forward_send_values(
+        &vec![complex; chunked.send_buffer_len()],
         &mut received_complex,
-        2,
     );
     let back_complex = rlst::c64::new(-1.0, 5.0);
     let mut backward_complex_scalar = vec![rlst::c64::new(0.0, 0.0); ghosts.total_send_count()];
@@ -610,13 +642,14 @@ fn expanded_empty_contracts<C: CommunicatorCollectives>(comm: &C) {
         &vec![back_complex; ghosts.total_receive_count()],
         &mut backward_complex_scalar,
     );
-    let mut backward_complex = vec![rlst::c64::new(0.0, 0.0); ghosts.total_send_count() * 2];
-    ghosts.backward_send_values_by_chunks(
-        &vec![back_complex; ghosts.total_receive_count() * 2],
+    let mut backward_complex = vec![rlst::c64::new(0.0, 0.0); chunked.send_buffer_len()];
+    chunked.backward_send_values(
+        &vec![back_complex; chunked.receive_buffer_len()],
         &mut backward_complex,
-        2,
     );
-    let ghost_ok = received_f32.iter().all(|&value| value == 1.5)
+    let ghost_ok = chunked.send_buffer_len() == 2 * chunked.total_send_count()
+        && chunked.receive_buffer_len() == 2 * chunked.total_receive_count()
+        && received_f32.iter().all(|&value| value == 1.5)
         && received_f32_scalar.iter().all(|&value| value == 1.5)
         && backward_f32_scalar.iter().all(|&value| value == 2.5)
         && backward_f32.iter().all(|&value| value == 2.5)
@@ -1069,9 +1102,11 @@ fn layouts_and_consumers<C: CommunicatorCollectives>(comm: &C) {
     let empty_layout = IndexLayout::from_local_counts(0, comm);
     let empty_remapped = empty_layout.remap(&empty_layout, &[] as &[i32]);
 
-    let ghost_indices = if rank == 0 { vec![] } else { vec![0_usize] };
-    let owners = vec![0; ghost_indices.len()];
-    let ghosts = GhostCommunicator::new(&ghost_indices, &owners, comm);
+    let mut ghost_builder = GhostCommunicatorBuilder::new();
+    if rank != 0 {
+        ghost_builder.add_ghost(0_usize, 0);
+    }
+    let ghosts = ghost_builder.build(comm);
     let mut received = vec![0_f64; ghosts.total_receive_count()];
     let sent = vec![4_f64; ghosts.total_send_count()];
     ghosts.forward_send_values(&sent, &mut received);
@@ -1154,6 +1189,145 @@ fn layouts_and_consumers<C: CommunicatorCollectives>(comm: &C) {
     );
 }
 
+/// Contract: owner-declared variable chunk sizes, including empty chunks, reach the
+/// receivers at build time; forward and backward exchanges use the resulting layout, and
+/// ghosts arrive grouped by owner in insertion order.
+fn ghost_variable_chunks<C: CommunicatorCollectives>(comm: &C) {
+    let rank = comm.rank() as usize;
+    let size = comm.size() as usize;
+    let owner = |index: usize| index % size;
+
+    // Odd ranks require every index they do not own, added in descending order, so the
+    // receive order differs from the insertion order. Even ranks require no ghosts.
+    let ghosts = if rank % 2 == 1 {
+        (0..4 * size)
+            .rev()
+            .filter(|&index| owner(index) != rank)
+            .collect::<Vec<_>>()
+    } else {
+        Vec::new()
+    };
+    let ghost_comm = GhostCommunicatorBuilder::new()
+        .add_ghosts(ghosts.iter().map(|&index| (index, owner(index))))
+        .chunk_sizes(ChunkSizes::PerIndex(Box::new(|index: usize| index % 3)))
+        .build(comm);
+
+    let mut expected_order = ghosts.clone();
+    expected_order.sort_by_key(|&index| owner(index));
+    let order_ok = ghost_comm.receive_indices() == expected_order.as_slice();
+
+    let value = |index: usize, k: usize| (1000 * index + k) as i64;
+    let send_offsets = ghost_comm.send_offsets();
+    let mut send_data = vec![0_i64; ghost_comm.send_buffer_len()];
+    for (i, &index) in ghost_comm.send_indices().iter().enumerate() {
+        for (k, entry) in send_data[send_offsets[i]..send_offsets[i + 1]]
+            .iter_mut()
+            .enumerate()
+        {
+            *entry = value(index, k);
+        }
+    }
+    let mut received = vec![0_i64; ghost_comm.receive_buffer_len()];
+    ghost_comm.forward_send_values(&send_data, &mut received);
+
+    let receive_offsets = ghost_comm.receive_offsets();
+    let layout_ok = receive_offsets.len() == 1 + ghost_comm.total_receive_count()
+        && receive_offsets[0] == 0
+        && *receive_offsets.last().unwrap() == received.len()
+        && send_offsets.len() == 1 + ghost_comm.total_send_count()
+        && ghost_comm
+            .send_indices()
+            .iter()
+            .all(|&index| owner(index) == rank)
+        && ghost_comm
+            .send_indices()
+            .iter()
+            .zip(ghost_comm.send_chunk_sizes())
+            .all(|(&index, &chunk_size)| chunk_size == index % 3)
+        && ghost_comm
+            .receive_indices()
+            .iter()
+            .zip(ghost_comm.receive_chunk_sizes())
+            .all(|(&index, &chunk_size)| chunk_size == index % 3);
+    let forward_ok = ghost_comm
+        .receive_indices()
+        .iter()
+        .enumerate()
+        .all(|(i, &index)| {
+            let chunk = &received[receive_offsets[i]..receive_offsets[i + 1]];
+            chunk.len() == index % 3
+                && chunk
+                    .iter()
+                    .enumerate()
+                    .all(|(k, &entry)| entry == value(index, k))
+        });
+
+    // Receivers send negated values back; every owner sees each requester's chunk.
+    let returned_values = received.iter().map(|&entry| -entry).collect::<Vec<_>>();
+    let mut returned = vec![0_i64; ghost_comm.send_buffer_len()];
+    ghost_comm.backward_send_values(&returned_values, &mut returned);
+    let backward_ok = returned
+        .iter()
+        .zip(&send_data)
+        .all(|(&back, &sent)| back == -sent);
+
+    // Every odd rank requests every index it does not own.
+    let requesters = |index: usize| {
+        (0..size)
+            .filter(|&other| other % 2 == 1 && other != owner(index))
+            .count()
+    };
+    let owned_requests = (0..4 * size)
+        .filter(|&index| owner(index) == rank)
+        .map(requesters)
+        .sum::<usize>();
+    let count_ok = ghost_comm.total_send_count() == owned_requests
+        && ghost_comm.total_receive_count() == ghosts.len();
+
+    collective_assert(
+        comm,
+        order_ok && layout_ok && forward_ok && backward_ok && count_ok,
+        "variable ghost chunks must keep owner-declared sizes, owner-grouped order, and exact payloads in both directions",
+    );
+}
+
+/// Contract: a ghost exchange with a wrong local buffer length aborts the whole MPI job
+/// instead of stranding the peers. Run by the MPI runner as an expected-abort case.
+fn ghost_buffer_mismatch_aborts<C: CommunicatorCollectives>(comm: &C) {
+    let rank = comm.rank() as usize;
+    let mut builder = GhostCommunicatorBuilder::new();
+    if rank != 0 {
+        builder.add_ghost(0_usize, 0);
+    }
+    let ghosts = builder.build(comm);
+    let send = vec![1_i32; ghosts.send_buffer_len()];
+    // Rank zero sends to every other rank, which would block without the abort.
+    let receive_len = ghosts.receive_buffer_len() + usize::from(rank == 0);
+    let mut receive = vec![0_i32; receive_len];
+    ghosts.forward_send_values(&send, &mut receive);
+    collective_assert(
+        comm,
+        false,
+        "a ghost buffer mismatch must abort the MPI job",
+    );
+}
+
+/// Contract: a mapper exchange with a wrong local input length aborts the whole MPI job.
+/// Run by the MPI runner as an expected-abort case.
+fn mapper_buffer_mismatch_aborts<C: CommunicatorCollectives>(comm: &C) {
+    let rank = comm.rank() as usize;
+    let size = comm.size() as usize;
+    let layout = Rc::new(IndexLayout::from_local_counts(1, comm));
+    let mapper = Global2LocalDataMapper::new(layout, &[(rank + 1) % size], 1);
+    let data = vec![rank as i32; 1 + usize::from(rank == 0)];
+    mapper.map_data(&data);
+    collective_assert(
+        comm,
+        false,
+        "a mapper buffer mismatch must abort the MPI job",
+    );
+}
+
 fn main() {
     let universe = mpi::initialize().expect("MPI must initialize once per executable");
     let world = universe.world();
@@ -1174,6 +1348,9 @@ fn main() {
         "distributed-dot-rejection" => distributed_dot_rejection(&world),
         "remap-layout-agreement" => remap_layout_agreement(&world),
         "layouts-and-consumers" => layouts_and_consumers(&world),
+        "ghost-variable-chunks" => ghost_variable_chunks(&world),
+        "ghost-buffer-mismatch-aborts" => ghost_buffer_mismatch_aborts(&world),
+        "mapper-buffer-mismatch-aborts" => mapper_buffer_mismatch_aborts(&world),
         _ => panic!("unknown RLST_MPI_EMPTY_CASE={case}"),
     }
 }
