@@ -78,8 +78,12 @@ changes:
   host Homebrew paths.
 - `burn` — enables the optional Burn integration.
 - `enable_tracing` — enables tracing macro support and `log`.
-- `blis_threading`, `openblas_threading`, `mkl_threading`, and `nightly` — specialized
-  configuration flags; follow existing code patterns before using them.
+- `blis_threading`, `openblas_threading`, `mkl_threading` — link that backend's thread-control
+  functions directly for `rlst::threading`. They are only needed for statically linked BLAS or
+  targets other than Linux and macOS, where `dlsym` finds dynamically linked OpenBLAS, MKL, BLIS,
+  FlexiBLAS, and Accelerate at runtime. Library checks with them need no native BLAS, but linked
+  binaries require each enabled library.
+- `nightly` — specialized configuration flag; follow existing code patterns before using it.
 
 On Linux, the CI feature matrix installs `libclang-dev`, CMake, OpenBLAS, FFTW, OpenMPI, and
 SuiteSparse. The normal test configuration links BLAS/LAPACK through the platform dev dependencies
@@ -204,7 +208,7 @@ that file.
 ## Validation commands
 
 Run commands from the repository root. After every code edit, and again after any corrective
-edit, run all five Clippy commands below independently so a failure does not prevent later
+edit, run all six Clippy commands below independently so a failure does not prevent later
 checks. `.forgejo/workflows/run-tests.yml` is authoritative; keep this list synchronized with it.
 
 ```bash
@@ -212,6 +216,7 @@ cargo clippy -- -D warnings
 cargo clippy --examples -- -D warnings
 cargo clippy --features "mpi,fftw,fftw_system,strict" -- -D warnings
 cargo clippy --examples --features "mpi,fftw,fftw_system,strict" -- -D warnings
+cargo clippy --features "openblas_threading,mkl_threading,blis_threading,strict" -- -D warnings
 cargo clippy -p rlst-suitesparse -- -D warnings
 ```
 

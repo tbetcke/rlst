@@ -1,6 +1,6 @@
 [package]
 name = "rlst"
-version = "0.8.0"
+version = "0.9.0"
 authors = ["The rlst contributors"]
 edition = "2024"
 description = "A Rust native linear algebra library."
@@ -15,7 +15,7 @@ categories = ["mathematics", "science"]
 name = "rlst"
 
 [dependencies]
-rlst-proc-macro = { path = "../proc-macro", version = "0.8.0" }
+rlst-proc-macro = { path = "../proc-macro", version = "0.9.0" }
 num = { version = "0.4", features = ["serde", "rand"] }
 rand = "0.10"
 rand_chacha = "0.10"
@@ -69,6 +69,8 @@ strict = []
 default = []
 mpi = ["dep:mpi", "dep:mpi-sys"]
 nightly = []
+# Link BLAS thread-control functions directly. Only needed for statically linked
+# libraries or targets other than Linux and macOS; see `rlst::threading`.
 blis_threading = []
 openblas_threading = []
 mkl_threading = []

@@ -73,18 +73,45 @@
 //!
 //! ```toml
 //! [dependencies]
-//! rlst = "0.8"
+//! rlst = "0.9"
 //! blas-src = { version = "0.14", features = ["accelerate"] }
 //! lapack-src = { version = "0.13", features = ["accelerate"] }
 //! ```
 //!
-//! See the [changelog](crate::doc::changelog) for new features and migration notes from 0.7.
+//! See the [changelog](crate::doc::changelog) for new features and migration notes from 0.8.
 //!
 //! On Linux, use the provider appropriate for the installation (commonly system OpenBLAS).
 //! Provider crate versions and features change independently, so consult their current
 //! documentation. Importing a provider crate (for example `use blas_src as _;`) may be required
 //! by that provider to force native linkage; this is provider-specific rather than an RLST API
 //! requirement.
+//!
+//! ## Controlling BLAS threads
+//!
+//! [`set_blas_threads`](crate::threading::set_blas_threads) sets the number of threads of the
+//! linked BLAS library and returns the resulting state of each backend it found. OpenBLAS, Intel
+//! MKL, BLIS, FlexiBLAS, and Apple Accelerate (macOS 15 or later) are supported.
+//!
+//! ```
+//! # extern crate blas_src;
+//! use rlst::threading::{get_blas_threads, set_blas_threads};
+//!
+//! match set_blas_threads(1) {
+//!     Ok(settings) => {
+//!         for setting in settings {
+//!             println!("{:?}: {:?}", setting.backend, setting.threads);
+//!         }
+//!     }
+//!     Err(err) => println!("BLAS threads unchanged: {err}"),
+//! }
+//! println!("{:?}", get_blas_threads());
+//! ```
+//!
+//! Dynamically linked libraries and Accelerate are found at runtime on Linux and macOS. A
+//! statically linked OpenBLAS, MKL, or BLIS requires the matching `openblas_threading`,
+//! `mkl_threading`, or `blis_threading` feature. Accelerate only distinguishes single-threaded
+//! from multi-threaded execution, and its setting applies to the calling thread only; see the
+//! [`threading`](crate::threading) module for details.
 //!
 //! ## Using the FFT interface
 //!
