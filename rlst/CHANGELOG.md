@@ -1,6 +1,9 @@
 # Changelog
 
-## Unreleased
+## v0.9.0
+
+Changes since [v0.8.0](https://codeberg.org/rlst/rlst/releases/tag/v0.8.0).
+All workspace crates (`rlst`, `rlst-proc-macro`, and `rlst-suitesparse`) use version 0.9.0.
 
 ### BLAS thread control — migration required
 
@@ -32,6 +35,17 @@
   instead of the C interface `MKL_Set_Num_Threads`.
 - The documentation of `get_num_cores` now states that it counts logical
   CPUs; its behavior is unchanged.
+
+### Dependencies, documentation, and build improvements
+
+- Checked all workspace dependencies against their latest releases. Every
+  requirement already targets the newest release series, so there are no
+  dependency changes.
+- `rlst-proc-macro` and `rlst-suitesparse` have no changes beyond the version
+  number.
+- The getting started guide gained a section on controlling BLAS threads.
+- CI also runs Clippy with the `openblas_threading`, `mkl_threading`, and
+  `blis_threading` features, which need no native BLAS library to check.
 
 ## v0.8.0
 

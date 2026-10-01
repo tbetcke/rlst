@@ -26,7 +26,7 @@
 //!
 //! # Burn tensors
 //!
-//! Enable `burn` to expose `rlst::interface::burn`. RLST 0.8 uses Burn 0.21; a
+//! Enable `burn` to expose `rlst::interface::burn`. RLST 0.9 uses Burn 0.21; a
 //! downstream application should select a compatible Burn 0.21 backend. Conversions consume and
 //! copy their input while preserving shape: tensors become row-major RLST arrays, and RLST arrays
 //! are evaluated in row-major order on the backend's default device.
