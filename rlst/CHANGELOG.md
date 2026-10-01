@@ -1,5 +1,38 @@
 # Changelog
 
+## Unreleased
+
+### BLAS thread control — migration required
+
+- **`set_blas_threads` now returns
+  `Result<Vec<BlasThreadSetting>, BlasThreadingError>`** instead of `()`. On
+  success, it reports the state of every detected backend, read back after
+  the change: a `BlasBackend` with `BlasThreads::Count(n)`, or for Accelerate
+  `SingleThreaded`/`BackendManaged`. A zero or out-of-range count, a missing
+  backend, and a backend rejecting the setting are errors rather than silent
+  no-ops. Callers that ignored the result can write
+  `let _ = set_blas_threads(n);`, or use `?` or `expect` to require that a
+  backend was configured.
+- The setter applies to every detected backend, and the new
+  `get_blas_threads` reports their current states. Both live in
+  `rlst::threading`.
+- Backends are found at runtime on Linux and macOS without any feature:
+  dynamically linked OpenBLAS (including ILP64 `64_` builds), Intel MKL, BLIS,
+  FlexiBLAS, and Apple Accelerate on macOS 15 or later. Accelerate only
+  distinguishes single-threaded from multi-threaded execution, and its
+  setting applies to the calling thread only.
+- The `openblas_threading`, `mkl_threading`, and `blis_threading` features are
+  now only needed for statically linked libraries, or on targets other than
+  Linux and macOS. They link the backend's functions directly and can be
+  combined.
+- Fixed the previous implementation. No threading feature compiled under
+  edition 2024, `openblas_threading` called a function declared only under
+  `mkl_threading`, BLIS received a 32-bit count where its default `dim_t` is
+  64-bit, and MKL used the Fortran-style `mkl_set_num_threads` entry point
+  instead of the C interface `MKL_Set_Num_Threads`.
+- The documentation of `get_num_cores` now states that it counts logical
+  CPUs; its behavior is unchanged.
+
 ## v0.8.0
 
 Changes since [v0.7.0](https://codeberg.org/rlst/rlst/releases/tag/v0.7.0).

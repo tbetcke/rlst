@@ -52,6 +52,7 @@ jobs:
           cargo clippy --examples -- -D warnings
           cargo clippy --features "mpi,fftw,fftw_system,strict" -- -D warnings
           cargo clippy --examples --features "mpi,fftw,fftw_system,strict" -- -D warnings
+          cargo clippy --features "openblas_threading,mkl_threading,blis_threading,strict" -- -D warnings
           cargo clippy -p rlst-suitesparse -- -D warnings
 
       - name: Run unit tests
