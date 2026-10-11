@@ -26,18 +26,27 @@
 //!
 //! # Burn tensors
 //!
-//! Enable `burn` to expose `rlst::interface::burn`. RLST 0.9 uses Burn 0.21; a
-//! downstream application should select a compatible Burn 0.21 backend. Conversions consume and
-//! copy their input while preserving shape: tensors become row-major RLST arrays, and RLST arrays
-//! are evaluated in row-major order on the backend's default device.
+//! Enable `burn` to expose `rlst::interface::burn`. RLST 0.10 uses Burn 0.22, where tensors have
+//! no backend type parameter: the backend is chosen at runtime through a Burn `Device`. A
+//! downstream application must enable at least one Burn 0.22 backend feature, such as `flex`
+//! (pure Rust CPU) or `wgpu`. Conversions consume and copy their input while preserving shape:
+//! tensors become row-major RLST arrays, and RLST arrays are evaluated in row-major order and
+//! copied to the given device, or to Burn's default device.
 //!
 //! ```ignore
+//! use burn::tensor::{Device, Int, Tensor};
 //! use rlst::interface::burn::{RlstArrayIntoBurnTensor, TensorIntoRlstArray};
 //!
-//! // Given a concrete Burn 0.21 backend `Backend`:
-//! let tensor = array.into_tensor::<Backend>()?;
-//! let round_trip = tensor.into_array::<f32>()?;
+//! let device = Device::flex();
+//! let tensor: Tensor<2> = array.r().into_tensor_on(&device)?;
+//! let round_trip = tensor.into_array::<f64>()?;
+//!
+//! // `into_tensor` uses `Device::default()`, which panics if no Burn backend is enabled.
+//! let indices: Tensor<1, Int> = index_array.into_tensor()?;
 //! ```
 //!
-//! The requested Rust scalar must exactly match the Burn tensor/backend dtype. Real floating-point
-//! and integer scalar families are supported; complex RLST arrays are not.
+//! Each tensor takes the dtype of the RLST array's scalar, so an `f64` array becomes an `F64`
+//! tensor whatever the device's default float type; a device that does not support the dtype is
+//! an error. Float tensors take `f32` or `f64`, and integer tensors take signed or unsigned
+//! integers from 8 through 64 bits. When converting back, the requested Rust scalar must exactly
+//! match the tensor dtype. Complex RLST arrays are not supported.
