@@ -1,6 +1,9 @@
 # Changelog
 
-## Unreleased
+## v0.10.0
+
+Changes since [v0.9.0](https://codeberg.org/rlst/rlst/releases/tag/v0.9.0).
+All workspace crates (`rlst`, `rlst-proc-macro`, and `rlst-suitesparse`) use version 0.10.0.
 
 ### Parallel sort — exactly balanced output
 
@@ -21,6 +24,46 @@
   candidates; it changes the communication, never the result.
 - The signature of `parsort`, its stable tie order (input rank, input position)
   and its support for empty ranks and globally empty input are unchanged.
+
+### Burn 0.22 — migration required
+
+Burn 0.22 removes the backend type parameter from `Tensor` (now
+`Tensor<D, K>`) and selects the backend at runtime through a `Device`. The
+`burn` feature now uses Burn 0.22, and `rlst::interface::burn` follows it.
+
+- **`RlstArrayIntoBurnTensor<Item, B, NDIM, K>` is now
+  `RlstArrayIntoBurnTensor<Item, NDIM, K>`.** Replace
+  `array.into_tensor::<Backend>()` by a type annotation on the result, for
+  example `let t: Tensor<2> = array.into_tensor()?;` or
+  `let t: Tensor<1, Int> = array.into_tensor()?;`.
+- The new `into_tensor_on(&device)` creates the tensor on a given Burn
+  `Device`. `into_tensor()` uses `Device::default()`, the first enabled Burn
+  backend unless `BURN_DEVICE` names one, and panics if the application
+  enables no Burn backend feature (for example `flex` or `wgpu`).
+- The tensor takes the dtype of the array's scalar instead of requiring it to
+  equal the backend's default float or integer element type: an `f64` array
+  becomes an `F64` tensor on any device that supports `F64`. An integer scalar
+  for a float tensor (or the reverse), or a dtype the device does not support,
+  is an error.
+- `TensorIntoRlstArray` is now implemented for integer tensors as well as
+  float tensors, and `into_array` no longer requires `Item: RlstScalar`, so
+  integer tensors convert to integer arrays. A failure to read the tensor from
+  its device is returned as an error instead of panicking.
+
+### Dependencies, documentation, and build improvements
+
+- Checked all workspace dependencies against their latest releases. Burn moves
+  from 0.21 to 0.22 (see above); every other requirement already targets the
+  newest release series.
+- `rlst-proc-macro` and `rlst-suitesparse` have no changes beyond the version
+  number and package metadata.
+- The optional integrations guide describes the Burn 0.22 conversions.
+- The repository and homepage links of all crates and the documentation now
+  point to `https://codeberg.org/rlst`, replacing the old `linalg-rs`
+  organization.
+- The distributed computations guide describes the exact output balance of
+  `parsort`, and the bounded MPI test runner gained a `sort-balance` case that
+  checks it on 1, 2, and 4 ranks.
 
 ## v0.9.0
 

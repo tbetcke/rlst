@@ -1,18 +1,18 @@
 [package]
 name = "rlst-suitesparse"
-version = "0.9.0"
+version = "0.10.0"
 authors = ["The rlst contributors"]
 edition = "2024"
 description = "SuiteSparse bindings for RLST sparse matrices."
 readme = "README.md"
 license = "MIT / Apache-2.0"
-homepage = "https://codeberg.org/linalg-rs"
-repository = "https://codeberg.org/linalg-rs/rlst"
+homepage = "https://codeberg.org/rlst"
+repository = "https://codeberg.org/rlst/rlst"
 keywords = ["numerics", "sparse", "suitesparse", "umfpack"]
 categories = ["mathematics", "science"]
 
 [dependencies]
-rlst = { path = "../rlst", version = "0.9.0" }
+rlst = { path = "../rlst", version = "0.10.0" }
 
 [lints.clippy]
 wildcard_imports = "forbid"

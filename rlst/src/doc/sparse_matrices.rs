@@ -147,7 +147,7 @@
 //!
 //! This integration requires a native SuiteSparse installation. UMFPACK is GPL-2.0-or-later, so
 //! linking it can affect distribution licensing even though the Rust crates are dual-licensed.
-//! See the companion crate's [real and complex solve tutorial](https://codeberg.org/linalg-rs/rlst/src/branch/main/rlst-suitesparse/README.md#real-and-complex-solves)
+//! See the companion crate's [real and complex solve tutorial](https://codeberg.org/rlst/rlst/src/branch/main/rlst-suitesparse/README.md#real-and-complex-solves)
 //! for setup, factorization reuse, status handling, and `SUITESPARSE_PATH` discovery.
 //!
 //! # Matrix Market files

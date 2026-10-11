@@ -73,12 +73,12 @@
 //!
 //! ```toml
 //! [dependencies]
-//! rlst = "0.9"
+//! rlst = "0.10"
 //! blas-src = { version = "0.14", features = ["accelerate"] }
 //! lapack-src = { version = "0.13", features = ["accelerate"] }
 //! ```
 //!
-//! See the [changelog](crate::doc::changelog) for new features and migration notes from 0.8.
+//! See the [changelog](crate::doc::changelog) for new features and migration notes from 0.9.
 //!
 //! On Linux, use the provider appropriate for the installation (commonly system OpenBLAS).
 //! Provider crate versions and features change independently, so consult their current
