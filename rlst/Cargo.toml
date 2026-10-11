@@ -6,8 +6,8 @@ edition = "2024"
 description = "A Rust native linear algebra library."
 readme = "../README.md"
 license = "MIT / Apache-2.0"
-homepage = "https://codeberg.org/linalg-rs"
-repository = "https://codeberg.org/linalg-rs/rlst"
+homepage = "https://codeberg.org/rlst"
+repository = "https://codeberg.org/rlst/rlst"
 keywords = ["numerics"]
 categories = ["mathematics", "science"]
 
@@ -54,8 +54,6 @@ lapack-src = { version = "0.13", features = ["accelerate"]}
 openblas-src = { version = "0.10", features = ["system"]}
 lapack-src = { version = "0.13", features = ["openblas"]}
 blas-src = { version = "0.14", features = ["openblas"] }
-
-
 
 [build-dependencies]
 pkg-config = { version = "0.3", optional = true }
