@@ -11,7 +11,7 @@ use mpi::{
     topology::{Color, SimpleCommunicator},
     traits::{Communicator, CommunicatorCollectives, Equivalence},
 };
-use rand::{SeedableRng, rngs::StdRng};
+use rand::{RngExt, SeedableRng, rngs::StdRng};
 use rlst::distributed_tools::{
     ChunkSizes, DataPermutation, GhostCommunicatorBuilder, Global2LocalDataMapper, IndexLayout,
     all_to_allv,
@@ -249,8 +249,8 @@ fn sparse_sort<C: CommunicatorCollectives>(comm: &C) {
     let identical = parsort(&all_identical, comm, &mut rng).expect("sort identical keys");
     let identical_ok = gather_to_all(&identical, comm) == identical_expected;
 
-    // Deliberately unequal nonzero populations exercise weighted samples rather
-    // than treating every occupied rank as an equally weighted representative.
+    // Deliberately unequal nonzero populations exercise the splitter refinement over
+    // ranks whose share of every bracket differs.
     let uneven_local = (0..(1_usize << rank))
         .map(|index| SortRecord {
             key: ((rank * 13 + index * 7) % 31) as i32,
@@ -275,6 +275,53 @@ fn sparse_sort<C: CommunicatorCollectives>(comm: &C) {
             && uneven_gathered == uneven_expected
             && balance_ok,
         "parallel sorting must match stable serial payload oracles across occupancy masks and remain approximately balanced",
+    );
+}
+
+/// Contract: the sort balances its output exactly, also when every rank holds a random
+/// share of one distribution (local quantiles alike on every rank) and when every
+/// record sits on one rank.
+fn sort_balance<C: CommunicatorCollectives>(comm: &C) {
+    let rank = comm.rank() as usize;
+    let size = comm.size() as usize;
+    let mut rng = StdRng::seed_from_u64(17 + rank as u64);
+    let exact = |sorted_len: usize, total: usize| {
+        let counts = gather_to_all(&[sorted_len], comm);
+        counts
+            .iter()
+            .enumerate()
+            .all(|(r, &count)| count == (r + 1) * total / size - r * total / size)
+    };
+
+    // A random share: the same distribution on every rank, uneven counts, duplicates.
+    let shared = (0..(997 + 13 * rank))
+        .map(|index| SortRecord {
+            key: rng.random_range(0..5_000),
+            payload: (rank * 100_000 + index) as i32,
+        })
+        .collect::<Vec<_>>();
+    let mut shared_expected = gather_to_all(&shared, comm);
+    shared_expected.sort_by_key(|record| record.key);
+    let shared_sorted = parsort(&shared, comm, &mut rng).expect("sort a random share");
+    let shared_ok = gather_to_all(&shared_sorted, comm) == shared_expected
+        && exact(shared_sorted.len(), shared_expected.len());
+
+    // Every record on the last rank.
+    let lone = if rank + 1 == size {
+        (0..1000).map(|_| rng.random::<f64>()).collect::<Vec<_>>()
+    } else {
+        Vec::new()
+    };
+    let mut lone_expected = gather_to_all(&lone, comm);
+    lone_expected.sort_by(f64::total_cmp);
+    let lone_sorted = parsort(&lone, comm, &mut rng).expect("sort records of one rank");
+    let lone_ok = gather_to_all(&lone_sorted, comm) == lone_expected
+        && exact(lone_sorted.len(), lone_expected.len());
+
+    collective_assert(
+        comm,
+        shared_ok && lone_ok,
+        "parallel sorting must give every rank exactly its share of the sorted records",
     );
 }
 
@@ -1562,6 +1609,7 @@ fn main() {
         "empty-boundaries" => empty_boundaries(&world),
         "empty-extrema" => empty_extrema(&world),
         "sparse-sort" => sparse_sort(&world),
+        "sort-balance" => sort_balance(&world),
         "mapper-and-permutation" => mapper_and_permutation(&world),
         "rooted-and-aij-rejection" => rooted_and_aij_rejection(&world),
         "collective-metadata-rejection" => collective_metadata_rejection(&world),

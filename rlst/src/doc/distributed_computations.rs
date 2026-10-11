@@ -58,8 +58,10 @@
 //! the global input is empty. Callers that previously assumed a value must handle
 //! this case explicitly. `communicate_back` returns the first value on the next
 //! *nonempty* rank (or `None`), including when the calling rank is empty.
-//! `parsort` accepts empty local input and can produce empty output ranks; it
-//! preserves all records but promises only approximate output balance.
+//! `parsort` accepts empty local input and preserves all records. Its output is
+//! exactly balanced: rank `r` of `P` receives the records at global positions
+//! `⌊r N / P⌋..⌊(r + 1) N / P⌋`, so ranks are empty only when there are fewer
+//! records than ranks.
 //!
 //! Chunked ghost, mapping, and permutation operations require a positive,
 //! communicator-consistent chunk size even when the local input is empty. Roots,
