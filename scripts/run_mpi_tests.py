@@ -23,6 +23,7 @@ CASES = (
     "empty-boundaries",
     "empty-extrema",
     "sparse-sort",
+    "sort-balance",
     "mapper-and-permutation",
     "rooted-and-aij-rejection",
     "collective-metadata-rejection",

@@ -1,5 +1,27 @@
 # Changelog
 
+## Unreleased
+
+### Parallel sort — exactly balanced output
+
+- **`parsort` now finds its splitters by histogram refinement** (histogram sort
+  with sampling) instead of four weighted local quantiles per rank. Rank `r` of
+  `P` receives exactly the records at global positions `⌊r N / P⌋` up to
+  `⌊(r + 1) N / P⌋`, whatever the input distribution. Before, inputs whose local
+  distributions looked alike (every rank holding a random share of one data
+  set) sent a quarter of all records to each of four ranks (the ranks near
+  `P/4`, `P/2`, `3P/4` and `P`) and almost none to the others.
+- Each refinement round gathers about `OVERSAMPLING` random candidates per
+  unresolved splitter to every rank and all-reduces their global positions;
+  brackets of at most `4 * OVERSAMPLING` records are resolved exactly. The number
+  of rounds grows like `log(N / P) / log(OVERSAMPLING)`.
+- `OVERSAMPLING` changes meaning and value: it is now the expected number of
+  candidates per unresolved splitter per round (16), not the number of local
+  representatives per rank (4). The `rng` argument, previously unused, draws the
+  candidates; it changes the communication, never the result.
+- The signature of `parsort`, its stable tie order (input rank, input position)
+  and its support for empty ranks and globally empty input are unchanged.
+
 ## v0.9.0
 
 Changes since [v0.8.0](https://codeberg.org/rlst/rlst/releases/tag/v0.8.0).
