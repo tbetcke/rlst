@@ -1,5 +1,77 @@
 # Changelog
 
+## v0.10.1
+
+Changes since [v0.10.0](https://codeberg.org/rlst/rlst/releases/tag/v0.10.0).
+All workspace crates (`rlst`, `rlst-proc-macro`, and `rlst-suitesparse`) use version 0.10.1.
+Every change is additive or internal: no public signature or result of 0.10.0 changes.
+
+### Sparse exchanges
+
+`all_to_allv` exchanges the counts of every pair of ranks in an `MPI_Alltoall` and the data
+in an `MPI_Alltoallv`; both take time proportional to the number of ranks `P` even when each
+rank sends to a few others. The new routines communicate by a sparse dynamic exchange
+(non-blocking consensus, NBX; Hoefler, Siebert and Lumsdaine 2010): one synchronous send per
+message, a matched probe for whatever arrives, and a non-blocking barrier once a rank's own
+messages have been received. Their cost is that of the messages plus `O(log P)`.
+
+- **`sparse_all_to_allv`** (`distributed_tools::array_tools`, re-exported from
+  `distributed_tools`) takes the arguments of `all_to_allv` and, for valid input, returns
+  its result element for element: the counts received from every rank and the data grouped
+  by source rank. It sends one message per nonzero count and ends with one all-reduce, which
+  agrees the validity of the input on every rank: a rank with invalid counts sends nothing,
+  and every rank panics after the exchange with no message pending. Totals and displacements
+  no longer need to fit `i32`; each count still does.
+- **`SparseRoutes`** (new module `distributed_tools::sparse_routes`) is a fixed set of routes
+  for patterns built once and used often. `SparseRoutes::new` takes each rank's item counts
+  per destination, as passed to `all_to_allv`, duplicates the communicator, learns every
+  rank's sources and counts by NBX, and agrees the validity and `max_per_item` in one
+  all-reduce. Then `exchange`/`exchange_into` send any number of values per item along the
+  routes and `exchange_back`/`exchange_back_into` return values along the reversed routes,
+  with point-to-point messages between the ranks that share a route only: no collective and
+  no array with one entry per rank per exchange. The received values are laid out as with
+  `all_to_allv`, so the bytes and their order are the same. A buffer of the wrong length
+  takes part with default values and then panics on its rank only, as the ghost
+  communicator's slice exchanges do.
+- **`GhostCommunicatorBuilder::build`** now sends each rank's ghost indices to their owners
+  by NBX, instead of an `MPI_Alltoall` of `P` counts followed by a neighbourhood all-to-all of
+  the indices, and agrees its validity in two all-reduces instead of three. Every public
+  result is identical to 0.10.0's, element for element on every rank: `out_ranks`,
+  `in_ranks`, `send_indices`, `receive_indices`, the counts, chunk sizes, offsets and buffer
+  lengths. `DataPermutation` and `Global2LocalDataMapper` build through it.
+- **`SPARSE_EXCHANGE_TAG`** is the tag of the messages of `sparse_all_to_allv` and of the
+  ghost build on the caller's communicator. During those calls the caller must not use the
+  tag on that communicator nor keep a receive with `MPI_ANY_TAG` pending on it. A pending
+  message of the caller with another tag is neither received nor disturbed.
+
+Where it matters (measured in the nd-fmm project, Phase 5S T8, not in rlst): each FMM build
+ran 21–32 `MPI_Alltoall`s of `P` counts, 29–30 of them in rlst (12–23 in
+`GhostCommunicatorBuilder::build`, 7 in `all_to_allv`), 3–7 ms of a 121–373 ms build at 160
+ranks; that project's model puts them at 32–113 ms per build at 10⁴ ranks (6–27 %). The
+gain with this release is to be measured there.
+
+### Fix: no empty buffers reach MPI
+
+- `all_to_allv` no longer passes an empty send or receive buffer to MPI. With Open MPI an
+  empty `Vec` of a one-byte type has the address `0x1`, which is `MPI_IN_PLACE`, so
+  `MPI_Alltoallv` failed with `MPI_ERR_ARG`, for example for `u8` data on a rank that sends
+  or receives nothing. The new routines never pass an empty buffer either.
+
+### Tests and documentation
+
+- `tests/mpi_empty_ranks.rs` has three new cases, run by `scripts/run_mpi_tests.py`:
+  `sparse-all-to-allv` (against `all_to_allv` on eight count patterns, among them all-zero,
+  one peer, ring, random sparse, dense, empty ranks and one sender, with `u8`, `u64` and a
+  derived `Equivalence` payload; invalid counts rejected on every rank; a caller's pending
+  message on the same communicator left alone through twenty back-to-back exchanges),
+  `ghost-build-oracle` (every public result of the build against 0.10.0's algorithm with
+  dense all-to-alls, uniform and per-index chunk sizes, self-owned and repeated ghosts and
+  empty ranks; the forward values against a dense exchange; invalid owners rejected on every
+  rank) and `sparse-routes` (both directions against `all_to_allv`, `per_item` 0, 1 and 3,
+  three exchanges per route set, `max_per_item`, buffer mismatches and invalid counts).
+- The distributed computations guide has a section on the sparse exchanges.
+- `rlst-proc-macro` and `rlst-suitesparse` have no changes beyond the version number.
+
 ## v0.10.0
 
 Changes since [v0.9.0](https://codeberg.org/rlst/rlst/releases/tag/v0.9.0).
