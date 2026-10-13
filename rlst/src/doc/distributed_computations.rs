@@ -95,6 +95,8 @@
 //! - [sort_to_bins](crate::distributed_tools::array_tools::sort_to_bins): Take a sorted sequence and distribute it into half-open bins. This is useful
 //!   for redistributing data across MPI ranks when the data distribution changes.
 //! - [all_to_allv](crate::distributed_tools::array_tools::all_to_allv): A simplified MPI all_to_all communication routine.
+//! - [sparse_all_to_allv](crate::distributed_tools::array_tools::sparse_all_to_allv): The same arguments and result as `all_to_allv`, for
+//!   sparse counts. See "Sparse exchanges" below.
 //! - [scatterv](crate::distributed_tools::array_tools::scatterv): A simplified MPI scatter communication routine.
 //! - [scatterv_root](crate::distributed_tools::array_tools::scatterv_root): A simplified MPI scatter communication routine. Call from root.
 //!
@@ -133,9 +135,37 @@
 //! receive default values from it, and then panics.
 //!
 //! Only the neighbouring processes communicate in these exchanges. Invalid metadata, such as unknown owners or disagreeing uniform chunk
-//! sizes, is rejected collectively when the communicator is built.
+//! sizes, is rejected collectively when the communicator is built. The build itself sends each process's ghost indices to their owners by a
+//! sparse exchange (see below), so it exchanges no array with one entry per process.
 //!
 //! A complete worked out example for the use of the ghost communicator can be found in `examples/ghost_communicator.rs`.
+//!
+//! ## Sparse exchanges
+//!
+//! `all_to_allv` exchanges the counts of every pair of processes in an `MPI_Alltoall` and then the data in an `MPI_Alltoallv`. Both take
+//! time proportional to the number of processes `P`, even when each process sends to a few others only. For such sparse patterns RLST
+//! offers two alternatives whose cost is that of the messages actually sent plus `O(log P)`.
+//!
+//! - [sparse_all_to_allv](crate::distributed_tools::array_tools::sparse_all_to_allv) is a drop-in replacement for `all_to_allv`: the same
+//!   arguments, and for valid input the same counts and data, element for element. It sends one message to each process with a nonzero
+//!   count and learns its sources by non-blocking consensus (a synchronous send per message, a matched probe for whatever arrives, and a
+//!   non-blocking barrier once its own messages have been received), then agrees the validity of the input in one all-reduce. Use it for
+//!   patterns that change from call to call. With dense counts `all_to_allv` is usually faster.
+//! - [SparseRoutes](crate::distributed_tools::sparse_routes::SparseRoutes) is for a pattern that is built once and used many times. It is
+//!   created from each process's item counts, as passed to `all_to_allv`, and learns its sources by the same consensus. After that,
+//!   [exchange](crate::distributed_tools::sparse_routes::SparseRoutes::exchange) sends any number of values per item along the routes and
+//!   [exchange_back](crate::distributed_tools::sparse_routes::SparseRoutes::exchange_back) returns values along the reversed routes, with
+//!   point-to-point messages between the processes that share a route only and no collective. The values arrive laid out as with
+//!   `all_to_allv`.
+//!
+//! Every process must take part in each call, including processes that send and receive nothing. `sparse_all_to_allv` and the ghost
+//! communicator build send their messages on the caller's communicator with the tag
+//! [SPARSE_EXCHANGE_TAG](crate::distributed_tools::array_tools::SPARSE_EXCHANGE_TAG) and probe for that tag only: during the call the caller
+//! must not use the tag on the communicator, nor have a receive with `MPI_ANY_TAG` pending on it. `SparseRoutes` duplicates the communicator
+//! when it is created, so its exchanges never meet the caller's messages.
+//!
+//! None of these routines passes an empty buffer to MPI. With Open MPI, an empty `Vec` of a one-byte type has the address `0x1`, which is
+//! `MPI_IN_PLACE`, and a collective given it as a buffer fails with `MPI_ERR_ARG`; code that calls MPI directly should guard against it too.
 //!
 //! ## Mapping global to local data
 //!
