@@ -23,6 +23,8 @@ use mpi_sys;
 use mpi::topology::SimpleCommunicator;
 use mpi::traits::{AsRaw, Communicator, CommunicatorCollectives, Equivalence, FromRaw};
 
+use crate::distributed_tools::array_tools::{SPARSE_EXCHANGE_TAG, nbx};
+
 /// Neighbourhood all-to-all exchange with variable counts.
 ///
 /// # Safety
@@ -219,86 +221,83 @@ impl<'a, I: Default + Copy + Equivalence> GhostCommunicatorBuilder<'a, I> {
     /// any rank panics: owners must be ranks of `comm`, `Uniform` chunk sizes must be
     /// positive and agree between owners and receivers, and all value counts must fit into
     /// MPI's `i32` counts.
+    ///
+    /// The owners learn which indices to send by a sparse dynamic exchange: each rank sends
+    /// the indices it requires to their owners with the tag
+    /// [SPARSE_EXCHANGE_TAG]
+    /// on `comm` (see there for what the caller must not do during the build). No array of
+    /// one entry per rank is exchanged. Then come the two neighbourhood communicators, the
+    /// exchange of the chunk sizes and two all-reduces that agree the validity.
     pub fn build<C: CommunicatorCollectives>(&self, comm: &C) -> GhostCommunicator<I> {
         let size = comm.size() as usize;
-
-        // Validate on every rank before the all-to-all graph setup so invalid local
-        // ownership cannot strand peers in that collective.
-        let mut receive_counts = vec![0_i32; size];
-        let mut valid = !matches!(self.chunk_sizes, ChunkSizes::Uniform(0));
-        for &(_, owner) in &self.ghosts {
-            valid &= owner < size;
-            if owner < size {
-                receive_counts[owner] += 1;
-            }
-        }
-        collective_assert(comm, valid, "invalid ghost owner or chunk size metadata");
+        let rank = comm.rank() as usize;
 
         // The receive indices are the ghosts sorted by owning rank. The sort is stable, so
         // ghosts with the same owner keep the order in which they were added.
-        let receive_indices = {
-            let mut ghosts = self.ghosts.clone();
-            ghosts.sort_by_key(|&(_, owner)| owner);
-            ghosts
-                .into_iter()
-                .map(|(index, _)| index)
-                .collect::<Vec<_>>()
-        };
+        let mut ghosts = self.ghosts.clone();
+        ghosts.sort_by_key(|&(_, owner)| owner);
+        let receive_indices = ghosts.iter().map(|&(index, _)| index).collect::<Vec<_>>();
 
-        // Tell the owners how many of their indices each rank requires.
-        let mut send_counts = vec![0_i32; size];
-        comm.all_to_all_into(&receive_counts, &mut send_counts);
-
-        // Restrict the counts to the neighbours. In-neighbours are the ranks from which we
-        // receive data and out-neighbours are the ranks to which we send data.
+        // In-neighbours are the ranks from which we receive data, the owners of our ghosts.
         let mut in_ranks = Vec::<i32>::new();
-        let mut out_ranks = Vec::<i32>::new();
         let mut neighbor_receive_counts = Vec::<i32>::new();
-        let mut neighbor_send_counts = Vec::<i32>::new();
         let mut receive_displacements = Vec::<i32>::new();
-        let mut send_displacements = Vec::<i32>::new();
-        let mut total_receive_count = 0_i32;
-        let mut total_send_count = 0_i32;
-        for rank in 0..size {
-            if receive_counts[rank] != 0 {
-                in_ranks.push(rank as i32);
-                neighbor_receive_counts.push(receive_counts[rank]);
-                receive_displacements.push(total_receive_count);
-                total_receive_count += receive_counts[rank];
-            }
-            if send_counts[rank] != 0 {
-                out_ranks.push(rank as i32);
-                neighbor_send_counts.push(send_counts[rank]);
-                send_displacements.push(total_send_count);
-                total_send_count += send_counts[rank];
+        let mut valid = !matches!(self.chunk_sizes, ChunkSizes::Uniform(0))
+            && ghosts.last().is_none_or(|&(_, owner)| owner < size)
+            && i32::try_from(ghosts.len()).is_ok();
+        if valid {
+            let mut start = 0;
+            for run in ghosts.chunk_by(|left, right| left.1 == right.1) {
+                in_ranks.push(run[0].1 as i32);
+                neighbor_receive_counts.push(run.len() as i32);
+                receive_displacements.push(start as i32);
+                start += run.len();
             }
         }
-        collective_assert(
-            comm,
-            i32::try_from(in_ranks.len()).is_ok() && i32::try_from(out_ranks.len()).is_ok(),
-            "ghost communication metadata exceeds MPI limits",
-        );
+
+        // The receivers know which indices they need from each process, but the owners do
+        // not know yet which indices to send. So each rank sends its receive indices to their
+        // owners; a rank with invalid metadata sends nothing.
+        let mut own_requests = None;
+        let mut requests = Vec::new();
+        for ((&owner, &count), &start) in in_ranks
+            .iter()
+            .zip(&neighbor_receive_counts)
+            .zip(&receive_displacements)
+        {
+            let block = &receive_indices[start as usize..(start + count) as usize];
+            if owner as usize == rank {
+                own_requests = Some(block.to_vec());
+            } else {
+                requests.push((owner as usize, block));
+            }
+        }
+        let mut received = nbx(comm, SPARSE_EXCHANGE_TAG, requests);
+        if let Some(block) = own_requests {
+            let position = received.partition_point(|&(source, _)| source < rank);
+            received.insert(position, (rank, block));
+        }
+
+        // Out-neighbours are the ranks to which we send data, in ascending order, and the
+        // send indices are their requests in that order.
+        let mut out_ranks = Vec::<i32>::with_capacity(received.len());
+        let mut neighbor_send_counts = Vec::<i32>::with_capacity(received.len());
+        let mut send_displacements = Vec::<i32>::with_capacity(received.len());
+        let mut send_indices = Vec::<I>::new();
+        for (source, block) in received {
+            out_ranks.push(source as i32);
+            send_displacements.push(i32::try_from(send_indices.len()).unwrap_or(i32::MAX));
+            neighbor_send_counts.push(block.len() as i32);
+            send_indices.extend(block);
+        }
+        valid &= i32::try_from(send_indices.len()).is_ok();
+        // The all-reduce agrees the validity before the neighbourhoods are created, and keeps
+        // the next sparse exchange's messages apart from this one.
+        collective_assert(comm, valid, "invalid ghost owner or chunk size metadata");
 
         let forward_comm = dist_graph_create(comm, &in_ranks, &out_ranks);
         // The backward communicator simply reverses the in and out neighbours.
         let backward_comm = dist_graph_create(comm, &out_ranks, &in_ranks);
-
-        // The receivers know which indices they need from each process, but the owners do
-        // not know yet which indices to send. So we send the receive indices to the owners.
-        let mut send_indices = vec![I::default(); total_send_count as usize];
-        // SAFETY: The counts and displacements partition `receive_indices` and
-        // `send_indices` over the neighbours of the backward communicator.
-        unsafe {
-            neighbor_alltoallv(
-                &backward_comm,
-                &receive_indices,
-                &neighbor_receive_counts,
-                &receive_displacements,
-                &mut send_indices,
-                &neighbor_send_counts,
-                &send_displacements,
-            );
-        }
 
         // The owners now determine the chunk sizes of their indices and tell the receivers.
         let send_chunk_sizes = match &self.chunk_sizes {

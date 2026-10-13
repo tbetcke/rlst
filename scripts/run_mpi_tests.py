@@ -36,6 +36,9 @@ CASES = (
     "ghost-variable-chunks",
     "exchange-buffer-mismatch-panics",
     "ghost-edge-topologies",
+    "sparse-all-to-allv",
+    "ghost-build-oracle",
+    "sparse-routes",
 )
 TIMEOUT_SECONDS = 30
 BUILD_TIMEOUT_SECONDS = 900

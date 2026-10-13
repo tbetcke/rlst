@@ -9,18 +9,19 @@ use std::{cmp::Ordering, env, panic::AssertUnwindSafe, rc::Rc};
 
 use mpi::{
     topology::{Color, SimpleCommunicator},
-    traits::{Communicator, CommunicatorCollectives, Equivalence},
+    traits::{Communicator, CommunicatorCollectives, Destination, Equivalence, Source},
 };
 use rand::{RngExt, SeedableRng, rngs::StdRng};
 use rlst::distributed_tools::{
-    ChunkSizes, DataPermutation, GhostCommunicatorBuilder, Global2LocalDataMapper, IndexLayout,
-    all_to_allv,
+    ChunkSizes, DataPermutation, GhostCommunicator, GhostCommunicatorBuilder,
+    Global2LocalDataMapper, IndexLayout, SparseRoutes, all_to_allv,
     array_tools::{
         communicate_back, gather_to_all, gather_to_rank, global_inclusive_cumsum, global_max,
         global_min, is_sorted_array, scatterv, scatterv_root,
     },
     index_embedding::IndexEmbedding,
     parallel_sort::{AsUnique, parsort},
+    sparse_all_to_allv,
 };
 use rlst::{AsMatrixApply, FromAijDistributed, InnerProductSpace, LinearSpace, TotalCmp};
 
@@ -1598,6 +1599,452 @@ fn ghost_edge_topologies<C: CommunicatorCollectives>(comm: &C) {
     );
 }
 
+/// The item counts of one rank for the named pattern, one entry per rank.
+fn count_pattern(pattern: &str, rank: usize, size: usize, rng: &mut StdRng) -> Vec<usize> {
+    let mut counts = vec![0_usize; size];
+    match pattern {
+        "zero" => {}
+        "one-peer" => counts[size - 1 - rank] = 4,
+        "ring" => {
+            counts[(rank + 1) % size] += 2;
+            counts[(rank + size - 1) % size] += 1;
+        }
+        "self-only" => counts[rank] = 3,
+        "random-sparse" => {
+            for _ in 0..3 {
+                counts[rng.random_range(0..size)] += rng.random_range(0..5);
+            }
+        }
+        "dense" => {
+            for (destination, count) in counts.iter_mut().enumerate() {
+                *count = (rank + destination) % 3 + 1;
+            }
+        }
+        // Odd ranks send and receive nothing.
+        "empty-ranks" => {
+            if rank.is_multiple_of(2) {
+                for _ in 0..3 {
+                    counts[2 * rng.random_range(0..size.div_ceil(2))] += rng.random_range(1..4);
+                }
+            }
+        }
+        // Every datum comes from rank zero.
+        "one-sender" => {
+            if rank == 0 {
+                for (destination, count) in counts.iter_mut().enumerate() {
+                    *count = destination + 1;
+                }
+            }
+        }
+        _ => panic!("unknown count pattern {pattern}"),
+    }
+    counts
+}
+
+const COUNT_PATTERNS: [&str; 8] = [
+    "zero",
+    "one-peer",
+    "ring",
+    "self-only",
+    "random-sparse",
+    "dense",
+    "empty-ranks",
+    "one-sender",
+];
+
+/// Data grouped by destination for `counts`, each item named by `make(destination, i)`.
+fn routed_data<T>(counts: &[usize], make: impl Fn(usize, usize) -> T) -> Vec<T> {
+    counts
+        .iter()
+        .enumerate()
+        .flat_map(|(destination, &count)| (0..count).map(move |i| (destination, i)))
+        .map(|(destination, i)| make(destination, i))
+        .collect()
+}
+
+/// Whether `sparse_all_to_allv` gives the result of `all_to_allv` for `counts`.
+fn sparse_equals_dense<T: Equivalence + Default + Clone + PartialEq, C: CommunicatorCollectives>(
+    comm: &C,
+    counts: &[usize],
+    make: impl Fn(usize, usize) -> T,
+) -> bool {
+    let data = routed_data(counts, make);
+    all_to_allv(comm, counts, &data) == sparse_all_to_allv(comm, counts, &data)
+}
+
+/// Contract: `sparse_all_to_allv` returns the counts and data of `all_to_allv` on every
+/// rank for every pattern and payload type, rejects invalid counts on every rank without
+/// leaving a message behind, and neither consumes nor disturbs a caller's pending message.
+fn sparse_all_to_allv_contract<C: CommunicatorCollectives>(comm: &C) {
+    let rank = comm.rank() as usize;
+    let size = comm.size() as usize;
+    let mut rng = StdRng::seed_from_u64(41 + rank as u64);
+
+    let mut equal = true;
+    for pattern in COUNT_PATTERNS {
+        let counts = count_pattern(pattern, rank, size, &mut rng);
+        equal &= sparse_equals_dense(comm, &counts, |destination, i| {
+            (31 * rank + 7 * destination + i) as u8
+        });
+        equal &= sparse_equals_dense(comm, &counts, |destination, i| {
+            ((rank as u64) << 40) | ((destination as u64) << 20) | i as u64
+        });
+        equal &= sparse_equals_dense(comm, &counts, |destination, i| SortRecord {
+            key: rank as i32,
+            payload: (1000 * destination + i) as i32,
+        });
+    }
+
+    // Invalid counts on rank zero: every rank panics, and the next exchange is exact.
+    let rejected = std::panic::catch_unwind(AssertUnwindSafe(|| {
+        let counts = if rank == 0 {
+            vec![0; size + 1]
+        } else {
+            count_pattern("ring", rank, size, &mut StdRng::seed_from_u64(0))
+        };
+        let data = vec![1_u8; counts.iter().sum()];
+        sparse_all_to_allv(comm, &counts, &data);
+    }))
+    .is_err();
+    let ring = count_pattern("ring", rank, size, &mut rng);
+    let after_rejection = sparse_equals_dense(comm, &ring, |destination, i| {
+        (rank + 3 * destination + i) as u8
+    });
+
+    // A caller's message with another tag stays pending through many exchanges, and
+    // back-to-back exchanges do not mix their messages.
+    let next = (rank + 1) % size;
+    let previous = (rank + size - 1) % size;
+    let token = [1000 + rank as u64];
+    let mut caller_received = [0_u64];
+    let mut isolated = true;
+    mpi::request::scope(|scope| {
+        let send = comm
+            .process_at_rank(next as i32)
+            .immediate_send_with_tag(scope, &token[..], 7);
+        for round in 0..20 {
+            let counts = count_pattern("random-sparse", rank, size, &mut rng);
+            isolated &= sparse_equals_dense(comm, &counts, |destination, i| {
+                ((round as u64) << 48) | ((rank as u64) << 24) | (destination * 100 + i) as u64
+            });
+        }
+        comm.process_at_rank(previous as i32)
+            .receive_into_with_tag(&mut caller_received[..], 7);
+        send.wait_without_status();
+    });
+    isolated &= caller_received[0] == 1000 + previous as u64;
+
+    collective_assert(
+        comm,
+        equal && rejected && after_rejection && isolated,
+        "sparse_all_to_allv must equal all_to_allv, reject invalid counts on every rank, and leave the caller's messages alone",
+    );
+}
+
+/// The public index results of a ghost communicator.
+#[derive(Debug, PartialEq)]
+struct GhostResults {
+    out_ranks: Vec<i32>,
+    in_ranks: Vec<i32>,
+    send_indices: Vec<usize>,
+    receive_indices: Vec<usize>,
+    send_counts: Vec<i32>,
+    receive_counts: Vec<i32>,
+    send_chunk_sizes: Vec<usize>,
+    receive_chunk_sizes: Vec<usize>,
+    send_offsets: Vec<usize>,
+    receive_offsets: Vec<usize>,
+}
+
+impl GhostResults {
+    fn of(ghosts: &GhostCommunicator<usize>) -> Self {
+        Self {
+            out_ranks: ghosts.out_ranks().to_vec(),
+            in_ranks: ghosts.in_ranks().to_vec(),
+            send_indices: ghosts.send_indices().to_vec(),
+            receive_indices: ghosts.receive_indices().to_vec(),
+            send_counts: ghosts.send_counts().to_vec(),
+            receive_counts: ghosts.receive_counts().to_vec(),
+            send_chunk_sizes: ghosts.send_chunk_sizes().to_vec(),
+            receive_chunk_sizes: ghosts.receive_chunk_sizes().to_vec(),
+            send_offsets: ghosts.send_offsets().to_vec(),
+            receive_offsets: ghosts.receive_offsets().to_vec(),
+        }
+    }
+}
+
+/// The public results of a ghost communicator, computed by 0.10.0's algorithm with dense
+/// all-to-alls: the counts of every pair of ranks, the indices to the owners, and the chunk
+/// sizes back to the receivers.
+fn dense_ghost_oracle<C: CommunicatorCollectives>(
+    comm: &C,
+    ghosts: &[(usize, usize)],
+    chunk_size: impl Fn(usize) -> usize,
+) -> GhostResults {
+    let size = comm.size() as usize;
+    let mut sorted = ghosts.to_vec();
+    sorted.sort_by_key(|&(_, owner)| owner);
+    let receive_indices = sorted.iter().map(|&(index, _)| index).collect::<Vec<_>>();
+    let mut receive_counts_by_rank = vec![0_usize; size];
+    for &(_, owner) in &sorted {
+        receive_counts_by_rank[owner] += 1;
+    }
+    let (send_counts_by_rank, send_indices) =
+        all_to_allv(comm, &receive_counts_by_rank, &receive_indices);
+    let send_chunk_sizes = send_indices
+        .iter()
+        .map(|&index| chunk_size(index))
+        .collect::<Vec<_>>();
+    let (_, receive_chunk_sizes) = all_to_allv(comm, &send_counts_by_rank, &send_chunk_sizes);
+    let nonzero = |counts: &[usize]| {
+        counts
+            .iter()
+            .enumerate()
+            .filter(|&(_, &count)| count != 0)
+            .map(|(rank, &count)| (rank as i32, count as i32))
+            .unzip::<_, _, Vec<_>, Vec<_>>()
+    };
+    let (out_ranks, send_counts) = nonzero(&send_counts_by_rank);
+    let (in_ranks, receive_counts) = nonzero(&receive_counts_by_rank);
+    GhostResults {
+        out_ranks,
+        in_ranks,
+        send_indices,
+        receive_indices,
+        send_counts,
+        receive_counts,
+        send_offsets: prefix_offsets(&send_chunk_sizes),
+        receive_offsets: prefix_offsets(&receive_chunk_sizes),
+        send_chunk_sizes,
+        receive_chunk_sizes,
+    }
+}
+
+/// Prefix sums with a leading zero.
+fn prefix_offsets(sizes: &[usize]) -> Vec<usize> {
+    std::iter::once(0)
+        .chain(sizes.iter().scan(0, |total, &size| {
+            *total += size;
+            Some(*total)
+        }))
+        .collect()
+}
+
+/// Contract: the ghost communicator built by a sparse exchange has every public result of
+/// 0.10.0's dense build, element for element on every rank, with uniform and per-index chunk
+/// sizes, ghosts owned by the requesting rank, repeated indices and empty ranks; it moves
+/// the values the dense exchange moves; and invalid owners are rejected on every rank with
+/// the next build exact.
+fn ghost_build_oracle<C: CommunicatorCollectives>(comm: &C) {
+    let rank = comm.rank() as usize;
+    let size = comm.size() as usize;
+    let owner = |index: usize| index % size;
+    let mut rng = StdRng::seed_from_u64(97 + rank as u64);
+
+    let mut equal = true;
+    for scenario in 0..6 {
+        // Every third rank requires no ghosts; the others draw indices with repeats and
+        // ghosts they own themselves.
+        let ghosts = if rank % 3 == 2 {
+            Vec::new()
+        } else {
+            let count = rng.random_range(0..12 + 4 * scenario);
+            (0..count)
+                .map(|_| {
+                    let index = rng.random_range(0..3 * size + 2);
+                    (index, owner(index))
+                })
+                .collect::<Vec<_>>()
+        };
+        let per_index = scenario % 2 == 1;
+        let uniform = 1 + scenario / 2;
+        let chunk_size = move |index: usize| {
+            if per_index { index % 4 } else { uniform }
+        };
+        let ghost_comm = GhostCommunicatorBuilder::new()
+            .add_ghosts(ghosts.iter().copied())
+            .chunk_sizes(if per_index {
+                ChunkSizes::PerIndex(Box::new(chunk_size))
+            } else {
+                ChunkSizes::Uniform(uniform)
+            })
+            .build(comm);
+        equal &= GhostResults::of(&ghost_comm) == dense_ghost_oracle(comm, &ghosts, chunk_size)
+            && ghost_comm.total_send_count() == ghost_comm.send_indices().len()
+            && ghost_comm.total_receive_count() == ghosts.len();
+
+        // The forward values equal a dense exchange of the same chunks.
+        let value = |index: usize, k: usize| (100 * index + k) as i64;
+        let send = ghost_comm.send_buffer_from_fn(|index, chunk: &mut [i64]| {
+            for (k, entry) in chunk.iter_mut().enumerate() {
+                *entry = value(index, k);
+            }
+        });
+        let received = send.forward();
+        let mut value_counts = vec![0_usize; size];
+        let mut start = 0;
+        for (&out_rank, &count) in ghost_comm.out_ranks().iter().zip(ghost_comm.send_counts()) {
+            let end = start + count as usize;
+            value_counts[out_rank as usize] =
+                ghost_comm.send_offsets()[end] - ghost_comm.send_offsets()[start];
+            start = end;
+        }
+        let (_, dense_received) = all_to_allv(comm, &value_counts, send.as_slice());
+        equal &= received.as_slice() == dense_received;
+    }
+
+    // Invalid owners on rank zero are rejected on every rank; the next build is exact.
+    let rejected = std::panic::catch_unwind(AssertUnwindSafe(|| {
+        let mut builder = GhostCommunicatorBuilder::new();
+        builder.add_ghost(0_usize, if rank == 0 { size } else { 0 });
+        builder.build(comm);
+    }))
+    .is_err();
+    let ghosts = vec![(owner(rank + 1), owner(rank + 1))];
+    let after = GhostCommunicatorBuilder::new()
+        .add_ghosts(ghosts.iter().copied())
+        .build(comm);
+    let after_rejection = GhostResults::of(&after) == dense_ghost_oracle(comm, &ghosts, |_| 1);
+
+    collective_assert(
+        comm,
+        equal && rejected && after_rejection,
+        "the sparse ghost build must give 0.10.0's results on every rank and reject invalid owners on every rank",
+    );
+}
+
+/// Whether the fixed routes of `counts` move `per_item` values per item as `all_to_allv`
+/// does, forward and back, three times in a row with different values.
+fn routes_equal_dense<T: Equivalence + Copy + Default + PartialEq, C: CommunicatorCollectives>(
+    comm: &C,
+    routes: &SparseRoutes,
+    counts: &[usize],
+    per_item: usize,
+    make: impl Fn(usize, usize, usize) -> T,
+) -> bool {
+    let size = comm.size() as usize;
+    let value_counts = counts
+        .iter()
+        .map(|&count| count * per_item)
+        .collect::<Vec<_>>();
+    let mut equal = true;
+    for round in 0..3 {
+        let values = routed_data(&value_counts, |destination, i| make(round, destination, i));
+        let (received_counts, dense) = all_to_allv(comm, &value_counts, &values);
+        let forward = routes.exchange(&values, per_item);
+        let mut forward_into = vec![T::default(); routes.total_receive_count() * per_item];
+        routes.exchange_into(&values, per_item, &mut forward_into);
+        equal &= forward == dense && forward_into == dense;
+
+        // Back along the reversed routes: the dense exchange with the received counts.
+        let back_values = dense.clone();
+        let (_, dense_back) = all_to_allv(comm, &received_counts, &back_values);
+        let back = routes.exchange_back(&back_values, per_item);
+        let mut back_into = vec![T::default(); routes.total_send_count() * per_item];
+        routes.exchange_back_into(&back_values, per_item, &mut back_into);
+        equal &= back == dense_back && back_into == dense_back && back == values;
+        equal &= received_counts.len() == size;
+    }
+    equal
+}
+
+/// Contract: sparse routes learn every rank's sources and counts, move exactly the values
+/// of `all_to_allv` on the same routes in both directions for several `per_item` and
+/// repeated exchanges, agree `max_per_item`, and reject invalid counts on every rank.
+fn sparse_routes_contract<C: CommunicatorCollectives>(comm: &C) {
+    let rank = comm.rank() as usize;
+    let size = comm.size() as usize;
+    let mut rng = StdRng::seed_from_u64(311 + rank as u64);
+
+    let mut equal = true;
+    for pattern in COUNT_PATTERNS {
+        let counts = count_pattern(pattern, rank, size, &mut rng);
+        let routes = SparseRoutes::new(comm, &counts);
+        let (receive_counts, _) = all_to_allv(comm, &counts, &vec![0_u8; counts.iter().sum()]);
+        let nonzero = |counts: &[usize]| {
+            counts
+                .iter()
+                .enumerate()
+                .filter(|&(_, &count)| count != 0)
+                .map(|(rank, &count)| (rank, count))
+                .unzip::<_, _, Vec<_>, Vec<_>>()
+        };
+        let (destinations, send_counts) = nonzero(&counts);
+        let (sources, source_counts) = nonzero(&receive_counts);
+        equal &= routes.destinations() == destinations
+            && routes.send_counts() == send_counts
+            && routes.sources() == sources
+            && routes.receive_counts() == source_counts
+            && routes.total_send_count() == counts.iter().sum::<usize>()
+            && routes.total_receive_count() == receive_counts.iter().sum::<usize>();
+        for per_item in [0, 1, 3] {
+            equal &=
+                routes_equal_dense(comm, &routes, &counts, per_item, |round, destination, i| {
+                    (round * 50 + rank * 7 + destination * 3 + i) as u8
+                });
+            equal &=
+                routes_equal_dense(comm, &routes, &counts, per_item, |round, destination, i| {
+                    (round * 1_000_000 + rank * 10_000 + destination * 100 + i) as f64 + 0.25
+                });
+            equal &=
+                routes_equal_dense(comm, &routes, &counts, per_item, |round, destination, i| {
+                    SortRecord {
+                        key: (round * 1000 + rank) as i32,
+                        payload: (1000 * destination + i) as i32,
+                    }
+                });
+        }
+
+        // The agreed maximum, the same on every rank.
+        let mut largest = 0_usize;
+        comm.all_reduce_into(
+            &counts
+                .iter()
+                .copied()
+                .chain(receive_counts.iter().copied())
+                .max()
+                .unwrap_or(0),
+            &mut largest,
+            mpi::collective::SystemOperation::max(),
+        );
+        equal &= routes.max_per_item() == i32::MAX as usize / largest.max(1);
+    }
+
+    // `per_item` above the maximum panics on every rank before communicating.
+    let routes = SparseRoutes::new(comm, &count_pattern("ring", rank, size, &mut rng));
+    let too_many = std::panic::catch_unwind(AssertUnwindSafe(|| {
+        routes.exchange::<u8>(&[], routes.max_per_item() + 1);
+    }))
+    .is_err();
+
+    // A wrong buffer length on rank zero panics there after taking part; the other ranks
+    // complete and the next exchange is exact.
+    let ring = count_pattern("ring", rank, size, &mut StdRng::seed_from_u64(0));
+    let ring_routes = SparseRoutes::new(comm, &ring);
+    let values = vec![rank as u64 + 1; ring.iter().sum::<usize>() + usize::from(rank == 0)];
+    let mismatch = std::panic::catch_unwind(AssertUnwindSafe(|| {
+        ring_routes.exchange(&values, 1);
+    }))
+    .is_err();
+    let mismatch_ok = mismatch == (rank == 0);
+    let after_mismatch =
+        routes_equal_dense(comm, &ring_routes, &ring, 2, |round, destination, i| {
+            (round * 100 + destination * 10 + i) as u64
+        });
+
+    // Invalid counts on rank zero are rejected on every rank.
+    let rejected = std::panic::catch_unwind(AssertUnwindSafe(|| {
+        SparseRoutes::new(comm, &vec![0; if rank == 0 { size + 1 } else { size }]);
+    }))
+    .is_err();
+
+    collective_assert(
+        comm,
+        equal && too_many && mismatch_ok && after_mismatch && rejected,
+        "sparse routes must move the values of all_to_allv in both directions and reject invalid input on every rank",
+    );
+}
+
 fn main() {
     let universe = mpi::initialize().expect("MPI must initialize once per executable");
     let world = universe.world();
@@ -1622,6 +2069,9 @@ fn main() {
         "ghost-variable-chunks" => ghost_variable_chunks(&world),
         "exchange-buffer-mismatch-panics" => exchange_buffer_mismatch_panics(&world),
         "ghost-edge-topologies" => ghost_edge_topologies(&world),
+        "sparse-all-to-allv" => sparse_all_to_allv_contract(&world),
+        "ghost-build-oracle" => ghost_build_oracle(&world),
+        "sparse-routes" => sparse_routes_contract(&world),
         _ => panic!("unknown RLST_MPI_EMPTY_CASE={case}"),
     }
 }
