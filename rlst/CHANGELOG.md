@@ -1,5 +1,25 @@
 # Changelog
 
+## v0.10.2
+
+Changes since [v0.10.1](https://codeberg.org/rlst/rlst/releases/tag/v0.10.1).
+All workspace crates (`rlst`, `rlst-proc-macro`, and `rlst-suitesparse`) use version 0.10.2.
+No public signature or result of 0.10.1 changes.
+
+### Sparse exchanges: rotated posting order
+
+The non-blocking consensus round behind `sparse_all_to_allv`, `SparseRoutes::new` and
+`GhostCommunicatorBuilder::build`, and `SparseRoutes`' `exchange` and `exchange_back`, posted
+their messages in ascending rank order, so every rank sent to rank 0 first and all senders
+converged on one receiver at a time. Rank `r` now posts to `r + 1, ..., P - 1, 0, ..., r - 1`,
+as MPI's all-to-all algorithms do, and posts its receives in the same rotated order. Only the
+order of posting changes: every buffer keeps its layout, and every result, the received data
+and its order included, is identical to 0.10.1's.
+
+On 4 nodes of an Omni-Path cluster at 160 ranks (Open MPI 4.1.6 over PSM2), the first
+`SparseRoutes` exchange after `SparseRoutes::new` takes half as long (median 4.1 ms to 2.0
+ms) and the others 5-10 % less (nd-fmm, Phase 5S T8q).
+
 ## v0.10.1
 
 Changes since [v0.10.0](https://codeberg.org/rlst/rlst/releases/tag/v0.10.0).
