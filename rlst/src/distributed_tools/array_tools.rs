@@ -182,11 +182,22 @@ pub fn all_to_allv<T: Equivalence + Default + Clone, C: CommunicatorCollectives>
 /// match one of these messages.
 pub const SPARSE_EXCHANGE_TAG: Tag = 32_717;
 
+/// The position of `peer` in the order in which `rank` of `size` ranks posts its messages:
+/// `rank + 1, rank + 2, …, size − 1, 0, 1, …, rank`.
+///
+/// Posting in this rotated order, as MPI's all-to-all algorithms do, keeps the senders
+/// from converging on one receiver: in ascending order every rank would send to rank 0
+/// first, then to rank 1, and so on.
+pub(crate) fn rotated_position(peer: usize, rank: usize, size: usize) -> usize {
+    (peer + size - rank - 1) % size
+}
+
 /// One round of a sparse dynamic exchange by non-blocking consensus (NBX).
 ///
 /// Every rank sends each of its `messages` (destination, data) with a synchronous
 /// send, receives whatever arrives with `tag` through a matched probe, and enters a
-/// non-blocking barrier once its own sends have been received. A rank leaves when the
+/// non-blocking barrier once its own sends have been received. The sends are posted in
+/// the rotated order of [rotated_position]. A rank leaves when the
 /// barrier completes, at which point every message of every rank has been received
 /// (Hoefler, Siebert and Lumsdaine, PPoPP 2010). Returns the received messages sorted
 /// by source rank.
@@ -202,12 +213,15 @@ pub(crate) fn nbx<'d, T: Equivalence + Default + Clone + 'd, C: CommunicatorColl
     tag: Tag,
     messages: impl IntoIterator<Item = (usize, &'d [T])>,
 ) -> Vec<(usize, Vec<T>)> {
+    let (rank, size) = (comm.rank() as usize, comm.size() as usize);
+    let mut messages = messages.into_iter().collect::<Vec<_>>();
+    messages.sort_by_key(|&(destination, _)| rotated_position(destination, rank, size));
     let mut received = Vec::new();
     mpi::request::scope(|scope| {
         let mut sends = messages
             .into_iter()
             .map(|(destination, data)| {
-                debug_assert!(destination != comm.rank() as usize && !data.is_empty());
+                debug_assert!(destination != rank && !data.is_empty());
                 comm.process_at_rank(destination as i32)
                     .immediate_synchronous_send_with_tag(scope, data, tag)
             })
@@ -576,7 +590,7 @@ pub fn is_sorted_array<T: Equivalence + Default + Clone + TotalCmp, C: Communica
 
 #[cfg(test)]
 mod test {
-    use super::checked_displacements;
+    use super::{checked_displacements, rotated_position};
     use crate::distributed_tools::{displacements, sort_to_bins};
 
     #[test]
@@ -601,6 +615,29 @@ mod test {
     #[should_panic(expected = "key precedes the first bin lower bound")]
     fn sort_to_bins_rejects_keys_before_first_bound() {
         sort_to_bins(&[0_i32], &[1]);
+    }
+
+    #[test]
+    fn test_rotated_position() {
+        // Rank 2 of 5 posts to 3, 4, 0, 1 and last to itself.
+        let order = (0..5)
+            .map(|peer| rotated_position(peer, 2, 5))
+            .collect::<Vec<_>>();
+        assert_eq!(order, [2, 3, 4, 0, 1]);
+        // At each step every rank sends to a different rank.
+        for size in 1..9 {
+            for step in 0..size {
+                let mut targets = (0..size)
+                    .map(|rank| {
+                        (0..size)
+                            .find(|&peer| rotated_position(peer, rank, size) == step)
+                            .unwrap()
+                    })
+                    .collect::<Vec<_>>();
+                targets.sort_unstable();
+                assert_eq!(targets, (0..size).collect::<Vec<_>>());
+            }
+        }
     }
 
     #[test]
