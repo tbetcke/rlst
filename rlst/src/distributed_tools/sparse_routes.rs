@@ -39,7 +39,7 @@ use mpi::{
     traits::{Communicator, CommunicatorCollectives, Destination, Equivalence, Source},
 };
 
-use crate::distributed_tools::array_tools::{SPARSE_EXCHANGE_TAG, nbx};
+use crate::distributed_tools::array_tools::{SPARSE_EXCHANGE_TAG, nbx, rotated_position};
 
 /// The tag of the values sent from the senders to the receivers.
 const FORWARD_TAG: Tag = 1;
@@ -351,39 +351,53 @@ impl SparseRoutes {
             Direction::Forward => FORWARD_TAG,
             Direction::Backward => BACKWARD_TAG,
         };
-        mpi::request::scope(|scope| {
-            let mut requests = Vec::with_capacity(out_ranks.len() + in_ranks.len());
-            // The receives first, then the sends. Empty blocks (`per_item` zero) are never
-            // passed to MPI, on either side alike.
-            let mut own_receive = None;
-            let mut rest = &mut received[..];
-            for (&source, &count) in in_ranks.iter().zip(in_counts) {
-                let (block, tail) = std::mem::take(&mut rest).split_at_mut(count * per_item);
-                rest = tail;
-                if source == self.rank {
-                    own_receive = Some(block);
-                } else if !block.is_empty() {
-                    requests.push(
-                        self.comm
-                            .process_at_rank(source as i32)
-                            .immediate_receive_into_with_tag(scope, block, tag),
-                    );
-                }
+        let size = self.comm.size() as usize;
+        let order = |peer: usize| rotated_position(peer, self.rank, size);
+        // The blocks by ascending rank, as the buffers lay them out. Empty blocks (`per_item`
+        // zero) are never passed to MPI, on either side alike.
+        let mut own_receive = None;
+        let mut receives = Vec::with_capacity(in_ranks.len());
+        let mut rest = &mut received[..];
+        for (&source, &count) in in_ranks.iter().zip(in_counts) {
+            let (block, tail) = std::mem::take(&mut rest).split_at_mut(count * per_item);
+            rest = tail;
+            if source == self.rank {
+                own_receive = Some(block);
+            } else if !block.is_empty() {
+                receives.push((source, block));
             }
-            let mut own_send = None;
-            let mut start = 0;
-            for (&destination, &count) in out_ranks.iter().zip(out_counts) {
-                let block = &values[start..start + count * per_item];
-                start += count * per_item;
-                if destination == self.rank {
-                    own_send = Some(block);
-                } else if !block.is_empty() {
-                    requests.push(
-                        self.comm
-                            .process_at_rank(destination as i32)
-                            .immediate_send_with_tag(scope, block, tag),
-                    );
-                }
+        }
+        let mut own_send = None;
+        let mut sends = Vec::with_capacity(out_ranks.len());
+        let mut start = 0;
+        for (&destination, &count) in out_ranks.iter().zip(out_counts) {
+            let block = &values[start..start + count * per_item];
+            start += count * per_item;
+            if destination == self.rank {
+                own_send = Some(block);
+            } else if !block.is_empty() {
+                sends.push((destination, block));
+            }
+        }
+        // Posted in the rotated order, so that the senders do not converge on one receiver.
+        receives.sort_by_key(|&(source, _)| order(source));
+        sends.sort_by_key(|&(destination, _)| order(destination));
+        mpi::request::scope(|scope| {
+            let mut requests = Vec::with_capacity(receives.len() + sends.len());
+            // The receives first, then the sends.
+            for (source, block) in receives {
+                requests.push(
+                    self.comm
+                        .process_at_rank(source as i32)
+                        .immediate_receive_into_with_tag(scope, block, tag),
+                );
+            }
+            for (destination, block) in sends {
+                requests.push(
+                    self.comm
+                        .process_at_rank(destination as i32)
+                        .immediate_send_with_tag(scope, block, tag),
+                );
             }
             if let (Some(own_receive), Some(own_send)) = (own_receive, own_send) {
                 own_receive.copy_from_slice(own_send);
