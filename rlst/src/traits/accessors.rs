@@ -19,7 +19,8 @@
 //! elements. The 1d indexed traits are only available as unsafe variants.
 //!
 //! For direct memory access the traits [RawAccess] and [RawAccessMut] are provided. These return the raw memory slices
-//! of underlying data.
+//! of underlying data. [StridedRawAccess] and [StridedRawAccessMut] generalise them to views whose elements are not one
+//! contiguous slice, such as subviews: they return the backing storage and the offset of the view's first element.
 
 use super::base_operations::{BaseItem, Shape};
 
@@ -137,6 +138,43 @@ pub trait RawAccessMut: RawAccess {
     /// Returns `None` when the implementation cannot expose its complete backing storage as one
     /// mutable contiguous slice. The slice is in physical storage order.
     fn data_mut(&mut self) -> Option<&mut [Self::Item]>;
+}
+
+/// Strided access to the backing storage of an array or view.
+///
+/// [`storage`](StridedRawAccess::storage) returns a slice of backing storage and the offset,
+/// in elements, of the view's first element in it. With the strides of the type's
+/// [`Stride`](super::base_operations::Stride) implementation, the element at multi-index `i`
+/// is `storage[offset + Σ i[k] · stride[k]]`. The slice may hold elements that do not belong
+/// to the view, before, between and after its own, for example the other rows of a matrix
+/// around a subview.
+///
+/// This is a weaker promise than [`RawAccess`], whose slice holds the array's elements and
+/// starts with the first one, and it is available for more views: subviews and every slice
+/// of an array with strided storage. A type that implements both keeps them consistent:
+/// whenever [`RawAccess::data`] returns `Some(d)`, `storage` returns `Some((s, offset))` with
+/// `&s[offset..offset + d.len()]` the same memory as `d`. For an owned array that is
+/// `(d, 0)`.
+///
+/// The trait is safe to implement: callers check the elements they address against the
+/// length of the slice. Implementations for RLST's arrays and views follow with the FFTW
+/// rework (task F2); lazy expressions, which have no storage, do not implement it.
+pub trait StridedRawAccess: BaseItem {
+    /// The backing storage and the offset of the first element of the view in it, or `None`
+    /// if the storage cannot be exposed as a slice.
+    fn storage(&self) -> Option<(&[Self::Item], usize)>;
+}
+
+/// Mutable strided access to the backing storage of an array or view.
+///
+/// The mutable counterpart of [`StridedRawAccess`], with the same layout of the slice. A
+/// mutable view hands out its parent's whole storage, elements outside the view included;
+/// this is memory-safe, since the view holds the parent's exclusive borrow, but callers
+/// should write only the view's elements.
+pub trait StridedRawAccessMut: StridedRawAccess {
+    /// The mutable backing storage and the offset of the first element of the view in it, or
+    /// `None` if the storage cannot be exposed as a slice.
+    fn storage_mut(&mut self) -> Option<(&mut [Self::Item], usize)>;
 }
 
 /// Raw mutable storage whose allocation and extent remain stable while borrowed by an owner.

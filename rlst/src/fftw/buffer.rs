@@ -1,6 +1,6 @@
 //! Buffers that plans execute on: slices, and RLST arrays from task F2.
 
-use crate::{Array, RawAccess, RawAccessMut, Shape, Stride};
+use crate::{Array, Shape, Stride, StridedRawAccess, StridedRawAccessMut};
 
 use super::error::{FftwError, Side};
 use super::layout::Layout;
@@ -20,7 +20,8 @@ pub(crate) mod sealed {
 /// A buffer of elements `E` that a plan reads.
 ///
 /// Implemented for slices `[E]`, whose layout offsets count from the start of the slice, and
-/// for RLST arrays and views (task F2). The trait is sealed.
+/// for RLST arrays and views with [`StridedRawAccess`], subviews included, whose offsets count
+/// from their first element (task F2). The trait is sealed.
 ///
 /// ```no_run
 /// use rlst::c64;
@@ -69,8 +70,8 @@ pub trait FftBuffer<E>: sealed::Sealed<E> {
 
 /// A buffer of elements `E` that a plan writes.
 ///
-/// Implemented for slices `[E]` and for mutable RLST arrays and views (task F2). The trait is
-/// sealed.
+/// Implemented for slices `[E]` and for mutable RLST arrays and views with
+/// [`StridedRawAccessMut`] (task F2). The trait is sealed.
 ///
 /// ```no_run
 /// use rlst::c64;
@@ -119,11 +120,11 @@ impl<E> FftBufferMut<E> for [E] {
     }
 }
 
-// RLST arrays and views, implemented in task F2.
+// RLST arrays and views through their strided storage, implemented in task F2.
 
 impl<A, const N: usize> sealed::Sealed<A::Item> for Array<A, N>
 where
-    A: RawAccess + Shape<N> + Stride<N>,
+    A: StridedRawAccess + Shape<N> + Stride<N>,
 {
     fn check_side(&self, layout: &Layout, side: Side) -> Result<(), FftwError> {
         let _ = (layout, side);
@@ -133,7 +134,7 @@ where
 
 impl<A, const N: usize> FftBuffer<A::Item> for Array<A, N>
 where
-    A: RawAccess + Shape<N> + Stride<N>,
+    A: StridedRawAccess + Shape<N> + Stride<N>,
 {
     fn as_ptr(&self) -> *const A::Item {
         todo!()
@@ -146,7 +147,7 @@ where
 
 impl<A, const N: usize> FftBufferMut<A::Item> for Array<A, N>
 where
-    A: RawAccessMut + Shape<N> + Stride<N>,
+    A: StridedRawAccessMut + Shape<N> + Stride<N>,
 {
     fn as_mut_ptr(&mut self) -> *mut A::Item {
         todo!()

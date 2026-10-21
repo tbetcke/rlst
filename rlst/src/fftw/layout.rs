@@ -2,7 +2,7 @@
 
 use std::fmt;
 
-use crate::{Array, RawAccess, Shape, Stride};
+use crate::{Array, Shape, Stride, StridedRawAccess};
 
 use super::error::FftwError;
 
@@ -218,9 +218,10 @@ impl Layout {
     /// other axes.
     ///
     /// The input and output may differ in element type and shape; the planner checks them
-    /// against the transform family. Implemented in task F2.
+    /// against the transform family. Implemented in task F2, which also implements
+    /// [`StridedRawAccess`] for RLST's arrays and views and makes this example run.
     ///
-    /// ```no_run
+    /// ```ignore
     /// use rlst::{c64, rlst_dynamic_array};
     /// use rlst::fftw::Layout;
     ///
@@ -236,8 +237,8 @@ impl Layout {
         axis: usize,
     ) -> Result<Self, FftwError>
     where
-        AIn: RawAccess + Shape<N> + Stride<N>,
-        AOut: RawAccess + Shape<N> + Stride<N>,
+        AIn: StridedRawAccess + Shape<N> + Stride<N>,
+        AOut: StridedRawAccess + Shape<N> + Stride<N>,
     {
         let _ = (input, output, axis);
         todo!()
@@ -247,9 +248,10 @@ impl Layout {
     /// other axes.
     ///
     /// The input and output may differ in element type and shape; the planner checks them
-    /// against the transform family. Implemented in task F2.
+    /// against the transform family. Implemented in task F2, which also implements
+    /// [`StridedRawAccess`] for RLST's arrays and views and makes this example run.
     ///
-    /// ```no_run
+    /// ```ignore
     /// use rlst::{c64, rlst_dynamic_array};
     /// use rlst::fftw::Layout;
     ///
@@ -265,17 +267,18 @@ impl Layout {
         axes: &[usize],
     ) -> Result<Self, FftwError>
     where
-        AIn: RawAccess + Shape<N> + Stride<N>,
-        AOut: RawAccess + Shape<N> + Stride<N>,
+        AIn: StridedRawAccess + Shape<N> + Stride<N>,
+        AOut: StridedRawAccess + Shape<N> + Stride<N>,
     {
         let _ = (input, output, axes);
         todo!()
     }
 
     /// In-place one-dimensional transforms along `axis` of an array of rank `N`, batched over
-    /// the other axes. Implemented in task F2.
+    /// the other axes. Implemented in task F2, which also implements [`StridedRawAccess`] for
+    /// RLST's arrays and views and makes this example run.
     ///
-    /// ```no_run
+    /// ```ignore
     /// use rlst::{c64, rlst_dynamic_array};
     /// use rlst::fftw::Layout;
     ///
@@ -288,16 +291,17 @@ impl Layout {
         axis: usize,
     ) -> Result<Self, FftwError>
     where
-        A: RawAccess + Shape<N> + Stride<N>,
+        A: StridedRawAccess + Shape<N> + Stride<N>,
     {
         let _ = (data, axis);
         todo!()
     }
 
     /// In-place transforms over `axes`, in the order given, of an array of rank `N`, batched
-    /// over the other axes. Implemented in task F2.
+    /// over the other axes. Implemented in task F2, which also implements
+    /// [`StridedRawAccess`] for RLST's arrays and views and makes this example run.
     ///
-    /// ```no_run
+    /// ```ignore
     /// use rlst::{c64, rlst_dynamic_array};
     /// use rlst::fftw::Layout;
     ///
@@ -310,7 +314,7 @@ impl Layout {
         axes: &[usize],
     ) -> Result<Self, FftwError>
     where
-        A: RawAccess + Shape<N> + Stride<N>,
+        A: StridedRawAccess + Shape<N> + Stride<N>,
     {
         let _ = (data, axes);
         todo!()

@@ -449,3 +449,29 @@ All three:
 
 Record here anything the design leaves unclear, and raise it; do not resolve design
 questions in code.
+
+Raised by the F1 implementation and **resolved in the F1a review** (design draft 0.8,
+Appendix A):
+
+1. **Raw access of strided views (for F2).** `RawAccess::data` is `None` for most views
+   (`ArraySlice` and `Multislice` only when the view is one contiguous block), and subviews
+   do not implement `RawAccess`, so bounds on `RawAccess` could not reach the strided views
+   of design goal 3. *Resolved (DC11):* new traits `StridedRawAccess` and
+   `StridedRawAccessMut` in `rlst/src/traits/accessors.rs` return the backing storage and
+   the offset of the view's first element. F1a declares them and puts them in the F2
+   signatures; F2 implements them for every array and view type (subviews and nested views
+   included) and tests subviews with sentinels between their elements. `RawAccess` keeps its
+   stricter meaning.
+2. **Input-policy requests in place.** *Resolved (DC12):* the in-place planner methods exist
+   only on `Planner<T, DefaultRequest>`.
+3. **An unparsable run-time version string.** *Resolved (DC13):* it counts as below the
+   minimum, and planning returns `VersionTooOld` carrying the string.
+
+Additions to the design's sketch, accepted in the same review: `AlignmentClass::of` is
+generic over `FftBuffer` (slices now, arrays in F2) in place of a slice-only constructor, and
+`AlignmentClass::from_offset` plans for buffers not yet allocated; `DEFAULT_MAX_SCRATCH`;
+`Display` for `Rigor`, `Placement`, `Side`, `Backend` and `AlignmentClass`; `Debug` for
+`Plan`; the accessors `Plan::layout`, `rigor`, `alignment` and, for c2c, `direction`.
+`InvalidLayout` names the dimension as text (`transform dimension 0`, `batch dimension 1`,
+`layout`, `alignment`), and `LayoutMismatch` carries the expected and found values as text,
+so that F2 can use both for arrays.
