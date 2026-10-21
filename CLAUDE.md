@@ -49,7 +49,7 @@ The repository uses the Rust 2024 edition for `rlst` and `rlst-suitesparse`, and
 - `scripts/run_mpi_tests.py` — bounded MPI regression runner; `scripts/test_run_mpi_tests.py`
   tests runner process cleanup without requiring MPI.
 - `.github/workflows/` — GitHub Actions CI on hosted `ubuntu-24.04` runners. `run-tests.yml` is
-  the authoritative validation matrix. Separate scheduled/manual workflows run `cargo templated-examples` and `cargo upgrades`.
+  the authoritative validation matrix and the only workflow.
 
 The guides in `rlst/src/doc/` are the best existing description of intended usage and double as
 doctests. Read the relevant one before changing a user-facing API, and update it when behavior
