@@ -5,8 +5,8 @@
 | Task | F2 (design, Section 9) |
 | Status | not started |
 | Depends on | F1 |
-| Pull requests | two, into `fftw-0.11`: F2a (strided storage of arrays and views; its review settles the open questions below), F2b (layouts from arrays, execution on arrays, tests) |
-| Read first | design: Section 2.5, Section 3 (all items), Sections 4.1–4.8, Section 5, Sections 7.1–7.4 and 7.7, Section 9 (F2 row, Transition), Section 10, in particular DC11–DC13, Appendix A (draft 0.8); `docs/fftw/tasks/F1-core.md`, including its "Open questions"; `docs/fftw/F0-findings.md`; `CLAUDE.md` |
+| Pull requests | two, into `fftw-0.11`: F2a (strided storage of arrays and views, `Array::storage()` and `storage_mut()`), F2b (layouts from arrays, execution on arrays, tests) |
+| Read first | design: Section 2.5, Section 3 (all items), Sections 4.1–4.8, Section 5, Sections 7.1–7.4 and 7.7, Section 9 (F2 row, Transition), Section 10, in particular DC11–DC19, Appendix A (drafts 0.8 and 0.9); `docs/fftw/tasks/F1-core.md`, including its "Open questions"; `docs/fftw/F0-findings.md`; `CLAUDE.md` |
 
 ## Goal
 
@@ -28,7 +28,9 @@ In scope:
   `rlst/src/dense/base_array.rs`, `rlst/src/dense/strided_base_array.rs`,
   `rlst/src/dense/array/reference.rs`, `slice.rs`, `multislice.rs`, `subview.rs`,
   `empty_axis.rs`, `operators/with_type_hint.rs` and `operators/coerce.rs`, with their tests;
-  the rustdoc of the two traits in `rlst/src/traits/accessors.rs`;
+  the rustdoc of the two traits in `rlst/src/traits/accessors.rs`; the inherent
+  `Array::storage()` and `Array::storage_mut()` in `rlst/src/dense/array.rs` (DC18), and a
+  paragraph on them in `rlst/src/doc/dense_linear_algebra.rs`;
 - F2b: the `todo!()` bodies of F1 in `rlst/src/fftw/layout.rs` and `rlst/src/fftw/buffer.rs`;
   the execution checks and their `SAFETY:` comment in `rlst/src/fftw/execute.rs`; test
   helpers in `rlst/src/fftw/test_support.rs`; rustdoc in `rlst/src/fftw/align.rs`,
@@ -60,6 +62,8 @@ Files touched:
 | `rlst/src/dense/array/reference.rs` | `r()`, `r_mut()` forward | |
 | `rlst/src/dense/array/slice.rs`, `multislice.rs`, `subview.rs` | parent's storage, own offset added | |
 | `rlst/src/dense/array/empty_axis.rs`, `operators/with_type_hint.rs`, `operators/coerce.rs` | forward | |
+| `rlst/src/dense/array.rs` | inherent `storage()`, `storage_mut()` | |
+| `rlst/src/doc/dense_linear_algebra.rs` | a paragraph beside `data()` | |
 | `rlst/src/fftw/layout.rs` | | `along_axis`, `over_axes`, in-place variants, tests |
 | `rlst/src/fftw/buffer.rs` | | `FftBuffer`, `FftBufferMut` for arrays, tests |
 | `rlst/src/fftw/execute.rs` | | the array checks, the `SAFETY:` comment, the correctness tests |
@@ -103,8 +107,12 @@ Excluded, as they have no `Stride` or no storage: lazy expressions (the operator
 
 `Array<A, N>` itself implements none of the accessor traits (only `BaseItem`); it has inherent
 `shape()`, `stride()` and `data()` instead. The F1 signatures bound the implementation type
-`A` and take `&Array<A, N>`, so F2 needs no forwarding impls on `Array`. Inherent `storage()`
-methods are open question 5; F2a adds none unless that question is settled otherwise.
+`A` and take `&Array<A, N>`, so F2 needs no forwarding impls on `Array`. F2a adds inherent
+`Array::storage()` and `Array::storage_mut()` beside `data()` and `data_mut()` (DC18), so that
+users reach the storage without `arr.imp()`. They follow the pattern of `data()`: an `impl`
+block on `Array<ArrayImpl, NDIM>` with `ArrayImpl: StridedRawAccess` (respectively
+`StridedRawAccessMut`), forwarding to the implementation, with rustdoc and an example each
+(a subview's storage and offset, and a write through `storage_mut()` seen through the view).
 
 ### 2. Rustdoc of the traits
 
@@ -113,7 +121,8 @@ methods are open question 5; F2a adds none unless that question is settled other
 - An example on each trait: the storage and offset of a subview of a column-major array,
   and an element read through them; for the mutable trait, a write through `storage_mut()`
   seen through the view.
-- The sentence on views without elements, as open question 6 settles it.
+- The sentence on views without elements (DC19): their offset may lie past the end of the
+  slice and must not be used to index it.
 
 ### 3. Tests of F2a
 
@@ -130,6 +139,9 @@ need no FFTW and run in the default `cargo test`.
   `with_container_type`, `coerce_dim`, and `insert_empty_axis` at the front and at the back.
 - **Mutable storage.** `storage_mut()` gives the pointer and offset of `storage()`, and a
   write at element `i`'s offset is seen at `view[i]`, for `r_mut()` views of each kind.
+- **The inherent methods** (DC18): `Array::storage()` and `storage_mut()` return what the
+  implementation's `storage()` and `storage_mut()` return, for an owned array, a subview and
+  an `r_mut()` view.
 - **The consistency rule** (DC11): wherever `RawAccess::data()` returns `Some(d)`,
   `storage()` returns `Some((s, offset))` with `s[offset..].as_ptr() == d.as_ptr()` and
   `offset + d.len() <= s.len()`. Cover owned arrays (offset 0), the contiguous slices and
@@ -148,8 +160,7 @@ text (`axes`, or `axis k` for an RLST axis) and the reason:
 1. `axes` is not empty;
 2. every entry is below the rank `N`;
 3. no entry is repeated;
-4. the input and output extents are equal on every axis (complex-to-complex; open
-   question 1);
+4. the input and output extents are equal on every axis (complex-to-complex; DC14);
 5. every extent is at least 1: an array with an extent 0 has nothing to transform, and
    `Layout::new` would reject it naming a dimension index rather than the axis;
 6. every extent and stride converts to `isize` (`isize::try_from`, never `as`).
@@ -158,8 +169,7 @@ Then the transform dimensions, in the order of `axes`, are
 `Dim { n: shape[k], is: input_stride[k], os: output_stride[k] }`; the batch dimensions are
 the other axes, in any order, as the same `Dim`s; and the result is
 `Layout::new(&dims, &batch, Placement::OutOfPlace)`, whose validation and normalisation
-(F1, design Section 4.3) apply unchanged, the distinct-output rule included (open
-question 3). FFTW receives the dimensions in the order of `axes`, with their own strides, so
+(F1, design Section 4.3) apply unchanged, the distinct-output rule included (DC16). FFTW receives the dimensions in the order of `axes`, with their own strides, so
 no shape is reversed for column-major arrays (the 0.10 bug of design Section 2.2 item 9).
 
 The in-place variants do the same with one array, `is == os ==` its stride, and
@@ -194,16 +204,16 @@ For `Array<A, N>` with the F1 bounds:
 
 - `as_ptr`: the first element, `s.as_ptr().wrapping_add(offset)` from `storage()`, or a null
   pointer if `storage()` is `None`. `wrapping_add`, because the offset of an empty view can
-  lie past the end of its storage (open question 6); the pointer is only dereferenced after
+  lie past the end of its storage (DC19); the pointer is only dereferenced after
   `check_side` has accepted the buffer.
 - `as_mut_ptr`: the same from `storage_mut()`. It must derive from the exclusive borrow,
   never from `storage()` cast to mutable (design Section 4.4; `CLAUDE.md`).
-- `len`: as open question 4 settles it (proposed: `s.len() - offset`, 0 without storage),
-  stated in the rustdoc of `FftBuffer::len`.
+- `len`: the storage elements from the first element on, `s.len() - offset`, and 0 without
+  storage (DC17), stated in the rustdoc of `FftBuffer::len`.
 - `check_side(layout, side)`, in this order, each failure a `LayoutMismatch` with the side:
   1. `storage()` is `Some`;
   2. the array's shape and strides match that side of the layout (design Section 4.8
-     item 2), by the per-side rule of open question 2;
+     item 2), by the per-side rule of DC15;
   3. `offset + span <= s.len()`, with checked addition, for the layout's span of that side.
 
   Memory safety rests on step 3 alone: `StridedRawAccess` is a safe trait, so an
@@ -222,7 +232,7 @@ call `check_side` and need no change.
 ### 6. Execution (`execute.rs`)
 
 - `check_buffers` keeps F1's order: buffers against the layout (`check_side` for each side,
-  and the two-sided check of open question 2 when both are arrays), alignment classes,
+  and the two-sided pairing of DC15 when both are arrays of the same rank), alignment classes,
   overlap. The overlap check uses `as_ptr()` and the spans, so for arrays it compares the
   byte ranges from each first element; it stays conservative (design Section 4.8 item 4).
 - The `SAFETY:` comment of `execute_unchecked` is extended for arrays: the span fits the
@@ -263,7 +273,9 @@ the class check itself is a negative test below.
 - **Layout construction** (`layout.rs`): the rows of the table of work item 4, compared with
   `Layout::new`; `along_axis` equal to `over_axes` with one axis; the in-place variants; an
   array of shape `[n, 1]` along axis 0 equal to the layout of `[n]`; the errors of checks
-  1–6, each naming its axis; an array with an extent 0; and the case of open question 3.
+  1–6, each naming its axis; an array with an extent 0; and the array of DC16 (shape
+  `[2, 2]`, strides `[2, 3]`), rejected with `InvalidLayout` as output and in place, and
+  accepted as input.
 - **The correctness matrix**, fixed cells:
   - memory orders: column-major at `FFTW_ALIGNED`; row-major (`StridedDynArray::row_major`);
     strided with steps above 1 (a `StridedSliceArray` or `StridedSliceArrayMut` over aligned
@@ -310,8 +322,9 @@ the class check itself is a negative test below.
   test-only implementation type with `Shape`, `Stride` and a `StridedRawAccess` whose
   storage is shorter than its shape and strides claim, which execution rejects with
   `LayoutMismatch` before calling FFTW.
-- **The pairing of open question 2**, as that question settles it: the arrays of its example
-  are rejected, or the documented behaviour is asserted.
+- **The pairing of DC15**: with the arrays of the example in "Open questions" item 2, the
+  execution is rejected with `LayoutMismatch` when both buffers are arrays; the same memory
+  passed as slices is accepted, as documented.
 - **`compile_fail` doctests**, each with a passing twin that differs only in the misuse: a
   shared view `b.r()` as the output of `execute`; `Layout::along_axis` on a `transpose()`
   view.
@@ -329,18 +342,19 @@ the class check itself is a negative test below.
 - Rustdoc of the layout functions: the checks and errors of work item 4; offsets counted from
   the first element; that the scratch of `Planner::c2c` covers the span from the first
   element to the last one addressed, so a view of a large array may need `max_scratch` or
-  the `*_on` methods; that a plan describes memory, not logical axes (open question 2).
+  the `*_on` methods; that a plan describes memory, not logical axes (DC15).
 - An array example for `AlignmentClass::of` (an aligned array and a subview at an offset),
   and for one `execute` method.
 - The section "New interface (0.11, in progress)" of `rlst/src/fftw.rs`: layouts from arrays
   and views, and buffers for arrays, in the list; remove "Layouts from RLST arrays" from the
   sentence on what follows.
-- `rlst/src/doc/`: no guide changes in F2. The FFTW guide is written in F7 (design,
-  Section 9). If open question 5 adds inherent `storage()` methods, a short paragraph in
-  `doc/dense_linear_algebra.rs` beside `data()`.
+- `rlst/src/doc/dense_linear_algebra.rs`, in F2a: a short paragraph beside `data()` on
+  `storage()` and `storage_mut()` (DC18): what they return, that the slice may hold elements
+  of other views, and when to use them rather than `data()`. No other guide changes; the
+  FFTW guide is written in F7 (design, Section 9).
 - `rlst/CHANGELOG.md`, under `## v0.11.0 (unreleased)`: F2a completes the entry "New traits
   `StridedRawAccess` and `StridedRawAccessMut`" with the types that implement them and those
-  that do not; F2b extends "New FFTW interface (in progress)" by layouts from arrays and views
+  that do not, and with the inherent `Array::storage()` and `storage_mut()`; F2b extends "New FFTW interface (in progress)" by layouts from arrays and views
   and execution on them.
 - The status table of `docs/fftw/README.md` when each pull request merges. F2 changes no
   feature, CI job or validation command, so `CLAUDE.md` is expected not to change; check it.
@@ -348,9 +362,9 @@ the class check itself is a negative test below.
 ## Pull requests and CI
 
 - **F2a** first, titled for example `feat(dense): F2a strided storage of arrays and views`.
-  Raise the open questions below in its description; the review settles them, and the answers
-  are recorded under "Open questions", with design changes in the design and an entry in its
-  Appendix A. F2b starts after that.
+  The open questions of this brief were settled before the task started (DC14–DC19); a
+  question that arises during the task is recorded under "Open questions" and raised in the
+  pull request. F2b starts after F2a has merged.
 - **F2b**, titled for example `feat(fftw): F2b layouts and execution on arrays and views`,
   branched from `fftw-0.11` after F2a has merged.
 - CI (`.github/workflows/run-tests.yml`) runs only for pull requests into `main` or
@@ -364,9 +378,9 @@ F2a:
 - [ ] `StridedRawAccess` is implemented for every type of the table of work item 1, and
       `StridedRawAccessMut` for its mutable ones; no blanket impl; none for the excluded types.
 - [ ] `RawAccess` and `RawAccessMut` are unchanged, and no existing test or doctest changed.
+- [ ] `Array::storage()` and `Array::storage_mut()` exist, with rustdoc, an example each and
+      the paragraph in `rlst/src/doc/dense_linear_algebra.rs` (DC18).
 - [ ] The tests of work item 3 pass in the default `cargo test`.
-- [ ] The open questions are settled in the review and recorded in this brief; design
-      changes are in the design with an Appendix A entry.
 
 F2b:
 
@@ -406,7 +420,7 @@ Both:
   execution check of the span against the storage length is what keeps execution sound; do
   not skip it when the shape and strides already match.
 - **Extent 0.** Empty arrays and views are rejected when a layout is made. The storage
-  offset of an empty view can lie past the end of its storage (open question 6): do not
+  offset of an empty view can lie past the end of its storage (DC19): do not
   slice or index with it, and use `wrapping_add` for pointers.
 - **Extent 1.** The stride of an axis of extent 1 is arbitrary in RLST (`insert_empty_axis`,
   subviews, slices); batch dimensions of extent 1 are dropped by normalisation, transform
@@ -428,9 +442,9 @@ Both:
 Record here anything the design leaves unclear, and raise it; do not resolve design
 questions in code.
 
-Raised while writing this brief, to be settled in the review of F2a, before F2b starts. The
-work items are written for the option marked *proposed*; if the review chooses another, this
-brief is amended first.
+Raised while writing this brief, and **settled by the maintainer before the task started**
+(design draft 0.9, DC14–DC19, Appendix A): questions 1–4 and 6 with the option marked
+*proposed*, question 5 with option (b). The work items follow these answers.
 
 1. **Where c2c's equal shapes are checked.** Design Section 4.3 says validation by family
    happens at planning, and the sketch of Section 4.2 has a `Layout` holding "the shapes of
@@ -441,6 +455,7 @@ brief is amended first.
    to `Layout` what its planner then needs; (b) F2 adds the extents of both sides to `Layout`
    now, and `Planner::c2c` checks their equality, with raw layouts recording equal extents.
    (a) leaves F1's `Layout` as it is; (b) fixes now the representation F5 will use.
+   *Decided: (a), DC14.*
 2. **What execution compares for an array.** Design Section 4.8 item 2 says the array's
    normalised shape and strides equal the plan's layout. F1's `check_side` sees one buffer
    and one side, and the layout is two-sided and records no axes. A per-side comparison
@@ -462,6 +477,7 @@ brief is amended first.
    check; (c) as (b), and layouts made from arrays also record their transform axes, which
    execution then requires. Under (a) and (b) the documentation states that a plan describes
    memory, not logical axes; (c) ties plans to axes, which design goal 2 does not ask for.
+   *Decided: (b), DC15.*
 3. **Arrays that the distinct-output rule rejects.** Design Section 4.3 says layouts built
    from RLST arrays satisfy the raw-layout rules by construction. `StridedBaseArray::new`
    accepts any strides that map indices to distinct offsets, such as shape `[2, 2]` with
@@ -470,22 +486,23 @@ brief is amended first.
    `InvalidLayout` as outputs and in place (they are accepted as inputs), the rustdoc says
    so, and the sentence of Section 4.3 is corrected (Appendix A); (b) an exact distinctness
    check for layouts made from arrays, in O(elements) at layout construction, as
-   `StridedBaseArray::new` does.
+   `StridedBaseArray::new` does. *Decided: (a), DC16; design Section 4.3 is corrected.*
 4. **`FftBuffer::len` for arrays.** Its rustdoc says "the number of elements". For a slice
    that is also the memory behind `as_ptr`; for a strided view the two differ. Options:
    (a) *proposed*: the storage elements from the first element on (`s.len() - offset`), the
    memory a plan may address, with the rustdoc saying so for arrays; (b) the number of the
    array's elements, as `Array::len`. F1's execution does not use `len`; the choice concerns
-   callers only.
+   callers only. *Decided: (a), DC17.*
 5. **Inherent `storage()` on `Array`.** `Array` implements none of the accessor traits, and
    F2 needs no forwarding impl, but users can then reach the storage only through
    `arr.imp().storage()`. Options: (a) *proposed*: no inherent methods, as the design names
    none; (b) inherent `Array::storage()` and `storage_mut()` beside `data()` and
    `data_mut()`, with a paragraph in `doc/dense_linear_algebra.rs`. (b) can be added later
-   without breaking anything.
+   without breaking anything. *Decided: (b), in F2a, DC18.*
 6. **The offset of an empty view.** A subview with an extent 0 can start past the end of the
    storage (origin `[4, 3]` and shape `[0, 0]` in a column-major `[4, 3]` array give offset
    16 in a storage of 12), and the contract of `StridedRawAccess` says nothing about views
    without elements. Options: (a) *proposed*: the rustdoc states that for a view without
    elements the offset may lie past the end of the slice and must not be used to index it;
    (b) clamp the offset to the slice length for empty views; (c) return `None` for them.
+   *Decided: (a), DC19.*
