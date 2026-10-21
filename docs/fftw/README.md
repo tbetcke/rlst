@@ -40,7 +40,7 @@ so that every later family is written against the separate-process determinism t
 | Task | Content (design, Section 9) | Brief | Status | Pull requests |
 | --- | --- | --- | --- | --- |
 | F0 | Baseline, integration branch, CI version reports, macOS job | `tasks/F0-baseline.md` | done | [#2](https://github.com/tbetcke/rlst/pull/2) |
-| F1 | Core: features, types, lock, raw layouts, c2c plans, checked execution on slices, fingerprints | `tasks/F1-core.md` | in review | F1a, F1b, F1c |
+| F1 | Core: features, types, lock, raw layouts, c2c plans, checked execution on slices, fingerprints | `tasks/F1-core.md` | in review | [#3](https://github.com/tbetcke/rlst/pull/3) (F1a), [#4](https://github.com/tbetcke/rlst/pull/4) (F1b), [#5](https://github.com/tbetcke/rlst/pull/5) (F1c) |
 | F2 | Layouts from RLST arrays and views | to be written | not started | |
 | F4 | Concurrency and determinism, harness-free test binary | to be written | not started | |
 | F3 | Split c2c with the part axis | to be written | not started | |
