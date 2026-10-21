@@ -144,7 +144,7 @@ execute functions outward, and the old one is removed (DF1).
 
 | Back end | What it links | Notes |
 | --- | --- | --- |
-| `fftw_system` | the system's `libfftw3` and `libfftw3f`, any version pkg-config finds | Ubuntu 24.04 ships 3.3.10 (`fftw-3.3.10-sse2-avx`) and Homebrew 3.3.11. The threads libraries (`libfftw3_threads`, `libfftw3f_threads`) have no pkg-config files and are not linked today. |
+| `fftw_system` | the system's `libfftw3` and `libfftw3f`, any version pkg-config finds | Ubuntu 24.04 ships 3.3.10 (`fftw-3.3.10-sse2-avx`) and Homebrew 3.3.11, built with SSE2, AVX and AVX2 on Intel and without SIMD on Apple silicon (`fftw-3.3.11`). The threads libraries (`libfftw3_threads`, `libfftw3f_threads`) have no pkg-config files and are not linked today. |
 | `fftw_source` | FFTW 3.3.8, built by fftw-src 0.8.0, statically | `configure` runs with `--with-pic --enable-static --disable-doc` (and `--enable-single`) only: **no SIMD and no threads library**. Without SIMD, `fftw_alignment_of` returns 0 for every pointer. 3.3.8 predates the fixes of 3.3.9 and 3.3.10 (Section 3 item 9). Removed in 0.11 (DF6). |
 | `fftw_mkl` | Intel MKL's FFTW3 wrappers, through intel-mkl-src 0.8.1 | A documented subset of FFTW (Section 3 item 10). Removed in 0.11 (DF5). |
 
@@ -210,7 +210,11 @@ string is `fftw-3.3.10-sse2-avx`.
    reports modulo 16, so a plan made on 64-byte-aligned arrays can pass that check on a
    16-byte-aligned array and then fault. 3.3.9 sets the AVX-512 requirement to 16 bytes.
    `fftw_malloc` aligns to 16, 32 or 64 bytes depending on the build. Checked:
-   `fftw_alignment_of` gives 0, 8 and 0 for offsets of 0, 1 and 2 doubles.
+   `fftw_alignment_of` gives 0, 8 and 0 for offsets of 0, 1 and 2 doubles. Homebrew's 3.3.11
+   on Apple silicon has no SIMD, and both precisions give 0 for offsets of 0 to 3 elements.
+   The version string names the SIMD extensions of the build: `api/version.c` appends
+   `-fma` and then one suffix per extension (`-sse2`, `-avx`, `-neon`, `-sve`, …), so a
+   build has SIMD when its string carries a suffix other than `-fma`.
 7. **SIMD codelets and layout** (`dft/simd/common/genus.c`). FFTW's SIMD codelets need
    interleaved complex storage (`ii == ri + 1`) and a batch count that is a multiple of the
    SIMD width; the one split-storage family needs a batch stride of 1. For split storage
@@ -501,7 +505,10 @@ Forward and Backward, which belong to `Direction`.
   **3.3.6** when `fftw_threads` is on (a working `make_planner_thread_safe`).
 - 3.3.10 or later is recommended, since 3.3.10 has the last correctness fixes. CI tests
   3.3.10 on Linux (Ubuntu 24.04) and 3.3.11 on macOS (Homebrew); the documentation lists
-  the fixes of 3.3.9 and 3.3.10 (Section 3 item 9).
+  the fixes of 3.3.9 and 3.3.10 (Section 3 item 9). It also states that Homebrew's FFTW on
+  Apple silicon is built without SIMD, and that users who need its speed there build FFTW
+  with `--enable-neon` (and `--enable-single --enable-neon` for `fftw3f`) and point
+  `PKG_CONFIG_PATH` at that installation.
 - `fftw::version()` returns FFTW's own version string, through RLST's declaration of the
   `fftw_version` symbol (fftw-sys does not bind it). It is checked at the first planner call,
   which covers the Homebrew fallback, where pkg-config reports no version.
@@ -714,10 +721,20 @@ already does), which runs each case in a fresh child process:
 
 ### 7.7 CI
 
+**Builds without SIMD.** The macOS runner's FFTW has no SIMD (Section 2.4), and users may
+link such a build anywhere. Every test passes on it: a test that depends on SIMD, such as
+one that expects `fftw_alignment_of` to tell offsets apart (Section 3 item 6) or SIMD
+codelets in a plan's description (Section 3 item 7), first asks a crate-private helper
+whether `fftw::version()` names a SIMD extension (Section 3 item 6), and otherwise prints
+that it is skipped and returns. Such tests are not moved to a Linux-only job. RLST's own
+checks, the alignment class of Section 4.6 included, are computed in Rust and are tested
+on every build.
+
 GitHub Actions, in `run-tests.yml`, with `CLAUDE.md`'s validation list updated to match:
 
 - **F8a**: ubuntu-24.04 with `fftw_system` (`libfftw3-dev`, FFTW 3.3.10), with and without
-  `fftw_threads`; macOS with Homebrew's FFTW (3.3.11); the default build, with a check that
+  `fftw_threads`; macOS with Homebrew's FFTW (3.3.11, without SIMD on the arm64 runner); the
+  default build, with a check that
   `cargo tree -e normal` lists no `fftw-sys`; doctests; `cargo doc` with `--cfg docsrs`.
 - **F8b**: benchmarks (`examples/fftw_bench.rs`, with `required-features`, no new
   dependency) of a batched plan against a loop, split against
@@ -980,7 +997,10 @@ review.
   Section 4.10, Section 7.7 and DF8 name 3.3.10 or later as recommended and 3.3.10 (Linux)
   and 3.3.11 (macOS) as tested; the baseline note gives v0.10.3's commit as 1f5ab87, not
   02eb2ec, and records that `fftw-0.11` starts from `main` at dc572e5 with version
-  0.11.0-dev.
+  0.11.0-dev. Homebrew's FFTW on Apple silicon has no SIMD: Sections 2.4 and 3 item 6
+  record it with the rule for reading SIMD from the version string, Section 7.7 makes
+  SIMD-dependent tests skip on such builds rather than run on Linux only, and Section 4.10
+  has the documentation tell Apple silicon users how to build FFTW with NEON.
 
 ## Appendix B. Migration from 0.10
 

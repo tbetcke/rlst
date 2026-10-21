@@ -90,6 +90,11 @@ installs the same Homebrew formula and is expected to match.
    - On macOS, the alignment check of F1 (Section 4.8) guards against a condition that this
      FFTW build cannot violate. The tests of that check are still valid, because the check
      is RLST's own and makes no FFI call.
+
+   Resolved in design draft 0.7. The macOS job keeps testing Homebrew's FFTW as users get it.
+   A test that depends on SIMD skips on a build without it, read from the version string
+   (Sections 3 item 6 and 7.7). The documentation tells Apple silicon users how to build
+   FFTW with NEON (Section 4.10).
 3. **The design's baseline note names the wrong commit.** The note at the top of the design
    gives v0.10.3 as commit `02eb2ec`. The tag v0.10.3 points to `1f5ab87`. `02eb2ec` is the
    next commit on `main`, which removed two CI workflows. It was followed by the design

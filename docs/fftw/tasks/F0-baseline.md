@@ -144,6 +144,9 @@ questions in code or CI.
 2. **Homebrew's FFTW on arm64 has no SIMD**, so `fftw_alignment_of` is always 0 there. Section
    4.6 is still sufficient. Later briefs must keep tests that depend on SIMD codelets or on
    `fftw_alignment_of` values off the macOS runner, or gate them. See `../F0-findings.md`.
+   **Resolved** in design draft 0.7: SIMD-dependent tests skip on builds without SIMD, read
+   from the version string (Sections 3 item 6 and 7.7). The documentation tells Apple
+   silicon users how to build FFTW with NEON (Section 4.10).
 3. **Baseline commit.** The design's baseline note gives v0.10.3 as `02eb2ec`, but the tag
    points to `1f5ab87`. The note should be corrected, with an entry in Appendix A.
    **Resolved** in design draft 0.7: the baseline is v0.10.3 at `1f5ab87`. `02eb2ec`
