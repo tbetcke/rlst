@@ -7,6 +7,7 @@ This directory holds everything needed to implement the new FFTW interface of RL
 | `rlst-fftw-design.md` | The design, draft 0.8. Authoritative for the new interface; its Section 10 records the settled decisions and design choices. |
 | `tasks/F0-baseline.md` | Brief for task F0: integration branch, baseline, CI version reports, a macOS job. |
 | `tasks/F1-core.md` | Brief for task F1: the core of the new interface, with c2c plans on raw layouts and slices. |
+| `tasks/F2-layouts.md` | Brief for task F2: strided storage of RLST arrays and views, layouts from them, and execution on them. |
 | `F0-findings.md` | Written by task F0: the baseline and the FFTW found on each CI runner. |
 
 Briefs for F2 to F8b are written when their task is next, from Section 9 of the design and
@@ -41,7 +42,7 @@ so that every later family is written against the separate-process determinism t
 | --- | --- | --- | --- | --- |
 | F0 | Baseline, integration branch, CI version reports, macOS job | `tasks/F0-baseline.md` | done | [#2](https://github.com/tbetcke/rlst/pull/2) |
 | F1 | Core: features, types, lock, raw layouts, c2c plans, checked execution on slices, fingerprints | `tasks/F1-core.md` | done | [#3](https://github.com/tbetcke/rlst/pull/3) (F1a), [#4](https://github.com/tbetcke/rlst/pull/4) (F1b), [#5](https://github.com/tbetcke/rlst/pull/5) (F1c) |
-| F2 | Layouts from RLST arrays and views | to be written | not started | |
+| F2 | Layouts from RLST arrays and views | `tasks/F2-layouts.md` | not started | |
 | F4 | Concurrency and determinism, harness-free test binary | to be written | not started | |
 | F3 | Split c2c with the part axis | to be written | not started | |
 | F5 | r2c, c2r, r2r, split r2c and c2r, `Scale` | to be written | not started | |
