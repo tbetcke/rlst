@@ -1,6 +1,6 @@
 # FFTW interfaces for RLST: design proposal
 
-Draft 0.7, 2026-10-21. A proposal for the RLST maintainers, not a plan until it is signed
+Draft 0.8, 2026-10-21. A proposal for the RLST maintainers, not a plan until it is signed
 off. It records the decisions taken on 2026-10-21. It replaces RLST's FFTW interface
 completely: every transform family of FFTW 3.3's serial interface, plans that are
 independent of the arrays they run on, checked and sound execution, wisdom, threads,
@@ -18,7 +18,7 @@ for nd-fmm: Section 11 lists open points and options for nd-fmm's own review.
 In the RLST repository this document is `docs/fftw/rlst-fftw-design.md`; the task briefs
 are in `docs/fftw/tasks/` and the workflow in `docs/fftw/README.md`.
 
-What drafts 0.6 and 0.7 change, for the start of the implementation:
+What drafts 0.6 to 0.8 change, for the start of the implementation:
 
 - **Work plan** (Section 9): the removal of `fftw_source` and `fftw_mkl` moves from F7 to
   F1; the 0.10 module coexists with the new types until F7 and shares the new FFTW lock;
@@ -29,6 +29,11 @@ What drafts 0.6 and 0.7 change, for the start of the implementation:
 - **Versions and baseline** (draft 0.7, from task F0): Homebrew ships FFTW 3.3.11, which CI
   tests on macOS beside Ubuntu's 3.3.10 on Linux (Sections 2.4, 3 item 9, 4.10, 7.7, DF8);
   the baseline commit is corrected, and the integration branch's version is 0.11.0-dev.
+- **Strided storage and two planner rules** (draft 0.8, from the F1a review): arrays and
+  views reach FFTW through new traits `StridedRawAccess` and `StridedRawAccessMut`, which
+  cover subviews (Sections 4.3, 4.8 and 7.2, DC11); the in-place planner methods take no
+  input-policy request (Section 4.4, DC12); an unparsable FFTW version string counts as too
+  old (Section 4.10, DC13).
 
 Every decision for the RLST maintainers and every design choice is settled (Section 10).
 This document makes no decisions for nd-fmm (Section 11). Earlier drafts' changes are
@@ -316,8 +321,24 @@ plan.execute(&box_in, &mut box_out)?;
   batched over the other axes. `Layout::over_axes(&input, &output, &axes)`: transforms
   over `axes` in the order given, batched over the rest. `*_inplace` variants take one
   array. The functions are generic over RLST arrays and views of any element type with
-  `Shape<N> + Stride<N>`, with `N` the rank of both arrays, so the input and output may
-  differ in element type and shape (real and complex for r2c and c2r).
+  `StridedRawAccess + Shape<N> + Stride<N>`, with `N` the rank of both arrays, so the input
+  and output may differ in element type and shape (real and complex for r2c and c2r).
+- **Strided storage (DC11).** `StridedRawAccess::storage` returns a view's backing storage
+  and the offset of its first element; with the view's strides, element `i` is
+  `storage[offset + Σ i[k] · stride[k]]`, and the slice may hold elements of other views
+  before, between and after the view's own. `StridedRawAccessMut::storage_mut` is the
+  mutable counterpart. They live beside `RawAccess` in `rlst/src/traits/accessors.rs`, are
+  not gated by `fftw`, and are implemented explicitly for each array and view type: owned
+  arrays return their storage at offset 0, `r()` and `r_mut()` forward, and `ArraySlice`,
+  `Multislice` and `ArraySubView` return their parent's storage with their own offset added,
+  so nested and mixed views compose. `RawAccess` keeps its stricter promise, on which
+  existing callers rely (its slice holds the array's elements and starts with the first);
+  a type that implements both keeps them consistent: when `data()` is `Some(d)`, `d` is
+  `&storage[offset..offset + d.len()]`. Lazy expressions have no storage; `transpose()`,
+  `permute_axes()` and `reverse_axis()` do not implement `Stride` and are not covered. A
+  mutable view hands out its parent's whole storage, which is memory-safe, since the view
+  holds the parent's exclusive borrow, but no longer a strict boundary; the documentation
+  says so.
 - **Validation by family** happens at planning: c2c needs complex arrays of equal shape;
   r2c needs a real input and a complex output whose extent along the **last entry of
   `axes`** (for `along_axis`, the axis itself) is n/2 + 1; that axis is the halved one,
@@ -348,7 +369,8 @@ plan.execute(&box_in, &mut box_out)?;
   the next smaller one. Layouts
   built from RLST arrays satisfy all three by construction.
 - **Buffers.** Plans execute on slices, with the layout's offsets counted from the start of
-  the slice (F1), and on RLST arrays and views (F2). Slices are the low-level form, for
+  the slice (F1), and on RLST arrays and views through their strided storage, with the
+  offsets counted from the view's first element (F2). Slices are the low-level form, for
   callers that manage their own buffers.
 - Layouts carry no FFTW types (DF4).
 
@@ -372,6 +394,10 @@ a plan that may overwrite its input can only be executed with the input borrowed
 | `Planner::new().preserve_input().c2r(…)` | `Preserving`; one transform axis only |
 | `Planner::new().may_destroy_input().c2c(…)`, and for every other family | `Destroying` |
 | `Planner::new().c2c_inplace(…)`, and for every other family | `InPlace` |
+
+The in-place methods exist only on a planner without an input-policy request
+(`Planner<T, DefaultRequest>`), since the requests mean nothing in place (DC12); allowing
+them later would not be a breaking change.
 
 - Because a destroying plan's `execute` takes `&mut input`, the default of c2r is visible
   at the call site; nothing is overwritten that the caller did not lend mutably. The
@@ -466,7 +492,8 @@ Before every FFTW call, in O(rank) time:
 
 1. element types and family, by the types of `Plan` and of the arrays (compile time);
 2. for an array, its normalised shape and strides equal the plan's layout, including the
-   part-axis stride of split storage; for a slice, the layout's span fits within it;
+   part-axis stride of split storage, and the offset of its first element plus the layout's
+   span fits its strided storage; for a slice, the layout's span fits within it;
 3. the alignment class of every data pointer equals the plan's, unless the plan is
    unaligned;
 4. placement: an in-place plan gets one array; for an out-of-place plan the address spans
@@ -475,6 +502,12 @@ Before every FFTW call, in O(rank) time:
    except through arrays built from raw parts.
 
 A failed check returns its error, names the expected and found values, and calls nothing.
+
+The span of a strided view can include elements that belong to other views, such as the
+other rows of a matrix around a subview. FFTW reads and writes only the elements a layout
+addresses, never the gaps between them, as its advanced interface relies on for
+transforming parts of larger arrays; execution's safety argument states this, and F2's
+tests check it with sentinel values in the gaps.
 
 ### 4.9 Scaling
 
@@ -511,7 +544,9 @@ Forward and Backward, which belong to `Direction`.
   `PKG_CONFIG_PATH` at that installation.
 - `fftw::version()` returns FFTW's own version string, through RLST's declaration of the
   `fftw_version` symbol (fftw-sys does not bind it). It is checked at the first planner call,
-  which covers the Homebrew fallback, where pkg-config reports no version.
+  which covers the Homebrew fallback, where pkg-config reports no version. A version string
+  that does not parse counts as below the minimum: planning returns `VersionTooOld`, which
+  carries the string (DC13).
 - When `DOCS_RS` is set, `build.rs` skips discovery: rustdoc does not link, so docs.rs can
   build with `fftw_system` without FFTW installed.
 
@@ -657,7 +692,7 @@ The feature stays off by default, as today.
 | Family | c2c forward and backward; r2c; c2r; r2r (all eleven kinds, and different kinds on different axes); split c2c, r2c, c2r |
 | Precision | f32, f64 |
 | Rank and batch | 1D; 2D and 3D over all axes; 1D along each axis of 2D and 3D arrays; 2D over two axes of a 3D array; fixed-batch per-unit layouts as nd-fmm's |
-| Layout | column-major, row-major, strided views (sub-arrays, steps above 1), split with the part axis outermost and innermost |
+| Layout | column-major, row-major, strided views (sub-arrays, steps above 1), subviews of larger arrays and nested subviews, with sentinels in the elements between them, split with the part axis outermost and innermost |
 | Placement and policy | out of place preserving, out of place destroying, in place |
 | Sizes | 1, 2, 3, primes (17, 97, 1009), powers of two, products of 2, 3, 5 and 7 including nd-fmm's grids (140, 216, 336, 588, 1080) |
 
@@ -817,6 +852,9 @@ waits for is the complete one. When that release comes is Helmholtz decision D14
 | DC8 | Windows not supported | accepted |
 | DC9 | No new test dependencies: seeded `rand_chacha`, `std::thread::scope`, benchmarks as an example | accepted |
 | DC10 | 0.11.0 only with the complete implementation (Section 9) | accepted, as changed by the maintainers |
+| DC11 | Arrays and views reach FFTW through new traits `StridedRawAccess` and `StridedRawAccessMut` (storage and offset of the first element), implemented explicitly for every array and view type, subviews included; `RawAccess` keeps its stricter meaning (Section 4.3) | accepted (F1a review) |
+| DC12 | The in-place planner methods exist only on a planner without an input-policy request (Section 4.4) | accepted (F1a review) |
+| DC13 | An FFTW version string that does not parse counts as below the minimum (Section 4.10) | accepted (F1a review) |
 
 ### 10.2 DF6: why `fftw_source` is dropped
 
@@ -1001,6 +1039,16 @@ review.
   record it with the rule for reading SIMD from the version string, Section 7.7 makes
   SIMD-dependent tests skip on such builds rather than run on Linux only, and Section 4.10
   has the documentation tell Apple silicon users how to build FFTW with NEON.
+
+- **Draft 0.8** (2026-10-21), from the review of task F1a (`docs/fftw/tasks/F1-core.md`,
+  "Open questions"): `RawAccess::data` is `None` for most views and subviews do not
+  implement `RawAccess`, so the layouts and buffers of F2 could not reach the strided views
+  of goal 3. Arrays and views now reach FFTW through new traits `StridedRawAccess` and
+  `StridedRawAccessMut`, which return the backing storage and the offset of the first
+  element and cover subviews and nested views (Section 4.3, DC11); Section 4.8 states that
+  FFTW touches only the elements a layout addresses, and Section 7.2 adds subviews to the
+  layout cells. The in-place planner methods take no input-policy request (Section 4.4,
+  DC12). An unparsable run-time version string counts as too old (Section 4.10, DC13).
 
 ## Appendix B. Migration from 0.10
 
