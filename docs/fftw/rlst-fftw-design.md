@@ -1,6 +1,6 @@
 # FFTW interfaces for RLST: design proposal
 
-Draft 0.6, 2026-10-21. A proposal for the RLST maintainers, not a plan until it is signed
+Draft 0.7, 2026-10-21. A proposal for the RLST maintainers, not a plan until it is signed
 off. It records the decisions taken on 2026-10-21. It replaces RLST's FFTW interface
 completely: every transform family of FFTW 3.3's serial interface, plans that are
 independent of the arrays they run on, checked and sound execution, wisdom, threads,
@@ -18,7 +18,7 @@ for nd-fmm: Section 11 lists open points and options for nd-fmm's own review.
 In the RLST repository this document is `docs/fftw/rlst-fftw-design.md`; the task briefs
 are in `docs/fftw/tasks/` and the workflow in `docs/fftw/README.md`.
 
-What draft 0.6 changes, for the start of the implementation:
+What drafts 0.6 and 0.7 change, for the start of the implementation:
 
 - **Work plan** (Section 9): the removal of `fftw_source` and `fftw_mkl` moves from F7 to
   F1; the 0.10 module coexists with the new types until F7 and shares the new FFTW lock;
@@ -26,12 +26,15 @@ What draft 0.6 changes, for the start of the implementation:
 - **Raw layouts and buffers** (Section 4.3): plans execute on slices from F1 and on RLST
   arrays from F2; raw layouts need non-negative strides, equal strides in place, and
   outputs that address distinct elements.
+- **Versions and baseline** (draft 0.7, from task F0): Homebrew ships FFTW 3.3.11, which CI
+  tests on macOS beside Ubuntu's 3.3.10 on Linux (Sections 2.4, 3 item 9, 4.10, 7.7, DF8);
+  the baseline commit is corrected, and the integration branch's version is 0.11.0-dev.
 
 Every decision for the RLST maintainers and every design choice is settled (Section 10).
 This document makes no decisions for nd-fmm (Section 11). Earlier drafts' changes are
 listed in Appendix A.
 
-> **Baseline.** github.com/tbetcke/rlst, tag v0.10.3 (commit 02eb2ec, 2026-10-21; crates.io
+> **Baseline.** github.com/tbetcke/rlst, tag v0.10.3 (commit 1f5ab87, 2026-10-21; crates.io
 > 0.10.3, whose `repository` field points there). Its FFTW code is identical to 0.10.2's
 > (CHANGELOG 0.10.3: no code changes): `rlst/src/fftw.rs`, `rlst/src/fftw/c2c_inplace.rs`,
 > `rlst/src/fftw/r2r_inplace.rs`, `rlst/src/chebychev.rs`, `rlst/src/doc/optional_integrations.rs`,
@@ -39,6 +42,9 @@ listed in Appendix A.
 > older GitHub repository (github.com/linalg-rs/rlst, 0.4.0-dev, last push 2025-12-15) are
 > both archived and are not the baseline. CI is GitHub Actions on ubuntu-24.04 with a single
 > workflow, `.github/workflows/run-tests.yml`, whose commands `CLAUDE.md` must mirror.
+> `main` then received CI clean-up, this design and the workspace version 0.11.0-dev, none
+> of which changes FFTW code; the integration branch `fftw-0.11` starts from that `main`
+> (commit dc572e5, `docs/fftw/F0-findings.md`), so its crates carry version 0.11.0-dev.
 
 ## 1. Goals and non-goals
 
@@ -138,7 +144,7 @@ execute functions outward, and the old one is removed (DF1).
 
 | Back end | What it links | Notes |
 | --- | --- | --- |
-| `fftw_system` | the system's `libfftw3` and `libfftw3f`, any version pkg-config finds | Ubuntu 24.04 (`fftw-3.3.10-sse2-avx`) and Homebrew ship 3.3.10. The threads libraries (`libfftw3_threads`, `libfftw3f_threads`) have no pkg-config files and are not linked today. |
+| `fftw_system` | the system's `libfftw3` and `libfftw3f`, any version pkg-config finds | Ubuntu 24.04 ships 3.3.10 (`fftw-3.3.10-sse2-avx`) and Homebrew 3.3.11. The threads libraries (`libfftw3_threads`, `libfftw3f_threads`) have no pkg-config files and are not linked today. |
 | `fftw_source` | FFTW 3.3.8, built by fftw-src 0.8.0, statically | `configure` runs with `--with-pic --enable-static --disable-doc` (and `--enable-single`) only: **no SIMD and no threads library**. Without SIMD, `fftw_alignment_of` returns 0 for every pointer. 3.3.8 predates the fixes of 3.3.9 and 3.3.10 (Section 3 item 9). Removed in 0.11 (DF6). |
 | `fftw_mkl` | Intel MKL's FFTW3 wrappers, through intel-mkl-src 0.8.1 | A documented subset of FFTW (Section 3 item 10). Removed in 0.11 (DF5). |
 
@@ -220,7 +226,8 @@ string is `fftw-3.3.10-sse2-avx`.
    `fftw_make_planner_thread_safe`: 3.3.5, working from 3.3.6. `fftw_planner_nthreads` and
    `fftw_threads_set_callback`: 3.3.9. AVX-512 alignment and wisdom fixed: 3.3.9. A
    segfault from unaligned accesses of 2-way SIMD (SSE2 in double precision) in rare
-   strided r2c cases fixed: 3.3.10.
+   strided r2c cases fixed: 3.3.10. `fftw_copy_plan`, SVE and LoongArch SIMD, and cycle
+   counters for Apple ARM and RISC-V: 3.3.11, which lists no correctness fixes.
 10. **MKL's FFTW3 wrappers** (Intel oneMKL developer reference, "Using FFTW3 Wrappers"),
     kept as background for a later MKL back end; this design does not use them (DF5).
     Not supported: c2r and r2c with split complex storage; the r2r kinds R2HC, HC2R and DHT
@@ -492,8 +499,9 @@ Forward and Backward, which belong to `Direction`.
 - `build.rs` reads the version of `fftw3` and `fftw3f` from pkg-config and fails with a
   clear message below **3.3.4** (`fftw_sprint_plan`, used by fingerprints), or below
   **3.3.6** when `fftw_threads` is on (a working `make_planner_thread_safe`).
-- 3.3.10 is recommended and is the version CI tests on Linux and macOS; the documentation
-  lists the fixes of 3.3.9 and 3.3.10 (Section 3 item 9).
+- 3.3.10 or later is recommended, since 3.3.10 has the last correctness fixes. CI tests
+  3.3.10 on Linux (Ubuntu 24.04) and 3.3.11 on macOS (Homebrew); the documentation lists
+  the fixes of 3.3.9 and 3.3.10 (Section 3 item 9).
 - `fftw::version()` returns FFTW's own version string, through RLST's declaration of the
   `fftw_version` symbol (fftw-sys does not bind it). It is checked at the first planner call,
   which covers the Homebrew fallback, where pkg-config reports no version.
@@ -709,7 +717,7 @@ already does), which runs each case in a fresh child process:
 GitHub Actions, in `run-tests.yml`, with `CLAUDE.md`'s validation list updated to match:
 
 - **F8a**: ubuntu-24.04 with `fftw_system` (`libfftw3-dev`, FFTW 3.3.10), with and without
-  `fftw_threads`; macOS with Homebrew's FFTW; the default build, with a check that
+  `fftw_threads`; macOS with Homebrew's FFTW (3.3.11); the default build, with a check that
   `cargo tree -e normal` lists no `fftw-sys`; doctests; `cargo doc` with `--cfg docsrs`.
 - **F8b**: benchmarks (`examples/fftw_bench.rs`, with `required-features`, no new
   dependency) of a batched plan against a loop, split against
@@ -776,7 +784,7 @@ waits for is the complete one. When that release comes is Helmholtz decision D14
 | DF5 | MKL | **Settled**: out of scope for now; `fftw_mkl` removed in 0.11; a later MKL back end would be an addition |
 | DF6 | The source back end | **Settled**: `fftw_source` dropped; FFTW comes from the system only (Section 10.2) |
 | DF7 | The lock across copies of RLST in one build | **Settled**: the limit is documented (Section 4.7) |
-| DF8 | Minimum system FFTW | **Settled**: 3.3.4 to build, 3.3.6 with `fftw_threads`, 3.3.10 recommended and tested |
+| DF8 | Minimum system FFTW | **Settled**: 3.3.4 to build, 3.3.6 with `fftw_threads`, 3.3.10 or later recommended; 3.3.10 (Linux) and 3.3.11 (macOS) tested |
 
 ### 10.1 Design choices
 
@@ -882,7 +890,7 @@ review.
   flags, the guru and 64-bit guru interfaces, new-array execute functions, wisdom,
   multi-threaded FFTW and thread safety, real-to-real kinds.
 - FFTW 3.3.8 sources: `kernel/align.c`, `kernel/kalloc.c`, `simd-support/simd-common.h`,
-  `dft/simd/common/genus.c`, `api/apiplan.c`; FFTW's NEWS for 3.3.4 to 3.3.10 and the
+  `dft/simd/common/genus.c`, `api/apiplan.c`; FFTW's NEWS for 3.3.4 to 3.3.11 and the
   current `simd-support/simd-common.h` (github.com/FFTW/fftw3).
 - FFTW's licence: https://fftw.org/doc/License-and-Copyright.html; non-free licences:
   https://tlo.mit.edu/technologies/fftw-fastest-fourier-transform-west
@@ -966,6 +974,13 @@ review.
   F1; the transition rule for the 0.10 module (the shared FFTW lock); slices as the
   low-level buffers from F1; the rules for raw layouts; F0 extended by CI version reports
   and a macOS job; task briefs in `docs/fftw/tasks/`.
+
+- **Draft 0.7** (2026-10-21), from the findings of task F0 (`docs/fftw/F0-findings.md`):
+  Homebrew ships FFTW 3.3.11, so Section 2.4, Section 3 item 9 (the additions of 3.3.11),
+  Section 4.10, Section 7.7 and DF8 name 3.3.10 or later as recommended and 3.3.10 (Linux)
+  and 3.3.11 (macOS) as tested; the baseline note gives v0.10.3's commit as 1f5ab87, not
+  02eb2ec, and records that `fftw-0.11` starts from `main` at dc572e5 with version
+  0.11.0-dev.
 
 ## Appendix B. Migration from 0.10
 

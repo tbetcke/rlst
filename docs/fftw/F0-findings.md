@@ -73,8 +73,10 @@ installs the same Homebrew formula and is expected to match.
 1. **Homebrew ships FFTW 3.3.11, not 3.3.10.** Section 2.4 says Homebrew ships 3.3.10, and
    Section 4.10 and DF8 call 3.3.10 "the version CI tests on Linux and macOS". Locally
    Homebrew installs 3.3.11, and the macOS runner will install whatever the formula is when
-   the job runs. The design says nothing about 3.3.11's changes. This is recorded as an open
-   question in `tasks/F0-baseline.md`.
+   the job runs. FFTW's NEWS lists no correctness fixes for 3.3.11; it adds `fftw_copy_plan`,
+   SVE and LoongArch SIMD, and cycle counters for Apple ARM and RISC-V. Resolved in design
+   draft 0.7: 3.3.10 or later is recommended, and CI tests 3.3.10 on Linux and 3.3.11 on
+   macOS.
 2. **Homebrew's FFTW on arm64 has no SIMD.** Homebrew's formula passes the SIMD options
    (`--enable-sse2 --enable-avx --enable-avx2`) only on Intel. On arm64 the version string
    has no SIMD suffix (`fftw-3.3.11`), and `fftw_alignment_of` and `fftwf_alignment_of`
@@ -90,7 +92,9 @@ installs the same Homebrew formula and is expected to match.
      is RLST's own and makes no FFI call.
 3. **The design's baseline note names the wrong commit.** The note at the top of the design
    gives v0.10.3 as commit `02eb2ec`. The tag v0.10.3 points to `1f5ab87`. `02eb2ec` is the
-   next commit on `main`, which removed two CI workflows.
+   next commit on `main`, which removed two CI workflows. It was followed by the design
+   documents and by `dc572e5`, which sets the workspace version to 0.11.0-dev. Corrected in
+   design draft 0.7.
 4. **CI did not run on pull requests into `fftw-0.11`.** `run-tests.yml` ran only for pushes
    and pull requests to `main`. F0 adds `fftw-0.11` to both triggers, so that pull requests
    into the integration branch, and pushes to it, run CI. The Linux job itself is unchanged
