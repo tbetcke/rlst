@@ -12,7 +12,7 @@ use crate::{
 
 use itertools::{Itertools, izip};
 
-use super::{FFTW_PLAN_INTERFACE, Fft, FftwPlanPtr, PlanInterfaceTrait};
+use super::{Fft, FftwPlanInterface, FftwPlanPtr, PlanInterfaceTrait, with_fftw};
 
 /// The direction of the C2C FFT
 #[derive(Copy, Clone)]
@@ -95,8 +95,8 @@ macro_rules! impl_c2c_inplace {
 
                 let data = arr.data_mut()?.as_mut_ptr();
 
-                let plan_ptr = unsafe {
-                    FFTW_PLAN_INTERFACE.lock().unwrap().$precision.create_c2c(
+                let plan_ptr = with_fftw(|_| unsafe {
+                    FftwPlanInterface::default().$precision.create_c2c(
                         NDIM as c_int,
                         shape.as_ptr(),
                         data,
@@ -104,7 +104,7 @@ macro_rules! impl_c2c_inplace {
                         direction as i32,
                         flags as u32,
                     )
-                };
+                });
 
                 if plan_ptr.is_null() {
                     None

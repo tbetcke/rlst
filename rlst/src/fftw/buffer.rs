@@ -23,7 +23,7 @@ pub(crate) mod sealed {
 /// for RLST arrays and views with [`StridedRawAccess`], subviews included, whose offsets count
 /// from their first element (task F2). The trait is sealed.
 ///
-/// ```no_run
+/// ```
 /// use rlst::c64;
 /// use rlst::fftw::FftBuffer;
 ///
@@ -37,7 +37,7 @@ pub(crate) mod sealed {
 pub trait FftBuffer<E>: sealed::Sealed<E> {
     /// A pointer to the first element.
     ///
-    /// ```no_run
+    /// ```
     /// use rlst::fftw::FftBuffer;
     ///
     /// let data = [1.0_f64, 2.0];
@@ -47,7 +47,7 @@ pub trait FftBuffer<E>: sealed::Sealed<E> {
 
     /// The number of elements.
     ///
-    /// ```no_run
+    /// ```
     /// use rlst::fftw::FftBuffer;
     ///
     /// let data = [1.0_f64, 2.0];
@@ -57,7 +57,7 @@ pub trait FftBuffer<E>: sealed::Sealed<E> {
 
     /// Whether the buffer has no elements.
     ///
-    /// ```no_run
+    /// ```
     /// use rlst::fftw::FftBuffer;
     ///
     /// let data: [f64; 0] = [];
@@ -73,7 +73,7 @@ pub trait FftBuffer<E>: sealed::Sealed<E> {
 /// Implemented for slices `[E]` and for mutable RLST arrays and views with
 /// [`StridedRawAccessMut`] (task F2). The trait is sealed.
 ///
-/// ```no_run
+/// ```
 /// use rlst::c64;
 /// use rlst::fftw::FftBufferMut;
 ///
@@ -87,7 +87,7 @@ pub trait FftBuffer<E>: sealed::Sealed<E> {
 pub trait FftBufferMut<E>: FftBuffer<E> {
     /// A mutable pointer to the first element.
     ///
-    /// ```no_run
+    /// ```
     /// use rlst::fftw::FftBufferMut;
     ///
     /// let mut data = [1.0_f64, 2.0];
@@ -106,17 +106,17 @@ impl<E> sealed::Sealed<E> for [E] {
 
 impl<E> FftBuffer<E> for [E] {
     fn as_ptr(&self) -> *const E {
-        todo!()
+        <[E]>::as_ptr(self)
     }
 
     fn len(&self) -> usize {
-        todo!()
+        <[E]>::len(self)
     }
 }
 
 impl<E> FftBufferMut<E> for [E] {
     fn as_mut_ptr(&mut self) -> *mut E {
-        todo!()
+        <[E]>::as_mut_ptr(self)
     }
 }
 

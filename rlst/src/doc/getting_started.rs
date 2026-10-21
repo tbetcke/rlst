@@ -117,10 +117,7 @@
 //!
 //! RLST optionally uses FFTW for one-, two-, and three-dimensional transforms. **FFTW is GPL
 //! licensed**, so distributing a binary linked to FFTW can impose GPL obligations. Enable the
-//! `fftw` feature together with exactly one linkage feature:
-//!
-//! - `fftw_system` links to a system installation of both single- and double-precision FFTW;
-//! - `fftw_source` builds and statically links FFTW;
-//! - `fftw_mkl` uses Intel MKL's FFTW-compatible interface, subject to MKL's license.
+//! `fftw_system` feature, which implies `fftw` and links to a system installation of both
+//! single- and double-precision FFTW.
 //!
 //! With the feature enabled, see the `rlst::fftw` module for transform examples.

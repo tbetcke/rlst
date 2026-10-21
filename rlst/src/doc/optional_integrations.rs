@@ -5,9 +5,9 @@
 //!
 //! # FFTW transforms
 //!
-//! Enable `fftw` together with exactly one backend feature: `fftw_system`, `fftw_source`, or
-//! `fftw_mkl`. The system backend needs both single- and double-precision FFTW libraries. FFTW is
-//! GPL-licensed; review the licensing implications before distributing linked binaries.
+//! Enable `fftw_system`, the only backend, which implies `fftw`. It needs both single- and
+//! double-precision FFTW libraries, version 3.3.4 or later. FFTW is GPL-licensed; review the
+//! licensing implications before distributing linked binaries.
 //!
 //! FFT plans store pointers into the planned array. Since RLST 0.7, `borrow_mut()`
 //! therefore returns an `FftMutGuard`: mutate elements through `data_mut()`, rather than replacing

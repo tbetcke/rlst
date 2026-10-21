@@ -7,7 +7,7 @@
 /// Neither is normalised, so a backward transform after a forward one multiplies the data by
 /// the logical size of the transform.
 ///
-/// ```no_run
+/// ```
 /// use rlst::fftw::Direction;
 ///
 /// let directions = [Direction::Forward, Direction::Backward];

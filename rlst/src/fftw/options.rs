@@ -10,7 +10,7 @@ use std::fmt;
 /// uses any wisdom of equal or greater rigor present in the process, so an `Estimate` plan
 /// made after a `Measure` plan of the same problem can be the `Measure` plan.
 ///
-/// ```no_run
+/// ```
 /// use rlst::fftw::Rigor;
 ///
 /// assert_eq!(Rigor::default(), Rigor::Estimate);
@@ -31,8 +31,12 @@ pub enum Rigor {
 
 impl fmt::Display for Rigor {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let _ = f;
-        todo!()
+        f.write_str(match self {
+            Rigor::Estimate => "estimate",
+            Rigor::Measure => "measure",
+            Rigor::Patient => "patient",
+            Rigor::Exhaustive => "exhaustive",
+        })
     }
 }
 

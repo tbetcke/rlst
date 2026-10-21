@@ -26,6 +26,9 @@
 #![cfg_attr(feature = "strict", deny(warnings), deny(unused_crate_dependencies))]
 #![warn(missing_docs)]
 
+#[cfg(all(feature = "fftw", not(feature = "fftw_system")))]
+compile_error!("the `fftw` feature needs a back end: enable `fftw_system`");
+
 pub mod base_types;
 #[cfg(feature = "fftw")]
 pub mod chebychev;
@@ -77,8 +80,14 @@ pub use dense::array::ZeroDimArray;
 /// Align memory along cache lines
 pub const CACHE_ALIGNED: usize = aligned_vec::CACHELINE_ALIGN;
 
-/// Align memory for FFTW. FFTW requires 16 bytes alignment
-pub const FFTW_ALIGNED: usize = 16;
+/// Align memory for FFTW plans, in bytes.
+///
+/// A plan of `rlst::fftw` (feature `fftw`) runs on buffers of the alignment class it was made for: the
+/// address of the first element modulo this constant, class 0 by default. Buffers allocated
+/// with this alignment, for example with `rlst_dynamic_array!(c64, shape | rlst::FFTW_ALIGNED)`
+/// or as an [`AlignedDynArray`](crate::dense::array::AlignedDynArray), have class 0. Equal
+/// classes modulo 64 imply equal alignment in FFTW's sense on every FFTW build.
+pub const FFTW_ALIGNED: usize = 64;
 
 /// Align memory along page lines
 ///
