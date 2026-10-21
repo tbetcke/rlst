@@ -4,9 +4,11 @@ on:
   push:
     branches:
       - main
+      - fftw-0.11
   pull_request:
     branches:
       - main
+      - fftw-0.11
 
 permissions:
   contents: read
@@ -36,6 +38,14 @@ jobs:
           sudo apt-get install -y libclang-dev cmake libfftw3-dev libopenblas-dev \
             openmpi-bin libopenmpi-dev libsuitesparse-dev
 
+      - name: Report FFTW
+        run: |
+          pkg-config --modversion fftw3 fftw3f
+          ls "$(pkg-config --variable=libdir fftw3)" | grep -E '^libfftw3f?_(threads|omp)' || true
+          printf '#include <fftw3.h>\n#include <stdio.h>\nint main(void){puts(fftw_version);return 0;}\n' > "$RUNNER_TEMP/fv.c"
+          cc "$RUNNER_TEMP/fv.c" $(pkg-config --cflags --libs fftw3) -o "$RUNNER_TEMP/fv"
+          "$RUNNER_TEMP/fv"
+
       - name: Format
         run: cargo fmt -- --check
 
@@ -58,3 +68,34 @@ jobs:
 
       - name: Build docs
         run: cargo doc --no-deps --features "mpi,fftw,fftw_system,strict"
+
+  run-tests-macos:
+    name: run-tests-macos
+    runs-on: macos-26
+    steps:
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - uses: actions/checkout@v6
+
+      - name: Cache Cargo artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install native dependencies
+        run: brew install fftw pkg-config
+
+      - name: Report FFTW
+        run: |
+          pkg-config --modversion fftw3 fftw3f
+          ls "$(pkg-config --variable=libdir fftw3)" | grep -E '^libfftw3f?_(threads|omp)' || true
+          printf '#include <fftw3.h>\n#include <stdio.h>\nint main(void){puts(fftw_version);return 0;}\n' > "$RUNNER_TEMP/fv.c"
+          cc "$RUNNER_TEMP/fv.c" $(pkg-config --cflags --libs fftw3) -o "$RUNNER_TEMP/fv"
+          "$RUNNER_TEMP/fv"
+
+      - name: Clippy
+        run: cargo clippy --features "fftw,fftw_system,strict" -- -D warnings
+
+      - name: Run unit tests
+        run: cargo test --features "fftw,fftw_system,strict"

@@ -51,8 +51,11 @@ The repository uses the Rust 2024 edition for `rlst` and `rlst-suitesparse`, and
 - `docs/fftw/` — the FFTW rework for 0.11: the design (`rlst-fftw-design.md`), the workflow
   and task status (`README.md`), and one brief per task (`tasks/`). See "FFTW rework (0.11)"
   below.
-- `.github/workflows/` — GitHub Actions CI on hosted `ubuntu-24.04` runners. `run-tests.yml` is
-  the authoritative validation matrix and the only workflow.
+- `.github/workflows/` — GitHub Actions CI on hosted runners. `run-tests.yml` is the
+  authoritative validation matrix and the only workflow. It runs on pushes and pull requests to
+  `main` and `fftw-0.11`, with two jobs: `run-tests` (the full feature matrix on `ubuntu-24.04`)
+  and `run-tests-macos` (FFTW Clippy and tests on arm64 `macos-26`). Both jobs first report the
+  FFTW that pkg-config finds: its version, the threads libraries beside it, and `fftw_version`.
 
 The guides in `rlst/src/doc/` are the best existing description of intended usage and double as
 doctests. Read the relevant one before changing a user-facing API, and update it when behavior
@@ -92,7 +95,9 @@ changes:
 - `nightly` — specialized configuration flag; follow existing code patterns before using it.
 
 On Linux, the CI feature matrix installs `libclang-dev`, CMake, OpenBLAS, FFTW, OpenMPI, and
-SuiteSparse. The normal test configuration links BLAS/LAPACK through the platform dev dependencies
+SuiteSparse. On macOS, CI installs FFTW and pkg-config with Homebrew (`brew install fftw
+pkg-config`) and runs Clippy and the tests with `fftw,fftw_system,strict`; it installs no MPI,
+SuiteSparse, or OpenBLAS. The normal test configuration links BLAS/LAPACK through the platform dev dependencies
 (`Accelerate` on macOS; system OpenBLAS on Linux). Do not assume MPI, FFTW, SuiteSparse, or their
 native libraries are available locally.
 
@@ -282,6 +287,10 @@ RUST_MIN_STACK=8388608 cargo test --features "mpi,fftw,fftw_system,strict"
 cargo test -p rlst-suitesparse
 python3 scripts/run_mpi_tests.py
 cargo doc --no-deps --features "mpi,fftw,fftw_system,strict"
+
+# The macOS CI job (Homebrew FFTW and pkg-config; BLAS/LAPACK through Accelerate)
+cargo clippy --features "fftw,fftw_system,strict" -- -D warnings
+cargo test --features "fftw,fftw_system,strict"
 
 # Work on the proc-macro crate directly
 cargo test -p rlst-proc-macro
