@@ -4,7 +4,7 @@ This directory holds everything needed to implement the new FFTW interface of RL
 
 | File | What it is |
 | --- | --- |
-| `rlst-fftw-design.md` | The design, draft 0.6. Authoritative for the new interface; its Section 10 records the settled decisions and design choices. |
+| `rlst-fftw-design.md` | The design, draft 0.7. Authoritative for the new interface; its Section 10 records the settled decisions and design choices. |
 | `tasks/F0-baseline.md` | Brief for task F0: integration branch, baseline, CI version reports, a macOS job. |
 | `tasks/F1-core.md` | Brief for task F1: the core of the new interface, with c2c plans on raw layouts and slices. |
 | `F0-findings.md` | Written by task F0: the baseline and the FFTW found on each CI runner. |
@@ -39,7 +39,7 @@ so that every later family is written against the separate-process determinism t
 
 | Task | Content (design, Section 9) | Brief | Status | Pull requests |
 | --- | --- | --- | --- | --- |
-| F0 | Baseline, integration branch, CI version reports, macOS job | `tasks/F0-baseline.md` | not started | |
+| F0 | Baseline, integration branch, CI version reports, macOS job | `tasks/F0-baseline.md` | done | [#2](https://github.com/tbetcke/rlst/pull/2) |
 | F1 | Core: features, types, lock, raw layouts, c2c plans, checked execution on slices, fingerprints | `tasks/F1-core.md` | not started | |
 | F2 | Layouts from RLST arrays and views | to be written | not started | |
 | F4 | Concurrency and determinism, harness-free test binary | to be written | not started | |

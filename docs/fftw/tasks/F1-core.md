@@ -181,7 +181,9 @@ remedy where there is one:
   Read them with `CStr::from_ptr`; the `SAFETY:` comment states that FFTW defines them as
   NUL-terminated constant arrays.
 - `pub fn version() -> &'static str` returns the double-precision string, for example
-  `fftw-3.3.10-sse2-avx`. A crate-private parser extracts (major, minor, patch).
+  `fftw-3.3.10-sse2-avx`. A crate-private parser extracts (major, minor, patch) and whether
+  the build has SIMD: a suffix other than `-fma` (design Section 3 item 6). Later tests
+  that depend on SIMD skip on builds without it (design Section 7.7).
 - `#[non_exhaustive] pub enum Backend { System }` and `pub fn backend() -> Backend`.
 
 ### 6. Base types
@@ -205,7 +207,8 @@ remedy where there is one:
 - the lock recovers after a panic inside `with_fftw` (`std::panic::catch_unwind`), and
   planning with the 0.10 module still works afterwards;
 - version parsing of `fftw-3.3.10-sse2-avx`, `fftw-3.3.8` and a string with an unknown
-  suffix; `version()` at run time starts with `fftw-3.`;
+  suffix; SIMD detection for `fftw-3.3.10-sse2-avx` and `fftw-3.3.10-neon` (SIMD) and for
+  `fftw-3.3.11` and `fftw-3.3.10-fma` (none); `version()` at run time starts with `fftw-3.`;
 - `AlignmentClass` of pointers at offsets 0, 8, 16 and 64 bytes from a 64-byte-aligned
   allocation;
 - `PLAN_ALIGNMENT == 64`, as a compile-time assertion;
@@ -434,6 +437,9 @@ All three:
   the planner takes `c_uint` flags and a `c_int` sign.
 - **No `fftw_alignment_of`.** Classes are computed in Rust (design Section 4.6); do not call
   FFTW to check alignment.
+- **No SIMD on the macOS runner.** Homebrew's FFTW on Apple silicon has no SIMD, so
+  `fftw_alignment_of` is always 0 there and plans use scalar codelets. No F1 test may assume
+  SIMD; one that must skips through the SIMD helper (design Section 7.7).
 - **Raw pointers from `&`.** Only `Preserving` plans may receive a pointer derived from a
   shared borrow, and only because `FFTW_PRESERVE_INPUT` was passed.
 - **`compile_fail` tests** pass for any compile error; the passing twin is what makes them
