@@ -126,6 +126,59 @@
 //! to access the array data directly without other threads being able to write at the same time.
 //! Mutable access is intentionally limited to the stored elements: the array itself cannot be
 //! replaced while a plan retains pointers into its allocation.
+//!
+//! ## New interface (0.11, in progress)
+//!
+//! RLST 0.11 replaces the interface above. Until it is complete, the new types live in this
+//! module beside the 0.10 ones, which keep their names and share the new FFTW lock; the 0.10
+//! types are removed when the new interface is complete. So far the new interface has
+//! complex-to-complex plans on slices:
+//!
+//! - [`Layout`], made from [`Dim`]s and a [`Placement`]: transform and batch dimensions with
+//!   strides, validated and normalised;
+//! - [`Planner`], a builder with [`Rigor`], wisdom-only, unaligned, time-limit, alignment-class
+//!   and scratch options, whose input-policy requests ([`DefaultRequest`],
+//!   [`PreserveRequest`], [`DestroyRequest`]) decide a plan's policy;
+//! - [`Plan`], of precision [`FftwReal`], family [`C2c`] and policy [`Preserving`],
+//!   [`Destroying`] or [`InPlace`], which runs on any buffers that fit its layout and
+//!   [`AlignmentClass`]es, from any thread, with [`Plan::description`] and
+//!   [`Plan::fingerprint`];
+//! - [`FftBuffer`] and [`FftBufferMut`], implemented for slices;
+//! - [`FftwError`] and [`Side`]; [`Direction`]; [`PLAN_ALIGNMENT`]; [`Backend`],
+//!   [`backend`] and [`version`].
+//!
+//! Plans are made through FFTW's 64-bit guru interface, on scratch buffers unless a `*_on`
+//! method is used, so planning never touches user data. Execution checks the buffers against
+//! the plan before calling FFTW and takes no lock. Layouts from RLST arrays, split storage,
+//! the real-to-complex and real-to-real families, wisdom and threads follow.
+//!
+//! ```
+//! use rlst::{c64, rlst_dynamic_array};
+//! use rlst::fftw::{Dim, Direction, Layout, Placement, Planner};
+//!
+//! // Three transforms of length 8, one after the other.
+//! let layout = Layout::new(
+//!     &[Dim { n: 8, is: 1, os: 1 }],
+//!     &[Dim { n: 3, is: 8, os: 8 }],
+//!     Placement::OutOfPlace,
+//! )?;
+//! let forward = Planner::<f64>::new().c2c(&layout, Direction::Forward)?;
+//! let backward = Planner::<f64>::new().c2c(&layout, Direction::Backward)?;
+//!
+//! let mut data = rlst_dynamic_array!(c64, [24] | rlst::FFTW_ALIGNED);
+//! let mut spectrum = rlst_dynamic_array!(c64, [24] | rlst::FFTW_ALIGNED);
+//! let mut result = rlst_dynamic_array!(c64, [24] | rlst::FFTW_ALIGNED);
+//! data.fill_from_seed_equally_distributed(0);
+//!
+//! forward.execute(data.data().unwrap(), spectrum.data_mut().unwrap())?;
+//! backward.execute(spectrum.data().unwrap(), result.data_mut().unwrap())?;
+//!
+//! // The round trip multiplies by the transform length.
+//! for (x, y) in data.data().unwrap().iter().zip(result.data().unwrap()) {
+//!     assert!((8.0 * x - y).norm() < 1e-12);
+//! }
+//! # Ok::<(), rlst::fftw::FftwError>(())
+//! ```
 
 pub mod c2c_inplace;
 pub mod r2r_inplace;
@@ -147,6 +200,8 @@ mod options;
 mod plan;
 mod planner;
 mod real;
+#[cfg(test)]
+mod test_support;
 mod version;
 
 use lock::with_fftw;

@@ -1,5 +1,6 @@
 //! Planning rigor and the input-policy requests of the planner's type state.
 
+use std::ffi::c_uint;
 use std::fmt;
 
 /// How hard FFTW searches for a fast plan.
@@ -29,6 +30,18 @@ pub enum Rigor {
     Exhaustive,
 }
 
+impl Rigor {
+    /// FFTW's flag for the rigor.
+    pub(crate) fn flag(self) -> c_uint {
+        match self {
+            Rigor::Estimate => fftw_sys::FFTW_ESTIMATE,
+            Rigor::Measure => fftw_sys::FFTW_MEASURE,
+            Rigor::Patient => fftw_sys::FFTW_PATIENT,
+            Rigor::Exhaustive => fftw_sys::FFTW_EXHAUSTIVE,
+        }
+    }
+}
+
 impl fmt::Display for Rigor {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
@@ -45,7 +58,7 @@ impl fmt::Display for Rigor {
 /// For c2c, the plan preserves its input ([`Preserving`](super::Preserving)). This is the
 /// type parameter of [`Planner::new`](super::Planner::new); it is never constructed.
 ///
-/// ```no_run
+/// ```
 /// use rlst::fftw::{DefaultRequest, Planner};
 ///
 /// let planner: Planner<f64, DefaultRequest> = Planner::new();
@@ -60,7 +73,7 @@ pub enum DefaultRequest {}
 /// For c2c this is FFTW's default as well. It is a type parameter of the planner and is never
 /// constructed.
 ///
-/// ```no_run
+/// ```
 /// use rlst::fftw::{Planner, PreserveRequest};
 ///
 /// let planner: Planner<f64, PreserveRequest> = Planner::new().preserve_input();
@@ -75,7 +88,7 @@ pub enum PreserveRequest {}
 /// Plans made with it are [`Destroying`](super::Destroying) and take their input mutably. It
 /// is a type parameter of the planner and is never constructed.
 ///
-/// ```no_run
+/// ```
 /// use rlst::fftw::{DestroyRequest, Planner};
 ///
 /// let planner: Planner<f64, DestroyRequest> = Planner::new().may_destroy_input();

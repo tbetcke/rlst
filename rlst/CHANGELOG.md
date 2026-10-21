@@ -30,6 +30,25 @@ by default. Equal classes modulo 64 imply equal alignment for FFTW on every buil
 **Migration:** none for code that only passes the constant to RLST's allocation; code that
 relied on its value being 16 must use 16 directly.
 
+### New FFTW interface (in progress)
+
+A new FFTW interface replaces the 0.10 one: plans independent of the arrays they run on,
+checked and sound execution, input policies in the type of a plan, alignment classes and plan
+fingerprints. This entry is completed, with migration notes, at the release. So far it
+provides complex-to-complex plans on slices (`Layout`, `Planner`, `Plan` and their companions
+in `rlst::fftw`); the 0.10 types stay beside them, unchanged, until the new interface is
+complete.
+
+### New traits `StridedRawAccess` and `StridedRawAccessMut`
+
+`rlst::StridedRawAccess::storage` and `StridedRawAccessMut::storage_mut` return the backing
+storage of an array or view and the offset of its first element; with the view's strides,
+element `i` is `storage[offset + Σ i[k] · stride[k]]`. Unlike `RawAccess::data`, which holds
+exactly the array's elements and is `None` for most views, they cover subviews and every
+slice, at the price of a slice that may hold elements of other views. The traits are
+declared in this release cycle and implemented for RLST's arrays and views with the new FFTW
+layouts. `RawAccess` does not change.
+
 ### FFTW: one lock for all FFTW calls
 
 The 0.10 FFTW module now plans and destroys its plans under the same process-wide lock as the
