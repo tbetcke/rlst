@@ -4,13 +4,13 @@ enable_tracing = []
 
 [package]
 name = "rlst-proc-macro"
-version = "0.10.2"
+version = "0.10.3"
 authors = ["The rlst contributors"]
 edition = "2021"
 description = "Proc macros for a Rust native linear algebra library."
 license = "MIT / Apache-2.0"
-homepage = "https://codeberg.org/rlst"
-repository = "https://codeberg.org/rlst/rlst"
+homepage = "https://github.com/tbetcke/rlst"
+repository = "https://github.com/tbetcke/rlst"
 readme = "README.md"
 keywords = ["numerics"]
 categories = ["mathematics", "science"]

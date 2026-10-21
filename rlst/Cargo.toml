@@ -1,13 +1,13 @@
 [package]
 name = "rlst"
-version = "0.10.2"
+version = "0.10.3"
 authors = ["The rlst contributors"]
 edition = "2024"
 description = "A Rust native linear algebra library."
 readme = "../README.md"
 license = "MIT / Apache-2.0"
-homepage = "https://codeberg.org/rlst"
-repository = "https://codeberg.org/rlst/rlst"
+homepage = "https://github.com/tbetcke/rlst"
+repository = "https://github.com/tbetcke/rlst"
 keywords = ["numerics"]
 categories = ["mathematics", "science"]
 
@@ -15,7 +15,7 @@ categories = ["mathematics", "science"]
 name = "rlst"
 
 [dependencies]
-rlst-proc-macro = { path = "../proc-macro", version = "0.10.2" }
+rlst-proc-macro = { path = "../proc-macro", version = "0.10.3" }
 num = { version = "0.4", features = ["serde", "rand"] }
 rand = "0.10"
 rand_chacha = "0.10"

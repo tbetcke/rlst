@@ -5,17 +5,18 @@ on:
   schedule:
   - cron: "1 0 * * FRI"
 
+permissions:
+  contents: read
+
 jobs:
   run-dependency-checks-rust:
     name: run-dependency-checks
-    runs-on: docker
+    runs-on: ubuntu-24.04
     steps:
       - name: Install Rust
-        uses: https://github.com/dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@stable
 
       - uses: actions/checkout@v6
-        with:
-          submodules: "true"
 
       - name: Install cargo-upgrades
         run: cargo install cargo-upgrades
