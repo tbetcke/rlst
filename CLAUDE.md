@@ -48,6 +48,9 @@ The repository uses the Rust 2024 edition for `rlst` and `rlst-suitesparse`, and
   and tests; `build.rs` discovers native SuiteSparse.
 - `scripts/run_mpi_tests.py` — bounded MPI regression runner; `scripts/test_run_mpi_tests.py`
   tests runner process cleanup without requiring MPI.
+- `docs/fftw/` — the FFTW rework for 0.11: the design (`rlst-fftw-design.md`), the workflow
+  and task status (`README.md`), and one brief per task (`tasks/`). See "FFTW rework (0.11)"
+  below.
 - `.github/workflows/` — GitHub Actions CI on hosted `ubuntu-24.04` runners. `run-tests.yml` is
   the authoritative validation matrix and the only workflow.
 
@@ -64,6 +67,7 @@ changes:
 | Spaces, operators, elements, frames, solvers | `doc/abstract_linear_algebra.rs` |
 | MPI | `doc/distributed_computations.rs` |
 | FFTW, Burn | `doc/optional_integrations.rs` |
+| FFTW rework for 0.11 (in progress) | `docs/fftw/rlst-fftw-design.md`, `docs/fftw/tasks/` |
 
 ## Features and native dependencies
 
@@ -75,7 +79,9 @@ changes:
   (system FFTW), `fftw_source` (build FFTW), or `fftw_mkl` (Intel MKL). System discovery requires
   both `fftw3` and `fftw3f`, using `pkg-config` with a native macOS Homebrew fallback. Set
   `PKG_CONFIG_PATH` for custom installations; cross-compilation must use target libraries, not
-  host Homebrew paths.
+  host Homebrew paths. This interface is being replaced for 0.11 on the `fftw-0.11` branch:
+  task F1 removes `fftw_source` and `fftw_mkl` and makes `fftw_system` the only back end
+  (see "FFTW rework (0.11)" below). Update this entry when F1 merges.
 - `burn` — enables the optional Burn integration.
 - `enable_tracing` — enables tracing macro support and `log`.
 - `blis_threading`, `openblas_threading`, `mkl_threading` — link that backend's thread-control
@@ -188,6 +194,46 @@ that file.
   two-pass Gram-Schmidt step shared by GMRES and the generic QR is `orthogonalize_twice` in
   `operator/frame/mod.rs`.
 
+## FFTW rework (0.11)
+
+RLST's FFTW interface is being rewritten for 0.11. `docs/fftw/rlst-fftw-design.md` is the
+design and is authoritative for the new interface; `docs/fftw/README.md` describes the
+workflow and tracks the status of every task; `docs/fftw/tasks/` holds one brief per task
+(F0, F1, …), written before the task starts.
+
+- Work happens on the `fftw-0.11` branch, one pull request per task (or the few pull
+  requests its brief lists) into that branch. `main` keeps receiving 0.10.x patch
+  releases; `fftw-0.11` is merged into `main` only for the 0.11.0 release, once every task
+  is done (design, Section 9).
+- Start a task by reading its brief and the design sections the brief lists. The brief's
+  acceptance list is the definition of done; copy it into the pull request description and
+  tick it.
+- The decisions and design choices of the design's Section 10 are settled; do not reopen
+  them in code. If the implementation shows that the design is wrong, unclear or
+  incomplete, stop and report it, and record it under "Open questions" in the brief, rather
+  than deviating silently. Design changes go into the design document, with an entry in its
+  Appendix A.
+- No compatibility with the 0.10 FFTW API is required. Until task F7 the 0.10 module stays
+  in `rlst::fftw` beside the new types, unchanged except that its planning and plan
+  destruction use the new FFTW lock.
+- Rules for all new FFTW code:
+  - every FFTW call other than plan execution goes through the FFTW lock (design,
+    Section 4.7);
+  - every `unsafe` FFI block has a `SAFETY:` comment that names the conditions it relies on,
+    in particular FFTW's new-array conditions (design, Section 3 item 1);
+  - never pass FFTW a pointer derived from a shared reference for memory that the plan may
+    write (design, Section 4.4);
+  - ordinary unit tests plan with `Rigor::Estimate` only: FFTW's wisdom is global to the
+    process, so a `Measure` plan in one test can change another test's `Estimate` plan
+    (design, Section 3 item 4). Tests that need other rigor, or that depend on the wisdom
+    present, belong in the harness-free determinism test binary of task F4;
+  - no new dependencies beyond those the design names (`libc`, from F1).
+- Section 11 of the design lists open points for nd-fmm, the first user of the new
+  interface. They are not RLST tasks and are not decided in this repository.
+- When a task's pull request merges, update its row in the status table of
+  `docs/fftw/README.md`, and keep this file's feature and validation sections in step with
+  what the task changed.
+
 ## Tests and documentation
 
 - Put unit tests in the relevant source module under `#[cfg(test)]`. Existing numerical tests
@@ -256,3 +302,5 @@ Use `cargo fmt --all` to apply formatting after Rust changes.
 4. Inspect `git diff --check` and `git status`; ensure generated artifacts and `Cargo.lock` are not
    included.
 5. Use a small, descriptive commit message (for example, `fix(sparse): validate CSR row offsets`).
+6. For an FFTW rework task, name the task in the pull request title (for example,
+   `feat(fftw): F1b core types and FFTW lock`) and include the brief's ticked acceptance list.
