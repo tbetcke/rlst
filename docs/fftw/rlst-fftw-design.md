@@ -1,6 +1,6 @@
 # FFTW interfaces for RLST: design proposal
 
-Draft 0.8, 2026-10-21. A proposal for the RLST maintainers, not a plan until it is signed
+Draft 0.9, 2026-10-21. A proposal for the RLST maintainers, not a plan until it is signed
 off. It records the decisions taken on 2026-10-21. It replaces RLST's FFTW interface
 completely: every transform family of FFTW 3.3's serial interface, plans that are
 independent of the arrays they run on, checked and sound execution, wisdom, threads,
@@ -18,7 +18,7 @@ for nd-fmm: Section 11 lists open points and options for nd-fmm's own review.
 In the RLST repository this document is `docs/fftw/rlst-fftw-design.md`; the task briefs
 are in `docs/fftw/tasks/` and the workflow in `docs/fftw/README.md`.
 
-What drafts 0.6 to 0.8 change, for the start of the implementation:
+What drafts 0.6 to 0.9 change, for the start of the implementation:
 
 - **Work plan** (Section 9): the removal of `fftw_source` and `fftw_mkl` moves from F7 to
   F1; the 0.10 module coexists with the new types until F7 and shares the new FFTW lock;
@@ -34,6 +34,12 @@ What drafts 0.6 to 0.8 change, for the start of the implementation:
   cover subviews (Sections 4.3, 4.8 and 7.2, DC11); the in-place planner methods take no
   input-policy request (Section 4.4, DC12); an unparsable FFTW version string counts as too
   old (Section 4.10, DC13).
+- **Arrays and views at execution** (draft 0.9, from the F2 brief): equal c2c shapes are
+  checked when a layout is built from arrays (DC14); execution pairs the axes of input and
+  output arrays and documents that a plan describes memory, not logical axes (DC15); arrays
+  that the distinct-output rule rejects (DC16); `FftBuffer::len` of an array (DC17); inherent
+  `Array::storage()` and `storage_mut()` (DC18); the offset of a view without elements
+  (DC19).
 
 Every decision for the RLST maintainers and every design choice is settled (Section 10).
 This document makes no decisions for nd-fmm (Section 11). Earlier drafts' changes are
@@ -269,7 +275,7 @@ rlst::fftw
 ├── fingerprint  Plan::fingerprint, Plan::description
 ├── wisdom       export and import (strings, files), forget, system wisdom
 ├── threads      (feature fftw_threads) initialisation, make_planner_thread_safe
-├── backend      Backend (System, Source), version()
+├── backend      Backend (System), version()
 └── error        FftwError
 ```
 
@@ -338,9 +344,16 @@ plan.execute(&box_in, &mut box_out)?;
   `permute_axes()` and `reverse_axis()` do not implement `Stride` and are not covered. A
   mutable view hands out its parent's whole storage, which is memory-safe, since the view
   holds the parent's exclusive borrow, but no longer a strict boundary; the documentation
-  says so.
-- **Validation by family** happens at planning: c2c needs complex arrays of equal shape;
-  r2c needs a real input and a complex output whose extent along the **last entry of
+  says so. `Array::storage()` and `Array::storage_mut()`, inherent methods beside `data()`
+  and `data_mut()`, give users the same access without naming the implementation type
+  (DC18). For a view without elements the offset may lie past the end of the slice, for
+  example a subview of shape [0, 0] at the far corner of its parent, and must not be used to
+  index it; the traits' contract says so (DC19).
+- **Validation by family.** c2c needs complex arrays of equal shape. The layout functions
+  check it when they build the layout, and return `InvalidLayout` naming the axis (DC14): a
+  `Layout` records one extent per dimension, not the shapes of both sides, so the planner
+  cannot. F5 relaxes the check on the halved axis for r2c and c2r, and adds to `Layout` what
+  its planner then needs. r2c needs a real input and a complex output whose extent along the **last entry of
   `axes`** (for `along_axis`, the axis itself) is n/2 + 1; that axis is the halved one,
   whatever the memory order. c2r is the inverse; r2r needs real arrays of equal shape and
   one `R2rKind` per entry of `axes`, in the same order. Kinds therefore belong to RLST axes by construction, which removes the 0.10
@@ -366,8 +379,12 @@ plan.execute(&box_in, &mut box_out)?;
   strides, as FFTW requires; and the output must address distinct elements. That last
   condition is checked by a sufficient rule: with the dimensions of extent above 1 sorted
   by output stride, every stride is positive and at least the extent times the stride of
-  the next smaller one. Layouts
-  built from RLST arrays satisfy all three by construction.
+  the next smaller one. Layouts built from RLST arrays satisfy the first two by
+  construction, and usually the third. `StridedBaseArray::new` accepts any strides that map
+  indices to distinct offsets, such as shape [2, 2] with strides [2, 3] (offsets 0, 2, 3 and
+  5), which the sufficient rule rejects, since 3 is below 2 · 2. Such arrays are rejected
+  with `InvalidLayout` as outputs and in place, and accepted as inputs, whose elements need
+  not be distinct; the documentation says so (DC16).
 - **Buffers.** Plans execute on slices, with the layout's offsets counted from the start of
   the slice (F1), and on RLST arrays and views through their strided storage, with the
   offsets counted from the view's first element (F2). Slices are the low-level form, for
@@ -491,9 +508,14 @@ poisoned lock is recovered rather than propagated.
 Before every FFTW call, in O(rank) time:
 
 1. element types and family, by the types of `Plan` and of the arrays (compile time);
-2. for an array, its normalised shape and strides equal the plan's layout, including the
-   part-axis stride of split storage, and the offset of its first element plus the layout's
-   span fits its strided storage; for a slice, the layout's span fits within it;
+2. for an array, its shape and strides match its side of the plan's layout: each transform
+   dimension is matched by an axis of the same extent and, above extent 1, the same stride,
+   and the other axes, normalised on that side alone, equal the layout's batch on that side,
+   including the part-axis stride of split storage. When both buffers are arrays of the same
+   rank, their axes are also paired by index: equal shapes, each transform dimension matched
+   by one axis with its extent and both strides, and the other axes, normalised together,
+   equal to the layout's batch (DC15). The offset of the array's first element plus the
+   layout's span fits its strided storage. For a slice, the layout's span fits within it;
 3. the alignment class of every data pointer equals the plan's, unless the plan is
    unaligned;
 4. placement: an in-place plan gets one array; for an out-of-place plan the address spans
@@ -508,6 +530,15 @@ other rows of a matrix around a subview. FFTW reads and writes only the elements
 addresses, never the gaps between them, as its advanced interface relies on for
 transforming parts of larger arrays; execution's safety argument states this, and F2's
 tests check it with sentinel values in the gaps.
+
+A plan describes memory, not logical axes (DC15). No check on strides can tell logical axes
+apart: a plan made along axis 0 of a square column-major array transforms along axis 1 of a
+square row-major array, whose memory layout is the same. Without the pairing of item 2, a
+plan from a column-major input of shape [4, 2, 3] and an output of the same shape with
+strides [1, 12, 4] would also accept column-major arrays of shape [4, 3, 2], and send the
+transform of input column [:, 1, 0] to output column [:, 0, 1]. The pairing rejects that
+when both buffers are arrays; a call that mixes a slice and an array is checked per side
+only. The documentation of the layout functions and of execution states both points.
 
 ### 4.9 Scaling
 
@@ -548,7 +579,10 @@ Forward and Backward, which belong to `Direction`.
   that does not parse counts as below the minimum: planning returns `VersionTooOld`, which
   carries the string (DC13).
 - When `DOCS_RS` is set, `build.rs` skips discovery: rustdoc does not link, so docs.rs can
-  build with `fftw_system` without FFTW installed.
+  build with `fftw_system` without FFTW installed. The build still compiles RLST's build
+  dependencies, and `bindgen` needs `libclang` for that (found while checking F1 in a
+  container without it), so the docs.rs build image must provide `libclang`; F7, which adds
+  the docs.rs metadata, checks that it does.
 
 **`fftw_system`** links `fftw3` and `fftw3f` as today. With `fftw_threads` it also links
 `fftw3_threads` and `fftw3f_threads`, never the `_omp` libraries. Those libraries have no
@@ -855,6 +889,12 @@ waits for is the complete one. When that release comes is Helmholtz decision D14
 | DC11 | Arrays and views reach FFTW through new traits `StridedRawAccess` and `StridedRawAccessMut` (storage and offset of the first element), implemented explicitly for every array and view type, subviews included; `RawAccess` keeps its stricter meaning (Section 4.3) | accepted (F1a review) |
 | DC12 | The in-place planner methods exist only on a planner without an input-policy request (Section 4.4) | accepted (F1a review) |
 | DC13 | An FFTW version string that does not parse counts as below the minimum (Section 4.10) | accepted (F1a review) |
+| DC14 | c2c's equal shapes are checked when a layout is built from arrays; `Layout` records no shapes; F5 relaxes the halved axis (Section 4.3) | accepted (F2 brief) |
+| DC15 | Execution on arrays checks each side, and pairs the axes of input and output by index when both are arrays of the same rank; a plan describes memory, not logical axes, and the documentation says so (Section 4.8) | accepted (F2 brief) |
+| DC16 | Arrays whose strides fail the sufficient distinct-output rule are rejected as outputs and in place, and accepted as inputs (Section 4.3) | accepted (F2 brief) |
+| DC17 | `FftBuffer::len` of an array is the number of storage elements from its first element on, 0 without storage | accepted (F2 brief) |
+| DC18 | Inherent `Array::storage()` and `Array::storage_mut()` beside `data()` and `data_mut()`, added in F2 (Section 4.3) | accepted (F2 brief), changed from the brief's proposal of none |
+| DC19 | For a view without elements, the storage offset may lie past the end of the slice and must not be used to index it; the traits' contract says so (Section 4.3) | accepted (F2 brief) |
 
 ### 10.2 DF6: why `fftw_source` is dropped
 
@@ -1049,6 +1089,19 @@ review.
   FFTW touches only the elements a layout addresses, and Section 7.2 adds subviews to the
   layout cells. The in-place planner methods take no input-policy request (Section 4.4,
   DC12). An unparsable run-time version string counts as too old (Section 4.10, DC13).
+
+- **Draft 0.9** (2026-10-21), from the open questions of the F2 brief
+  (`docs/fftw/tasks/F2-layouts.md`), settled by the maintainers before the task started:
+  equal c2c shapes are checked when a layout is built from arrays, since `Layout` records no
+  shapes (Section 4.3, DC14); execution on arrays checks each side and pairs the axes of
+  input and output arrays, and a plan describes memory, not logical axes (Section 4.8, DC15);
+  the sentence that layouts from arrays satisfy the raw-layout rules by construction is
+  corrected, and arrays failing the distinct-output rule are rejected as outputs and in
+  place (Section 4.3, DC16); `FftBuffer::len` of an array (DC17); inherent
+  `Array::storage()` and `storage_mut()` in F2 (Section 4.3, DC18); the offset of a view
+  without elements (Section 4.3, DC19). Also corrected: Section 4.1 no longer lists a
+  `Source` back end (DF6); Section 4.10 notes that docs.rs must provide `libclang` for the
+  `bindgen` build dependency.
 
 ## Appendix B. Migration from 0.10
 
