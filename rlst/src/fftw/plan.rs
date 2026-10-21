@@ -1,26 +1,39 @@
 //! Plans, and the markers of their transform family and input policy.
 
+use std::ffi::c_uint;
+use std::fmt;
 use std::marker::PhantomData;
+use std::ptr::NonNull;
 
 use super::align::AlignmentClass;
 use super::kind::Direction;
-use super::layout::Layout;
+use super::layout::{Layout, Placement};
+use super::lock::with_fftw;
 use super::options::Rigor;
 use super::real::FftwReal;
 
 pub(crate) mod sealed {
+    use std::ffi::c_uint;
+
+    use crate::fftw::layout::Placement;
+
     /// Seals [`Family`](super::Family).
     pub trait Family {}
 
-    /// Seals [`Policy`](super::Policy).
-    pub trait Policy {}
+    /// Seals [`Policy`](super::Policy) and carries what the policy means for FFTW.
+    pub trait Policy {
+        /// The input-policy flag passed to FFTW.
+        const FLAGS: c_uint;
+        /// The placement of the plans of this policy.
+        const PLACEMENT: Placement;
+    }
 }
 
 /// The transform family of a [`Plan`]: [`C2c`] (r2c, c2r, r2r and the split families follow).
 ///
 /// The trait is sealed.
 ///
-/// ```no_run
+/// ```
 /// use rlst::fftw::{C2c, Family};
 ///
 /// fn family<F: Family>() {}
@@ -33,7 +46,7 @@ pub trait Family: sealed::Family {}
 /// The policy decides how [`Plan::execute`] borrows its input: shared for a preserving plan,
 /// mutably for a plan that may overwrite it. The trait is sealed.
 ///
-/// ```no_run
+/// ```
 /// use rlst::fftw::{Destroying, InPlace, Policy, Preserving};
 ///
 /// fn policy<P: Policy>() {}
@@ -47,7 +60,7 @@ pub trait Policy: sealed::Policy {}
 ///
 /// A type-level marker; it is never constructed.
 ///
-/// ```no_run
+/// ```
 /// use rlst::fftw::{C2c, Plan, Preserving};
 ///
 /// type ForwardPlan = Plan<f64, C2c, Preserving>;
@@ -59,7 +72,7 @@ pub enum C2c {}
 ///
 /// FFTW is given `FFTW_PRESERVE_INPUT`. A type-level marker; it is never constructed.
 ///
-/// ```no_run
+/// ```
 /// use rlst::fftw::{C2c, Plan, Preserving};
 ///
 /// type PreservingPlan = Plan<f64, C2c, Preserving>;
@@ -72,7 +85,7 @@ pub enum Preserving {}
 /// FFTW is given `FFTW_DESTROY_INPUT`, which can allow faster algorithms. A type-level
 /// marker; it is never constructed.
 ///
-/// ```no_run
+/// ```
 /// use rlst::fftw::{C2c, Destroying, Plan};
 ///
 /// type DestroyingPlan = Plan<f64, C2c, Destroying>;
@@ -84,7 +97,7 @@ pub enum Destroying {}
 ///
 /// A type-level marker; it is never constructed.
 ///
-/// ```no_run
+/// ```
 /// use rlst::fftw::{C2c, InPlace, Plan};
 ///
 /// type InPlacePlan = Plan<f64, C2c, InPlace>;
@@ -95,11 +108,23 @@ pub enum InPlace {}
 impl sealed::Family for C2c {}
 impl Family for C2c {}
 
-impl sealed::Policy for Preserving {}
+impl sealed::Policy for Preserving {
+    const FLAGS: c_uint = fftw_sys::FFTW_PRESERVE_INPUT;
+    const PLACEMENT: Placement = Placement::OutOfPlace;
+}
 impl Policy for Preserving {}
-impl sealed::Policy for Destroying {}
+
+impl sealed::Policy for Destroying {
+    const FLAGS: c_uint = fftw_sys::FFTW_DESTROY_INPUT;
+    const PLACEMENT: Placement = Placement::OutOfPlace;
+}
 impl Policy for Destroying {}
-impl sealed::Policy for InPlace {}
+
+impl sealed::Policy for InPlace {
+    // FFTW ignores the input-policy flags in place.
+    const FLAGS: c_uint = 0;
+    const PLACEMENT: Placement = Placement::InPlace;
+}
 impl Policy for InPlace {}
 
 /// An FFTW plan of precision `T`, family `F` and input policy `P`.
@@ -110,7 +135,7 @@ impl Policy for InPlace {}
 /// Plans are made by a [`Planner`](super::Planner), and destroyed under RLST's FFTW lock when
 /// dropped.
 ///
-/// ```no_run
+/// ```
 /// use rlst::{c64, rlst_dynamic_array};
 /// use rlst::fftw::{Dim, Direction, Layout, Placement, Planner};
 ///
@@ -142,7 +167,7 @@ impl Policy for InPlace {}
 ///
 /// while the same code with the input borrowed mutably does:
 ///
-/// ```no_run
+/// ```
 /// use rlst::{c64, rlst_dynamic_array};
 /// use rlst::fftw::{Dim, Direction, Layout, Placement, Planner};
 ///
@@ -170,7 +195,7 @@ impl Policy for InPlace {}
 ///
 /// while the same code with one buffer does:
 ///
-/// ```no_run
+/// ```
 /// use rlst::{c64, rlst_dynamic_array};
 /// use rlst::fftw::{Dim, Direction, Layout, Placement, Planner};
 ///
@@ -182,14 +207,53 @@ impl Policy for InPlace {}
 /// # Ok::<(), rlst::fftw::FftwError>(())
 /// ```
 pub struct Plan<T: FftwReal, F: Family, P: Policy> {
-    // The raw plan, the layout, the options and the classes follow in F1c.
+    raw: NonNull<T::RawPlan>,
+    layout: Layout,
+    direction: Direction,
+    rigor: Rigor,
+    flags: c_uint,
+    alignment: Option<(AlignmentClass, AlignmentClass)>,
     _marker: PhantomData<(T, F, P)>,
 }
 
+// SAFETY: FFTW's execute functions are thread-safe, and the same plan may be executed by
+// several threads at once on different arrays (design, Section 3 item 2); execution does not
+// modify the plan. Every other FFTW call on a plan (`fftw_sprint_plan`, and destruction, which
+// needs ownership) runs under the FFTW lock, so sharing or sending a plan between threads
+// never makes two such calls race.
+unsafe impl<T: FftwReal, F: Family, P: Policy> Send for Plan<T, F, P> {}
+// SAFETY: as for `Send`.
+unsafe impl<T: FftwReal, F: Family, P: Policy> Sync for Plan<T, F, P> {}
+
 impl<T: FftwReal, F: Family, P: Policy> Plan<T, F, P> {
+    /// Wrap a plan that FFTW made for `layout`.
+    pub(crate) fn from_raw(
+        raw: NonNull<T::RawPlan>,
+        layout: Layout,
+        direction: Direction,
+        rigor: Rigor,
+        flags: c_uint,
+        alignment: Option<(AlignmentClass, AlignmentClass)>,
+    ) -> Self {
+        Self {
+            raw,
+            layout,
+            direction,
+            rigor,
+            flags,
+            alignment,
+            _marker: PhantomData,
+        }
+    }
+
+    /// The raw FFTW plan.
+    pub(crate) fn raw(&self) -> *mut T::RawPlan {
+        self.raw.as_ptr()
+    }
+
     /// The normalised layout the plan was made for.
     ///
-    /// ```no_run
+    /// ```
     /// use rlst::fftw::{Dim, Direction, Layout, Placement, Planner};
     ///
     /// let layout = Layout::new(&[Dim { n: 8, is: 1, os: 1 }], &[], Placement::OutOfPlace)?;
@@ -198,12 +262,12 @@ impl<T: FftwReal, F: Family, P: Policy> Plan<T, F, P> {
     /// # Ok::<(), rlst::fftw::FftwError>(())
     /// ```
     pub fn layout(&self) -> &Layout {
-        todo!()
+        &self.layout
     }
 
     /// The rigor the plan was made with.
     ///
-    /// ```no_run
+    /// ```
     /// use rlst::fftw::{Dim, Direction, Layout, Placement, Planner, Rigor};
     ///
     /// let layout = Layout::new(&[Dim { n: 8, is: 1, os: 1 }], &[], Placement::OutOfPlace)?;
@@ -212,14 +276,14 @@ impl<T: FftwReal, F: Family, P: Policy> Plan<T, F, P> {
     /// # Ok::<(), rlst::fftw::FftwError>(())
     /// ```
     pub fn rigor(&self) -> Rigor {
-        todo!()
+        self.rigor
     }
 
     /// The alignment classes of input and output the plan was made for, or `None` for a plan
     /// made with [`Planner::unaligned`](super::Planner::unaligned), which runs on buffers of
     /// any class.
     ///
-    /// ```no_run
+    /// ```
     /// use rlst::fftw::{AlignmentClass, Dim, Direction, Layout, Placement, Planner};
     ///
     /// let layout = Layout::new(&[Dim { n: 8, is: 1, os: 1 }], &[], Placement::OutOfPlace)?;
@@ -232,14 +296,14 @@ impl<T: FftwReal, F: Family, P: Policy> Plan<T, F, P> {
     /// # Ok::<(), rlst::fftw::FftwError>(())
     /// ```
     pub fn alignment(&self) -> Option<(AlignmentClass, AlignmentClass)> {
-        todo!()
+        self.alignment
     }
 }
 
 impl<T: FftwReal, P: Policy> Plan<T, C2c, P> {
     /// The direction of the transform.
     ///
-    /// ```no_run
+    /// ```
     /// use rlst::fftw::{Dim, Direction, Layout, Placement, Planner};
     ///
     /// let layout = Layout::new(&[Dim { n: 8, is: 1, os: 1 }], &[], Placement::OutOfPlace)?;
@@ -248,6 +312,29 @@ impl<T: FftwReal, P: Policy> Plan<T, C2c, P> {
     /// # Ok::<(), rlst::fftw::FftwError>(())
     /// ```
     pub fn direction(&self) -> Direction {
-        todo!()
+        self.direction
+    }
+}
+
+impl<T: FftwReal, F: Family, P: Policy> fmt::Debug for Plan<T, F, P> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Plan")
+            .field("precision", &std::any::type_name::<T>())
+            .field("family", &std::any::type_name::<F>())
+            .field("policy", &std::any::type_name::<P>())
+            .field("layout", &self.layout)
+            .field("direction", &self.direction)
+            .field("rigor", &self.rigor)
+            .field("flags", &format_args!("{:#x}", self.flags))
+            .field("alignment", &self.alignment)
+            .finish()
+    }
+}
+
+impl<T: FftwReal, F: Family, P: Policy> Drop for Plan<T, F, P> {
+    fn drop(&mut self) {
+        // SAFETY: `raw` is a live plan owned by `self` and not used after this call; the FFTW
+        // lock is held.
+        with_fftw(|_| unsafe { T::destroy_plan(self.raw.as_ptr()) });
     }
 }

@@ -99,8 +99,15 @@ pub trait FftBufferMut<E>: FftBuffer<E> {
 
 impl<E> sealed::Sealed<E> for [E] {
     fn check_side(&self, layout: &Layout, side: Side) -> Result<(), FftwError> {
-        let _ = (layout, side);
-        todo!()
+        let span = layout.span(side);
+        if self.len() < span {
+            return Err(FftwError::LayoutMismatch {
+                side,
+                expected: format!("at least {span} elements, the layout's {side} span"),
+                found: format!("a slice of {} elements", self.len()),
+            });
+        }
+        Ok(())
     }
 }
 

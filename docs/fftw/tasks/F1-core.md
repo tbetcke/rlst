@@ -3,7 +3,7 @@
 | | |
 | --- | --- |
 | Task | F1 (design, Section 9) |
-| Status | ready once F0 is merged |
+| Status | in review (F0 merged) |
 | Depends on | F0 |
 | Pull requests | three, into `fftw-0.11`: F1a (API skeleton), F1b (build, features, lock, base types), F1c (layouts, c2c plans, execution, fingerprints) |
 | Read first | design: Section 3 (all items), Sections 4.1–4.8, 4.10–4.12 and 4.15, Section 5, Sections 7.1–7.4, Section 9 (F1 row, Transition), Section 10, Appendix B; `docs/fftw/F0-findings.md`; `CLAUDE.md` |

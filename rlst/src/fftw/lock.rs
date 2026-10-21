@@ -21,10 +21,6 @@ pub(crate) struct FftwState {
 impl FftwState {
     /// The result of the run-time version check: [`FftwError::VersionTooOld`] if the linked
     /// FFTW is older than the minimum.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "used by the planner from task F1c")
-    )]
     pub(crate) fn version_check(&self) -> Result<(), FftwError> {
         self.version
             .clone()
@@ -56,19 +52,11 @@ pub(crate) fn with_fftw<R>(f: impl FnOnce(&mut FftwState) -> R) -> R {
 ///
 /// It borrows the [`FftwState`] mutably, so it exists only inside [`with_fftw`]. Today it
 /// sets the time limit; the thread count follows with the `fftw_threads` feature (task F6).
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "used by the planner from task F1c")
-)]
 pub(crate) struct SettingsGuard<'a, T: FftwReal> {
     _state: PhantomData<&'a mut FftwState>,
     _real: PhantomData<T>,
 }
 
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "used by the planner from task F1c")
-)]
 impl<'a, T: FftwReal> SettingsGuard<'a, T> {
     /// Apply `time_limit`, in seconds, or no limit if it is `None`.
     pub(crate) fn new(state: &'a mut FftwState, time_limit: Option<f64>) -> Self {

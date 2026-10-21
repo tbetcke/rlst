@@ -1,21 +1,28 @@
 //! The planner: options, scratch and the planning call.
 
+use std::ffi::{c_int, c_uint};
 use std::marker::PhantomData;
+use std::mem::{align_of, size_of};
+use std::ptr::NonNull;
 
-use super::align::AlignmentClass;
+use aligned_vec::{AVec, ConstAlign};
+use num::Complex;
+
+use super::align::{AlignmentClass, PLAN_ALIGNMENT};
 use super::buffer::FftBufferMut;
-use super::error::FftwError;
+use super::error::{FftwError, Side};
+use super::execute::check_overlap;
 use super::kind::Direction;
-use super::layout::Layout;
+use super::layout::{Dim, Layout, Placement};
+use super::lock::{SettingsGuard, with_fftw};
 use super::options::sealed::PolicyFor;
 use super::options::{DefaultRequest, DestroyRequest, PreserveRequest, Rigor};
-use super::plan::{C2c, InPlace, Plan};
+use super::plan::{C2c, InPlace, Plan, Policy};
 use super::real::FftwReal;
-use num::Complex;
 
 /// The default bound on scratch memory for planning: 1 GiB for input and output together.
 ///
-/// ```no_run
+/// ```
 /// assert_eq!(rlst::fftw::DEFAULT_MAX_SCRATCH, 1 << 30);
 /// ```
 pub const DEFAULT_MAX_SCRATCH: usize = 1 << 30;
@@ -42,7 +49,7 @@ pub const DEFAULT_MAX_SCRATCH: usize = 1 << 30;
 /// Every planning call runs under RLST's FFTW lock, which serialises all of RLST's FFTW calls
 /// other than execution.
 ///
-/// ```no_run
+/// ```
 /// use rlst::fftw::{Dim, Direction, Layout, Placement, Planner, Rigor};
 ///
 /// let layout = Layout::new(&[Dim { n: 16, is: 1, os: 1 }], &[], Placement::OutOfPlace)?;
@@ -54,7 +61,12 @@ pub const DEFAULT_MAX_SCRATCH: usize = 1 << 30;
 /// ```
 #[derive(Clone, Debug)]
 pub struct Planner<T: FftwReal, S = DefaultRequest> {
-    // The options follow in F1c.
+    rigor: Rigor,
+    wisdom_only: bool,
+    unaligned: bool,
+    time_limit: Option<f64>,
+    alignment: (AlignmentClass, AlignmentClass),
+    max_scratch: usize,
     _marker: PhantomData<(T, S)>,
 }
 
@@ -63,14 +75,22 @@ impl<T: FftwReal> Planner<T, DefaultRequest> {
     /// heuristics, aligned plans for class 0 on both sides, no time limit, and a scratch bound
     /// of [`DEFAULT_MAX_SCRATCH`].
     ///
-    /// ```no_run
+    /// ```
     /// use rlst::fftw::Planner;
     ///
     /// let planner = Planner::<f32>::new();
     /// # let _ = planner;
     /// ```
     pub fn new() -> Self {
-        todo!()
+        Self {
+            rigor: Rigor::Estimate,
+            wisdom_only: false,
+            unaligned: false,
+            time_limit: None,
+            alignment: (AlignmentClass::default(), AlignmentClass::default()),
+            max_scratch: DEFAULT_MAX_SCRATCH,
+            _marker: PhantomData,
+        }
     }
 
     /// Request plans that preserve their input.
@@ -79,7 +99,7 @@ impl<T: FftwReal> Planner<T, DefaultRequest> {
     /// input-preserving algorithm, and planning returns
     /// [`FftwError::PreserveInputUnsupported`].
     ///
-    /// ```no_run
+    /// ```
     /// use rlst::fftw::{C2c, Dim, Direction, Layout, Placement, Plan, Planner, Preserving};
     ///
     /// let layout = Layout::new(&[Dim { n: 8, is: 1, os: 1 }], &[], Placement::OutOfPlace)?;
@@ -88,14 +108,14 @@ impl<T: FftwReal> Planner<T, DefaultRequest> {
     /// # Ok::<(), rlst::fftw::FftwError>(())
     /// ```
     pub fn preserve_input(self) -> Planner<T, PreserveRequest> {
-        todo!()
+        self.with_request()
     }
 
     /// Request plans that may overwrite their input, which can allow faster algorithms.
     ///
     /// The plans are [`Destroying`](super::Destroying) and take their input mutably.
     ///
-    /// ```no_run
+    /// ```
     /// use rlst::fftw::{C2c, Destroying, Dim, Direction, Layout, Placement, Plan, Planner};
     ///
     /// let layout = Layout::new(&[Dim { n: 8, is: 1, os: 1 }], &[], Placement::OutOfPlace)?;
@@ -104,7 +124,7 @@ impl<T: FftwReal> Planner<T, DefaultRequest> {
     /// # Ok::<(), rlst::fftw::FftwError>(())
     /// ```
     pub fn may_destroy_input(self) -> Planner<T, DestroyRequest> {
-        todo!()
+        self.with_request()
     }
 }
 
@@ -120,15 +140,14 @@ impl<T: FftwReal, S> Planner<T, S> {
     /// With any other rigor FFTW runs transforms while planning: on scratch buffers for the
     /// planning methods without `_on`, on the caller's buffers for the `*_on` methods.
     ///
-    /// ```no_run
+    /// ```
     /// use rlst::fftw::{Planner, Rigor};
     ///
     /// let planner = Planner::<f64>::new().rigor(Rigor::Estimate);
     /// # let _ = planner;
     /// ```
     pub fn rigor(self, rigor: Rigor) -> Self {
-        let _ = rigor;
-        todo!()
+        Self { rigor, ..self }
     }
 
     /// Plan only from wisdom (`FFTW_WISDOM_ONLY`).
@@ -136,44 +155,52 @@ impl<T: FftwReal, S> Planner<T, S> {
     /// FFTW uses wisdom of the planner's rigor or greater; without such wisdom, planning
     /// returns [`FftwError::PlanCreationFailed`].
     ///
-    /// ```no_run
+    /// ```
     /// use rlst::fftw::Planner;
     ///
     /// let planner = Planner::<f64>::new().wisdom_only();
     /// # let _ = planner;
     /// ```
     pub fn wisdom_only(self) -> Self {
-        todo!()
+        Self {
+            wisdom_only: true,
+            ..self
+        }
     }
 
     /// Make plans that run on buffers of any alignment class (`FFTW_UNALIGNED`).
     ///
     /// Execution then skips the alignment check, at the cost of most of FFTW's SIMD code.
     ///
-    /// ```no_run
+    /// ```
     /// use rlst::fftw::Planner;
     ///
     /// let planner = Planner::<f64>::new().unaligned();
     /// # let _ = planner;
     /// ```
     pub fn unaligned(self) -> Self {
-        todo!()
+        Self {
+            unaligned: true,
+            ..self
+        }
     }
 
     /// Bound the time FFTW spends planning, in seconds (`fftw_set_timelimit`).
     ///
-    /// A negative value means no limit, the default. The limit applies only to the planner's
-    /// own calls, and is reset before RLST's FFTW lock is released.
+    /// A negative value or NaN means no limit, the default. The limit applies only to the
+    /// planner's own calls, and is reset before RLST's FFTW lock is released.
     ///
-    /// ```no_run
+    /// ```
     /// use rlst::fftw::Planner;
     ///
     /// let planner = Planner::<f64>::new().time_limit(0.5);
     /// # let _ = planner;
     /// ```
     pub fn time_limit(self, seconds: f64) -> Self {
-        let _ = seconds;
-        todo!()
+        Self {
+            time_limit: (seconds >= 0.0).then_some(seconds),
+            ..self
+        }
     }
 
     /// Plan for buffers of the given alignment classes; the default is class 0 on both sides.
@@ -181,7 +208,7 @@ impl<T: FftwReal, S> Planner<T, S> {
     /// The planning methods without `_on` allocate their scratch at these classes. The
     /// `*_on` methods take the classes of the caller's buffers instead.
     ///
-    /// ```no_run
+    /// ```
     /// use rlst::fftw::{AlignmentClass, Planner};
     ///
     /// let class = AlignmentClass::from_offset(16);
@@ -189,8 +216,10 @@ impl<T: FftwReal, S> Planner<T, S> {
     /// # let _ = planner;
     /// ```
     pub fn alignment(self, input: AlignmentClass, output: AlignmentClass) -> Self {
-        let _ = (input, output);
-        todo!()
+        Self {
+            alignment: (input, output),
+            ..self
+        }
     }
 
     /// Bound the scratch memory of planning, in bytes, for input and output together; the
@@ -199,16 +228,246 @@ impl<T: FftwReal, S> Planner<T, S> {
     /// A layout that needs more returns [`FftwError::ScratchTooLarge`]; the `*_on` methods
     /// plan such layouts on the caller's buffers.
     ///
-    /// ```no_run
+    /// ```
     /// use rlst::fftw::Planner;
     ///
     /// let planner = Planner::<f64>::new().max_scratch(1 << 20);
     /// # let _ = planner;
     /// ```
     pub fn max_scratch(self, bytes: usize) -> Self {
-        let _ = bytes;
-        todo!()
+        Self {
+            max_scratch: bytes,
+            ..self
+        }
     }
+
+    /// The same options under another input-policy request.
+    fn with_request<R>(self) -> Planner<T, R> {
+        Planner {
+            rigor: self.rigor,
+            wisdom_only: self.wisdom_only,
+            unaligned: self.unaligned,
+            time_limit: self.time_limit,
+            alignment: self.alignment,
+            max_scratch: self.max_scratch,
+            _marker: PhantomData,
+        }
+    }
+
+    /// The FFTW flags of a plan of policy `P`.
+    fn flags<P: Policy>(&self) -> c_uint {
+        let mut flags = self.rigor.flag() | P::FLAGS;
+        if self.wisdom_only {
+            flags |= fftw_sys::FFTW_WISDOM_ONLY;
+        }
+        if self.unaligned {
+            flags |= fftw_sys::FFTW_UNALIGNED;
+        }
+        flags
+    }
+
+    /// Plan a c2c transform of policy `P` on scratch.
+    fn c2c_on_scratch<P: Policy>(
+        &self,
+        layout: &Layout,
+        direction: Direction,
+    ) -> Result<Plan<T, C2c, P>, FftwError> {
+        check_placement::<P>(layout)?;
+        let (input_class, output_class) = self.alignment;
+        if layout.placement() == Placement::InPlace && input_class != output_class {
+            return Err(FftwError::InvalidLayout {
+                dimension: "alignment".to_string(),
+                reason: format!(
+                    "an in-place plan has one buffer, but the input class {input_class} differs \
+                     from the output class {output_class}"
+                ),
+            });
+        }
+        for class in [input_class, output_class] {
+            if class.offset() % align_of::<Complex<T>>() != 0 {
+                return Err(FftwError::InvalidLayout {
+                    dimension: "alignment".to_string(),
+                    reason: format!(
+                        "the class {class} is not a multiple of the {}-byte alignment of the \
+                         complex type",
+                        align_of::<Complex<T>>()
+                    ),
+                });
+            }
+        }
+
+        // A size that overflows `usize` is above every bound, `usize::MAX` included.
+        let elements = match layout.placement() {
+            Placement::OutOfPlace => layout.input_span().checked_add(layout.output_span()),
+            Placement::InPlace => Some(layout.input_span()),
+        };
+        let needed = elements.and_then(|elements| elements.checked_mul(size_of::<Complex<T>>()));
+        match needed {
+            Some(needed) if needed <= self.max_scratch => {}
+            _ => {
+                return Err(FftwError::ScratchTooLarge {
+                    needed: needed.unwrap_or(usize::MAX),
+                    bound: self.max_scratch,
+                });
+            }
+        }
+
+        // The scratch lives until the end of this function, after planning.
+        let mut input = Scratch::<T>::new(layout.input_span(), input_class);
+        let mut output = match layout.placement() {
+            Placement::OutOfPlace => Some(Scratch::<T>::new(layout.output_span(), output_class)),
+            Placement::InPlace => None,
+        };
+        let input_ptr = input.as_mut_ptr();
+        let output_ptr = output.as_mut().map_or(input_ptr, Scratch::as_mut_ptr);
+        // SAFETY: `input_ptr` and `output_ptr` point to scratch buffers of at least the input
+        // and output spans, which outlive the call; in place they are the same buffer.
+        unsafe {
+            self.plan_c2c(
+                layout,
+                direction,
+                input_ptr,
+                output_ptr,
+                (input_class, output_class),
+            )
+        }
+    }
+
+    /// Plan a c2c transform of policy `P` on the caller's buffers.
+    fn c2c_on_buffers<P: Policy>(
+        &self,
+        layout: &Layout,
+        direction: Direction,
+        input: *mut Complex<T>,
+        output: *mut Complex<T>,
+    ) -> Result<Plan<T, C2c, P>, FftwError> {
+        if layout.placement() == Placement::OutOfPlace {
+            check_overlap(input, layout.input_span(), output, layout.output_span())?;
+        }
+        let classes = (
+            AlignmentClass::of_ptr(input),
+            AlignmentClass::of_ptr(output),
+        );
+        // SAFETY: the caller derived `input` and `output` from buffers that it checked against
+        // the input and output spans of `layout`, and that it borrows mutably for the call.
+        unsafe { self.plan_c2c(layout, direction, input, output, classes) }
+    }
+
+    /// Call FFTW's guru64 planner under the FFTW lock.
+    ///
+    /// # Safety
+    ///
+    /// `input` and `output` point to buffers of at least the input and output spans of
+    /// `layout`, valid for reads and writes for the duration of the call (FFTW writes them
+    /// with rigors other than `Estimate`); for an in-place layout they are equal.
+    unsafe fn plan_c2c<P: Policy>(
+        &self,
+        layout: &Layout,
+        direction: Direction,
+        input: *mut Complex<T>,
+        output: *mut Complex<T>,
+        classes: (AlignmentClass, AlignmentClass),
+    ) -> Result<Plan<T, C2c, P>, FftwError> {
+        let flags = self.flags::<P>();
+        let dims = iodims(layout.dims());
+        let batch = iodims(layout.batch());
+        let too_many = |what: &str| FftwError::InvalidLayout {
+            dimension: "layout".to_string(),
+            reason: format!("FFTW takes at most {} {what} dimensions", c_int::MAX),
+        };
+        let rank = c_int::try_from(dims.len()).map_err(|_| too_many("transform"))?;
+        let howmany_rank = c_int::try_from(batch.len()).map_err(|_| too_many("batch"))?;
+
+        let raw = with_fftw(|state| {
+            state.version_check()?;
+            let _settings = SettingsGuard::<T>::new(state, self.time_limit);
+            // SAFETY: the FFTW lock is held. `dims` and `batch` hold `rank` and
+            // `howmany_rank` dimensions with non-negative strides, and by this function's
+            // contract `input` and `output` cover the spans of these dimensions; they are
+            // equal exactly for an in-place layout, whose strides are equal on both sides.
+            let raw = unsafe {
+                T::plan_guru64_dft(
+                    rank,
+                    dims.as_ptr(),
+                    howmany_rank,
+                    batch.as_ptr(),
+                    input,
+                    output,
+                    direction.sign(),
+                    flags,
+                )
+            };
+            NonNull::new(raw).ok_or_else(|| FftwError::PlanCreationFailed {
+                rigor: self.rigor,
+                flags,
+                layout: layout.describe(),
+            })
+        })?;
+
+        let alignment = (!self.unaligned).then_some(classes);
+        Ok(Plan::from_raw(
+            raw,
+            layout.clone(),
+            direction,
+            self.rigor,
+            flags,
+            alignment,
+        ))
+    }
+}
+
+/// Scratch for planning: zeroed reals at `PLAN_ALIGNMENT`, long enough for a span of complex
+/// elements starting at an alignment class.
+struct Scratch<T> {
+    data: AVec<T, ConstAlign<PLAN_ALIGNMENT>>,
+    offset: usize,
+}
+
+impl<T: FftwReal> Scratch<T> {
+    /// Scratch for `span` complex elements at `class`, which is a multiple of the alignment of
+    /// `Complex<T>` and therefore of the size of `T`. The caller has checked that `span`
+    /// complex elements fit in `usize` bytes.
+    fn new(span: usize, class: AlignmentClass) -> Self {
+        let offset = class.offset() / size_of::<T>();
+        let len = span
+            .checked_mul(2)
+            .and_then(|reals| reals.checked_add(offset))
+            .expect("the scratch size was checked against `max_scratch`");
+        let data = AVec::from_iter(PLAN_ALIGNMENT, std::iter::repeat_n(T::zero(), len));
+        Self { data, offset }
+    }
+
+    /// A pointer to the first complex element, at the requested class.
+    fn as_mut_ptr(&mut self) -> *mut Complex<T> {
+        // `offset` reals and 2 * span reals after it lie inside the allocation, and
+        // `Complex<T>` is two `T`s with the alignment of `T`.
+        self.data
+            .as_mut_ptr()
+            .wrapping_add(self.offset)
+            .cast::<Complex<T>>()
+    }
+}
+
+/// The dimensions as FFTW's `fftw_iodim64`.
+fn iodims(dims: &[Dim]) -> Vec<fftw_sys::fftw_iodim64> {
+    dims.iter()
+        .map(|dim| fftw_sys::fftw_iodim64 {
+            n: dim.n,
+            is: dim.is,
+            os: dim.os,
+        })
+        .collect()
+}
+
+/// Check that the layout's placement is that of the policy.
+fn check_placement<P: Policy>(layout: &Layout) -> Result<(), FftwError> {
+    if layout.placement() != P::PLACEMENT {
+        return Err(FftwError::PlacementMismatch {
+            expected: P::PLACEMENT,
+            found: layout.placement(),
+        });
+    }
+    Ok(())
 }
 
 impl<T: FftwReal, S: PolicyFor<C2c>> Planner<T, S> {
@@ -220,7 +479,7 @@ impl<T: FftwReal, S: PolicyFor<C2c>> Planner<T, S> {
     /// [`FftwError::ScratchTooLarge`] if the scratch would exceed
     /// [`max_scratch`](Planner::max_scratch).
     ///
-    /// ```no_run
+    /// ```
     /// use rlst::fftw::{Dim, Direction, Layout, Placement, Planner};
     ///
     /// // Three transforms of length 8, one after the other.
@@ -238,8 +497,7 @@ impl<T: FftwReal, S: PolicyFor<C2c>> Planner<T, S> {
         layout: &Layout,
         direction: Direction,
     ) -> Result<Plan<T, C2c, S::Policy>, FftwError> {
-        let _ = (layout, direction);
-        todo!()
+        self.c2c_on_scratch(layout, direction)
     }
 
     /// An out-of-place complex-to-complex plan for `layout`, planned on the caller's buffers.
@@ -250,7 +508,7 @@ impl<T: FftwReal, S: PolicyFor<C2c>> Planner<T, S> {
     /// With [`Rigor::Estimate`] or wisdom-only planning FFTW leaves the buffers untouched.
     /// **With [`Rigor::Measure`] and stronger, FFTW overwrites both buffers.**
     ///
-    /// ```no_run
+    /// ```
     /// use rlst::{c64, rlst_dynamic_array};
     /// use rlst::fftw::{Dim, Direction, Layout, Placement, Planner};
     ///
@@ -277,8 +535,12 @@ impl<T: FftwReal, S: PolicyFor<C2c>> Planner<T, S> {
         I: FftBufferMut<Complex<T>> + ?Sized,
         O: FftBufferMut<Complex<T>> + ?Sized,
     {
-        let _ = (input, output, layout, direction);
-        todo!()
+        check_placement::<S::Policy>(layout)?;
+        input.check_side(layout, Side::Input)?;
+        output.check_side(layout, Side::Output)?;
+        let input = input.as_mut_ptr();
+        let output = output.as_mut_ptr();
+        self.c2c_on_buffers(layout, direction, input, output)
     }
 }
 
@@ -290,7 +552,7 @@ impl<T: FftwReal> Planner<T, DefaultRequest> {
     /// [`max_scratch`](Planner::max_scratch). The input-policy requests do not apply in
     /// place, so this method is only available on a planner without one.
     ///
-    /// ```no_run
+    /// ```
     /// use rlst::fftw::{Dim, Direction, Layout, Placement, Planner};
     ///
     /// let layout = Layout::new(&[Dim { n: 8, is: 1, os: 1 }], &[], Placement::InPlace)?;
@@ -303,8 +565,7 @@ impl<T: FftwReal> Planner<T, DefaultRequest> {
         layout: &Layout,
         direction: Direction,
     ) -> Result<Plan<T, C2c, InPlace>, FftwError> {
-        let _ = (layout, direction);
-        todo!()
+        self.c2c_on_scratch(layout, direction)
     }
 
     /// An in-place complex-to-complex plan for `layout`, planned on the caller's buffer.
@@ -315,7 +576,7 @@ impl<T: FftwReal> Planner<T, DefaultRequest> {
     /// With [`Rigor::Estimate`] or wisdom-only planning FFTW leaves the buffer untouched.
     /// **With [`Rigor::Measure`] and stronger, FFTW overwrites it.**
     ///
-    /// ```no_run
+    /// ```
     /// use rlst::{c64, rlst_dynamic_array};
     /// use rlst::fftw::{Dim, Direction, Layout, Placement, Planner};
     ///
@@ -335,7 +596,10 @@ impl<T: FftwReal> Planner<T, DefaultRequest> {
     where
         D: FftBufferMut<Complex<T>> + ?Sized,
     {
-        let _ = (data, layout, direction);
-        todo!()
+        check_placement::<InPlace>(layout)?;
+        data.check_side(layout, Side::Input)?;
+        data.check_side(layout, Side::Output)?;
+        let data = data.as_mut_ptr();
+        self.c2c_on_buffers(layout, direction, data, data)
     }
 }

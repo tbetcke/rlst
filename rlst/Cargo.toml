@@ -39,6 +39,7 @@ mpi = { version = "0.8.2", optional = true , features = ["derive","complex"]}
 mpi-sys = { version = "0.2.4", optional = true }
 
 fftw-sys = { version = "0.8", default-features = false, optional = true }
+libc = { version = "0.2", optional = true }
 burn = { version = "0.22", default-features = false, optional = true }
 
 [dev-dependencies]
@@ -76,7 +77,7 @@ burn = ["dep:burn"]
 enable_tracing = ["rlst-proc-macro/enable_tracing", "dep:log"]
 # FFTW transforms, through the system's FFTW (`fftw_system`, the only back end).
 # FFTW and the fftw-sys bindings are GPL-licensed; see the README.
-fftw = ["dep:fftw-sys"]
+fftw = ["dep:fftw-sys", "dep:libc"]
 fftw_system = ["fftw", "fftw-sys/system", "dep:pkg-config"]
 
 

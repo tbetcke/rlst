@@ -1,5 +1,7 @@
 //! Transform directions.
 
+use std::ffi::c_int;
+
 /// The direction of a complex-to-complex transform.
 ///
 /// [`Forward`](Direction::Forward) computes `y[k] = Σ_j x[j] exp(-2πi jk/n)` and
@@ -19,4 +21,15 @@ pub enum Direction {
     Forward,
     /// The backward transform, with exponent sign +1.
     Backward,
+}
+
+impl Direction {
+    /// FFTW's sign of the exponent.
+    pub(crate) fn sign(self) -> c_int {
+        match self {
+            // fftw-sys gives FFTW_FORWARD as i32 and FFTW_BACKWARD as u32.
+            Direction::Forward => fftw_sys::FFTW_FORWARD as c_int,
+            Direction::Backward => fftw_sys::FFTW_BACKWARD as c_int,
+        }
+    }
 }

@@ -39,7 +39,7 @@ impl fmt::Display for Side {
 /// values involved, and its message names what was expected, what was found and, where there
 /// is one, the remedy.
 ///
-/// ```no_run
+/// ```
 /// use rlst::fftw::{Dim, FftwError, Layout, Placement};
 ///
 /// let error = Layout::new(&[Dim { n: 0, is: 1, os: 1 }], &[], Placement::OutOfPlace)
