@@ -133,6 +133,31 @@ pub mod r2r_inplace;
 pub use c2c_inplace::{C2CDirection, C2CPlan};
 pub use r2r_inplace::{R2RPlan, R2RPlanKind};
 
+// The new interface of 0.11 (docs/fftw/rlst-fftw-design.md).
+mod align;
+mod backend;
+mod buffer;
+mod error;
+mod execute;
+mod fingerprint;
+mod kind;
+mod layout;
+mod options;
+mod plan;
+mod planner;
+mod real;
+
+pub use align::{AlignmentClass, PLAN_ALIGNMENT};
+pub use backend::{Backend, backend, version};
+pub use buffer::{FftBuffer, FftBufferMut};
+pub use error::{FftwError, Side};
+pub use kind::Direction;
+pub use layout::{Dim, Layout, Placement};
+pub use options::{DefaultRequest, DestroyRequest, PreserveRequest, Rigor};
+pub use plan::{C2c, Destroying, Family, InPlace, Plan, Policy, Preserving};
+pub use planner::{DEFAULT_MAX_SCRATCH, Planner};
+pub use real::FftwReal;
+
 use std::{
     ffi::c_void,
     marker::PhantomData,
