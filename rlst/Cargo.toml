@@ -74,10 +74,10 @@ openblas_threading = []
 mkl_threading = []
 burn = ["dep:burn"]
 enable_tracing = ["rlst-proc-macro/enable_tracing", "dep:log"]
+# FFTW transforms, through the system's FFTW (`fftw_system`, the only back end).
+# FFTW and the fftw-sys bindings are GPL-licensed; see the README.
 fftw = ["dep:fftw-sys"]
-fftw_system = ["fftw-sys/system", "dep:pkg-config"]
-fftw_source = ["fftw-sys/source"]
-fftw_mkl = ["fftw-sys/intel-mkl"]
+fftw_system = ["fftw", "fftw-sys/system", "dep:pkg-config"]
 
 
 [lints.clippy]

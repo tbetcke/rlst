@@ -1,5 +1,41 @@
 # Changelog
 
+## v0.11.0 (unreleased)
+
+Changes since [v0.10.3](https://github.com/tbetcke/rlst/releases/tag/v0.10.3), on the
+`fftw-0.11` integration branch. All workspace crates use version 0.11.0-dev until the release.
+
+### FFTW: `fftw_system` is the only back end
+
+The `fftw_source` and `fftw_mkl` features are removed. `fftw_system`, which links the system's
+`libfftw3` and `libfftw3f`, is now the only back end, and it implies `fftw`: enabling `fftw`
+without `fftw_system` is a compile error instead of a link error. `build.rs` rejects an FFTW
+older than 3.3.4 reported by pkg-config, and the crate checks the version of the library linked
+at run time; 3.3.10 or later is recommended. When the `DOCS_RS` environment variable is set,
+`build.rs` skips FFTW discovery, so the documentation builds without FFTW installed.
+
+**Migration:** replace `fftw_source` by `fftw_system` and install FFTW from the system (`brew
+install fftw pkg-config`, `apt install libfftw3-dev pkg-config` or `dnf install fftw-devel
+pkgconf-pkg-config`; set `PKG_CONFIG_PATH` for a custom installation). Intel MKL's FFTW3
+wrappers (`fftw_mkl`) are out of scope for now; a later MKL back end would be an addition.
+`features = ["fftw", "fftw_system"]` keeps working, and `features = ["fftw_system"]` is enough.
+
+### `FFTW_ALIGNED` is 64
+
+`rlst::FFTW_ALIGNED` changes from 16 to 64 bytes, the modulus of the alignment classes of the
+new FFTW plans: buffers allocated with `rlst_dynamic_array!(…, shape | rlst::FFTW_ALIGNED)` or
+as `AlignedDynArray<…, { rlst::FFTW_ALIGNED }>` start at class 0, the class plans are made for
+by default. Equal classes modulo 64 imply equal alignment for FFTW on every build.
+
+**Migration:** none for code that only passes the constant to RLST's allocation; code that
+relied on its value being 16 must use 16 directly.
+
+### FFTW: one lock for all FFTW calls
+
+The 0.10 FFTW module now plans and destroys its plans under the same process-wide lock as the
+new interface, which serialises every FFTW call RLST makes other than plan execution. Its API
+and results do not change.
+
 ## v0.10.3
 
 Changes since [v0.10.2](https://github.com/tbetcke/rlst/releases/tag/v0.10.2).

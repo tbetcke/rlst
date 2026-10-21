@@ -12,7 +12,7 @@ use crate::{
 
 use itertools::{Itertools, izip};
 
-use super::{FFTW_PLAN_INTERFACE, Fft, FftwPlanPtr, PlanInterfaceTrait};
+use super::{Fft, FftwPlanInterface, FftwPlanPtr, PlanInterfaceTrait, with_fftw};
 
 pub use fftw_sys::fftw_r2r_kind as R2RPlanKind;
 
@@ -96,8 +96,8 @@ macro_rules! impl_r2r_inplace {
 
                 let data = arr.data_mut()?.as_mut_ptr();
 
-                let plan_ptr = unsafe {
-                    FFTW_PLAN_INTERFACE.lock().unwrap().$precision.create_r2r(
+                let plan_ptr = with_fftw(|_| unsafe {
+                    FftwPlanInterface::default().$precision.create_r2r(
                         NDIM as c_int,
                         shape.as_ptr(),
                         data,
@@ -105,7 +105,7 @@ macro_rules! impl_r2r_inplace {
                         kind,
                         flags as u32,
                     )
-                };
+                });
 
                 if plan_ptr.is_null() {
                     None

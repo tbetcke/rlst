@@ -78,13 +78,15 @@ changes:
 
 - `strict` — denies warnings and unused crate dependencies. Code must pass with this feature.
 - `mpi` — enables `mpi`/`mpi-sys` and distributed APIs; requires a working MPI installation.
-- `fftw` — exposes FFTW and Chebyshev APIs. Enable it together with one backend: `fftw_system`
-  (system FFTW), `fftw_source` (build FFTW), or `fftw_mkl` (Intel MKL). System discovery requires
-  both `fftw3` and `fftw3f`, using `pkg-config` with a native macOS Homebrew fallback. Set
-  `PKG_CONFIG_PATH` for custom installations; cross-compilation must use target libraries, not
-  host Homebrew paths. This interface is being replaced for 0.11 on the `fftw-0.11` branch:
-  task F1 removes `fftw_source` and `fftw_mkl` and makes `fftw_system` the only back end
-  (see "FFTW rework (0.11)" below). Update this entry when F1 merges.
+- `fftw` — exposes FFTW and Chebyshev APIs. `fftw_system` (system FFTW) is the only back end
+  and implies `fftw`; `fftw` without `fftw_system` is a `compile_error!` in `lib.rs`. System
+  discovery in `build.rs` requires both `fftw3` and `fftw3f`, using `pkg-config` with a native
+  macOS Homebrew fallback, and rejects a pkg-config version below 3.3.4 (the Homebrew fallback
+  has no version; the crate checks `fftw_version` at the first planner call). With `DOCS_RS`
+  set, `build.rs` skips discovery. Set `PKG_CONFIG_PATH` for custom installations;
+  cross-compilation must use target libraries, not host Homebrew paths. The interface is being
+  rewritten for 0.11 on the `fftw-0.11` branch (see "FFTW rework (0.11)" below); `fftw_source`
+  and `fftw_mkl` were removed by task F1.
 - `burn` — enables the optional Burn integration.
 - `enable_tracing` — enables tracing macro support and `log`.
 - `blis_threading`, `openblas_threading`, `mkl_threading` — link that backend's thread-control
@@ -105,8 +107,8 @@ SuiteSparse discovery checks Homebrew prefixes, `/usr/local`, and `/usr` (includ
 library directories). Set `SUITESPARSE_PATH` to an installation prefix containing `include/` and
 `lib/` to override discovery; see `rlst-suitesparse/README.md`.
 
-FFTW linkage can impose GPL obligations (`fftw_system` and `fftw_source`); preserve the licensing
-notice in the README when changing that integration. UMFPACK is GPL-2.0-or-later; also preserve
+FFTW linkage through `fftw_system` can impose GPL obligations; preserve the licensing notice in
+the README when changing that integration. UMFPACK is GPL-2.0-or-later; also preserve
 the SuiteSparse README and build-script licensing warnings.
 
 ## Coding conventions

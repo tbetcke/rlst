@@ -9,7 +9,7 @@ use super::options::Rigor;
 
 /// The side of a transform that an error refers to.
 ///
-/// ```no_run
+/// ```
 /// use rlst::fftw::Side;
 ///
 /// assert_eq!(Side::Input.to_string(), "input");
@@ -25,8 +25,10 @@ pub enum Side {
 
 impl fmt::Display for Side {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let _ = f;
-        todo!()
+        f.write_str(match self {
+            Side::Input => "input",
+            Side::Output => "output",
+        })
     }
 }
 

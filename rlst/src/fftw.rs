@@ -7,9 +7,9 @@
 //! 2. Execute the FFT
 //!
 //! FFTW supports FFT computations on one-, two-, and three-dimensional input arrays.
-//! Enable `fftw` together with one backend feature: `fftw_system`, `fftw_source`, or
-//! `fftw_mkl`. The system backend must provide both single- and double-precision
-//! libraries (`fftw3f` and `fftw3`), normally discovered through `pkg-config`.
+//! Enable the `fftw_system` feature, the only backend, which implies `fftw`. The system
+//! must provide both single- and double-precision libraries (`fftw3f` and `fftw3`), version
+//! 3.3.4 or later, normally discovered through `pkg-config`.
 //!
 //! ## Complex-to-Complex transform
 //!
@@ -22,8 +22,8 @@
 //! use num::FromPrimitive;
 //!
 //! let shape = [3, 5, 2];
-//! // We create a 16 byte aligned array. This is
-//! // the required alignment for FFTW to use SIMD features.
+//! // We create an array aligned to `FFTW_ALIGNED` (64) bytes,
+//! // which suits FFTW's SIMD code on every build.
 //! let mut arr = rlst_dynamic_array!(c64, shape | rlst::FFTW_ALIGNED);
 //! arr.fill_from_seed_equally_distributed(0);
 //!
@@ -69,8 +69,8 @@
 //! use num::FromPrimitive;
 //!
 //! let shape = [3, 5, 2];
-//! // We create a 16 byte aligned array. This is
-//! // the required alignment for FFTW to use SIMD features.
+//! // We create an array aligned to `FFTW_ALIGNED` (64) bytes,
+//! // which suits FFTW's SIMD code on every build.
 //! let mut arr = rlst_dynamic_array!(f64, shape | rlst::FFTW_ALIGNED);
 //! arr.fill_from_seed_equally_distributed(0);
 //!
@@ -142,10 +142,14 @@ mod execute;
 mod fingerprint;
 mod kind;
 mod layout;
+mod lock;
 mod options;
 mod plan;
 mod planner;
 mod real;
+mod version;
+
+use lock::with_fftw;
 
 pub use align::{AlignmentClass, PLAN_ALIGNMENT};
 pub use backend::{Backend, backend, version};
@@ -162,7 +166,7 @@ use std::{
     ffi::c_void,
     marker::PhantomData,
     ops::Deref,
-    sync::{LazyLock, LockResult, Mutex, PoisonError, RwLockReadGuard, RwLockWriteGuard},
+    sync::{LockResult, PoisonError, RwLockReadGuard, RwLockWriteGuard},
 };
 
 use crate::{
@@ -171,9 +175,6 @@ use crate::{
 };
 use fftw_sys;
 use num::Complex;
-
-static FFTW_PLAN_INTERFACE: LazyLock<Mutex<FftwPlanInterface>> =
-    LazyLock::new(|| Mutex::new(FftwPlanInterface::default()));
 
 /// FFT Precision
 #[derive(Copy, Clone, Debug)]
@@ -285,27 +286,15 @@ where
     fn drop(&mut self) {
         if coe::is_same::<T, f64>() {
             let ptr = FftwPlanPtrType::<f64>::get_fftw_ptr(self.ptr);
-            unsafe {
-                FFTW_PLAN_INTERFACE
-                    .lock()
-                    .unwrap()
-                    .fftw_double
-                    .destroy_plan(ptr);
-            };
+            with_fftw(|_| unsafe { FftwPlanInterface::default().fftw_double.destroy_plan(ptr) });
         } else if coe::is_same::<T, f32>() {
             let ptr = FftwPlanPtrType::<f32>::get_fftw_ptr(self.ptr);
-            unsafe {
-                FFTW_PLAN_INTERFACE
-                    .lock()
-                    .unwrap()
-                    .fftw_single
-                    .destroy_plan(ptr)
-            };
+            with_fftw(|_| unsafe { FftwPlanInterface::default().fftw_single.destroy_plan(ptr) });
         }
     }
 }
 
-/// An interface to plan generation routines that will be hidden behind a mutex
+/// An interface to plan generation routines, called under the FFTW lock (`with_fftw`)
 struct ConcretePlanInterface<T> {
     _marker: PhantomData<T>,
 }
@@ -390,7 +379,7 @@ impl PlanInterfaceTrait for ConcretePlanInterface<f32> {
     }
 }
 
-/// A thread-safe interface to work with FFTW Plans
+/// An interface to work with FFTW Plans; every call runs under the FFTW lock (`with_fftw`)
 #[derive(Default)]
 struct FftwPlanInterface {
     pub fftw_single: ConcretePlanInterface<f32>,

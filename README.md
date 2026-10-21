@@ -15,13 +15,14 @@ You can choose between one of them if you use this work.
 Some optional dependencies of the library have different licenses that
 may change the license of compiled library components. 
 
-Note that when linking against FFTW (either by the flag `fftw_system` or
-the flag `fftw_source`) the GPL license of FFTW needs to be adhered to.
+Note that when linking against FFTW (with the flag `fftw_system`) the GPL
+license of FFTW needs to be adhered to.
 
 ## System FFTW
 
-Enable `fftw,fftw_system` to use an installed FFTW library. Both double- and
-single-precision libraries (`fftw3` and `fftw3f`) are required.
+Enable `fftw_system` (which implies `fftw`) to use an installed FFTW library, version
+3.3.4 or later; 3.3.10 or later is recommended. Both double- and single-precision
+libraries (`fftw3` and `fftw3f`) are required.
 
 - macOS (Homebrew): `brew install fftw pkg-config`
 - Debian/Ubuntu: `sudo apt install libfftw3-dev pkg-config`
@@ -32,7 +33,6 @@ standard native Homebrew FFTW locations on macOS. For custom installations,
 set `PKG_CONFIG_PATH` to the directory containing `fftw3.pc` and `fftw3f.pc`.
 Cross-compilation requires target libraries and the corresponding `pkg-config`
 configuration; host Homebrew paths are not used as a fallback.
-This discovery does not affect the `fftw_source` or `fftw_mkl` backends.
 
 ## Notes
 
