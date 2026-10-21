@@ -39,6 +39,16 @@ provides complex-to-complex plans on slices (`Layout`, `Planner`, `Plan` and the
 in `rlst::fftw`); the 0.10 types stay beside them, unchanged, until the new interface is
 complete.
 
+### New traits `StridedRawAccess` and `StridedRawAccessMut`
+
+`rlst::StridedRawAccess::storage` and `StridedRawAccessMut::storage_mut` return the backing
+storage of an array or view and the offset of its first element; with the view's strides,
+element `i` is `storage[offset + Σ i[k] · stride[k]]`. Unlike `RawAccess::data`, which holds
+exactly the array's elements and is `None` for most views, they cover subviews and every
+slice, at the price of a slice that may hold elements of other views. The traits are
+declared in this release cycle and implemented for RLST's arrays and views with the new FFTW
+layouts. `RawAccess` does not change.
+
 ### FFTW: one lock for all FFTW calls
 
 The 0.10 FFTW module now plans and destroys its plans under the same process-wide lock as the
