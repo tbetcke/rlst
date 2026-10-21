@@ -44,29 +44,32 @@ whole test suite rather than only the FFTW and Chebyshev tests.
 
 ## FFTW on the CI runners
 
-From the "Report FFTW" step of each job in `run-tests.yml`, on the first CI run of the
-F0 pull request.
+From the "Report FFTW" step of each job in `run-tests.yml`, in the first CI run of the F0
+pull request ([#2](https://github.com/tbetcke/rlst/pull/2), run 39675711877). Both jobs
+passed, with `rustc 1.99.1 (58cf8f9c3 2026-10-13)`.
 
 | | ubuntu-24.04 (`run-tests`) | macos-26, arm64 (`run-tests-macos`) |
 | --- | --- | --- |
-| pkg-config `fftw3` | _to be filled from the CI log_ | _to be filled from the CI log_ |
-| pkg-config `fftw3f` | _to be filled from the CI log_ | _to be filled from the CI log_ |
-| `fftw_version` | _to be filled from the CI log_ (expected `fftw-3.3.10-sse2-avx`) | _to be filled from the CI log_ |
-| `_threads` in pkg-config's `libdir` | _to be filled from the CI log_ | _to be filled from the CI log_ |
-| `_omp` in pkg-config's `libdir` | _to be filled from the CI log_ | _to be filled from the CI log_ |
+| Runner image | `ubuntu-24.04`, version 20261018.339.1 | `macos-26-arm64`, version 20261013.0424.1 |
+| pkg-config `fftw3` | 3.3.10 | 3.3.11 |
+| pkg-config `fftw3f` | 3.3.10 | 3.3.11 |
+| `fftw_version` | `fftw-3.3.10-sse2-avx` | `fftw-3.3.11` (no SIMD) |
+| `_threads` in pkg-config's `libdir` | `libfftw3_threads` and `libfftw3f_threads` (`.so`, `.so.3`, `.so.3.6.10`, `.a`) | `libfftw3_threads` and `libfftw3f_threads` (`.dylib`, `.3.dylib`, `.a`) |
+| `_omp` in pkg-config's `libdir` | `libfftw3_omp` and `libfftw3f_omp` (`.so`, `.so.3`, `.so.3.6.10`, `.a`) | `libfftw3_omp` and `libfftw3f_omp` (`.dylib`, `.3.dylib`, `.a`) |
+| Tests | full CI configuration (`mpi,fftw,fftw_system,strict`), all pass | `fftw,fftw_system,strict`, the whole suite: 321 unit tests, 27 integration tests, 76 doctests (2 ignored) and 4 more, all pass |
 
-For comparison, the local Homebrew installation (arm64, FFTW 3.3.11) has
-`libfftw3_threads`, `libfftw3f_threads`, `libfftw3_omp` and `libfftw3f_omp`, as `.dylib` and
-`.a`, in pkg-config's `libdir` (`/opt/homebrew/Cellar/fftw/3.3.11/lib`). The macOS runner
-installs the same Homebrew formula and is expected to match.
+The macOS runner matches the local Homebrew installation, apart from the toolchain.
 
 ## What this means for later tasks
 
-- **Minimum versions (DF8).** Locally FFTW 3.3.11 meets 3.3.4 and, for `fftw_threads`, 3.3.6.
-  _For each runner: to be confirmed from the CI log._
-- **Threads libraries (F6).** Locally the `_threads` libraries are in pkg-config's `libdir`,
-  so F6 can link them from there on macOS. _For Ubuntu: to be confirmed from the CI log._
-- **Section 7.7's FFTW 3.3.10 on ubuntu-24.04.** _To be confirmed from the CI log._
+- **Minimum versions (DF8).** Both runners meet 3.3.4, and 3.3.6 for `fftw_threads`:
+  Ubuntu has 3.3.10, macOS 3.3.11.
+- **Threads libraries (F6).** On both runners, `libfftw3_threads` and `libfftw3f_threads`
+  are in pkg-config's `libdir` for `fftw3`, as shared and static libraries. F6 can link them
+  from there, as Section 4.10 plans. The `_omp` libraries are there too, and F6 does not
+  link them.
+- **Section 7.7's FFTW 3.3.10 on ubuntu-24.04** holds: `fftw-3.3.10-sse2-avx`, as Section 3
+  expects. macOS tests 3.3.11 without SIMD (design draft 0.7).
 
 ## Unexpected
 
