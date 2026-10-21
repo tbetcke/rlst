@@ -48,8 +48,8 @@ The repository uses the Rust 2024 edition for `rlst` and `rlst-suitesparse`, and
   and tests; `build.rs` discovers native SuiteSparse.
 - `scripts/run_mpi_tests.py` — bounded MPI regression runner; `scripts/test_run_mpi_tests.py`
   tests runner process cleanup without requiring MPI.
-- `.forgejo/workflows/` — CI configuration. `run-tests.yml` is the authoritative validation
-  matrix. Separate scheduled/manual workflows run `cargo templated-examples` and `cargo upgrades`.
+- `.github/workflows/` — GitHub Actions CI on hosted `ubuntu-24.04` runners. `run-tests.yml` is
+  the authoritative validation matrix. Separate scheduled/manual workflows run `cargo templated-examples` and `cargo upgrades`.
 
 The guides in `rlst/src/doc/` are the best existing description of intended usage and double as
 doctests. Read the relevant one before changing a user-facing API, and update it when behavior
@@ -209,7 +209,7 @@ that file.
 
 Run commands from the repository root. After every code edit, and again after any corrective
 edit, run all six Clippy commands below independently so a failure does not prevent later
-checks. `.forgejo/workflows/run-tests.yml` is authoritative; keep this list synchronized with it.
+checks. `.github/workflows/run-tests.yml` is authoritative; keep this list synchronized with it.
 
 ```bash
 cargo clippy -- -D warnings

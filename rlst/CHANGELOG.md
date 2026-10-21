@@ -1,8 +1,25 @@
 # Changelog
 
+## v0.10.3
+
+Changes since [v0.10.2](https://github.com/tbetcke/rlst/releases/tag/v0.10.2).
+All workspace crates (`rlst`, `rlst-proc-macro`, and `rlst-suitesparse`) use version 0.10.3.
+No code changes: every public signature and result is identical to 0.10.2's.
+
+### Repository moved to GitHub
+
+The repository moved from Codeberg to <https://github.com/tbetcke/rlst>, with its full branch
+and tag history. The `repository` and `homepage` fields of all three crates point there, and
+continuous integration runs on GitHub Actions instead of Forgejo Actions. The Codeberg
+repository is archived; its issues and pull requests remain readable there.
+
+**Migration:** update git dependencies, `[patch]` sections and git remotes from
+`https://codeberg.org/rlst/rlst` to `https://github.com/tbetcke/rlst`. Dependencies on the
+crates.io releases need no change.
+
 ## v0.10.2
 
-Changes since [v0.10.1](https://codeberg.org/rlst/rlst/releases/tag/v0.10.1).
+Changes since [v0.10.1](https://github.com/tbetcke/rlst/releases/tag/v0.10.1).
 All workspace crates (`rlst`, `rlst-proc-macro`, and `rlst-suitesparse`) use version 0.10.2.
 No public signature or result of 0.10.1 changes.
 
@@ -22,7 +39,7 @@ ms) and the others 5-10 % less (nd-fmm, Phase 5S T8q).
 
 ## v0.10.1
 
-Changes since [v0.10.0](https://codeberg.org/rlst/rlst/releases/tag/v0.10.0).
+Changes since [v0.10.0](https://github.com/tbetcke/rlst/releases/tag/v0.10.0).
 All workspace crates (`rlst`, `rlst-proc-macro`, and `rlst-suitesparse`) use version 0.10.1.
 Every change is additive or internal: no public signature or result of 0.10.0 changes.
 
@@ -94,7 +111,7 @@ gain with this release is to be measured there.
 
 ## v0.10.0
 
-Changes since [v0.9.0](https://codeberg.org/rlst/rlst/releases/tag/v0.9.0).
+Changes since [v0.9.0](https://github.com/tbetcke/rlst/releases/tag/v0.9.0).
 All workspace crates (`rlst`, `rlst-proc-macro`, and `rlst-suitesparse`) use version 0.10.0.
 
 ### Parallel sort — exactly balanced output
@@ -159,7 +176,7 @@ Burn 0.22 removes the backend type parameter from `Tensor` (now
 
 ## v0.9.0
 
-Changes since [v0.8.0](https://codeberg.org/rlst/rlst/releases/tag/v0.8.0).
+Changes since [v0.8.0](https://github.com/tbetcke/rlst/releases/tag/v0.8.0).
 All workspace crates (`rlst`, `rlst-proc-macro`, and `rlst-suitesparse`) use version 0.9.0.
 
 ### BLAS thread control — migration required
@@ -206,7 +223,7 @@ All workspace crates (`rlst`, `rlst-proc-macro`, and `rlst-suitesparse`) use ver
 
 ## v0.8.0
 
-Changes since [v0.7.0](https://codeberg.org/rlst/rlst/releases/tag/v0.7.0).
+Changes since [v0.7.0](https://github.com/tbetcke/rlst/releases/tag/v0.7.0).
 All workspace crates (`rlst`, `rlst-proc-macro`, and `rlst-suitesparse`) use version 0.8.0.
 
 ### Frames of elements — migration required
@@ -375,7 +392,7 @@ All workspace crates (`rlst`, `rlst-proc-macro`, and `rlst-suitesparse`) use ver
 
 ## v0.7.0
 
-Changes since [v0.6.1](https://codeberg.org/rlst/rlst/releases/tag/v0.6.1),
+Changes since [v0.6.1](https://github.com/tbetcke/rlst/releases/tag/v0.6.1),
 ordered from major features and compatibility changes to smaller fixes.
 All workspace crates (`rlst`, `rlst-proc-macro`, and `rlst-suitesparse`) use version 0.7.0.
 

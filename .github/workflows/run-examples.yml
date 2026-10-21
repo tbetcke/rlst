@@ -5,20 +5,21 @@ on:
   schedule:
   - cron: "1 0 * * FRI"
 
+permissions:
+  contents: read
+
 jobs:
   run-examples:
     name: run-examples
-    runs-on: docker
+    runs-on: ubuntu-24.04
     steps:
       - name: Install Rust
-        uses: https://github.com/dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@stable
 
       - uses: actions/checkout@v6
-        with:
-          submodules: "true"
 
       - name: Install cargo-templated-examples
         run: cargo install cargo-templated-examples
 
-      - name: Check if dependencies are up-to-date
+      - name: Run templated examples
         run: cargo templated-examples

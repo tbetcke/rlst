@@ -1,5 +1,7 @@
 # Rust Linear Solver Toolbox
 
+[![run-tests](https://github.com/tbetcke/rlst/actions/workflows/run-tests.yml/badge.svg)](https://github.com/tbetcke/rlst/actions/workflows/run-tests.yml)
+
 The Rust Linear Solver toolbox is an in-development project for
 dense and sparse linear algebra routines in Rust.
 

@@ -151,7 +151,7 @@ def run_bounded(executable: str, ranks: int, case: str) -> tuple[bool, str]:
     command = ["mpiexec", "--oversubscribe", "-n", str(ranks), executable]
     environment = os.environ | {
         "RLST_MPI_EMPTY_CASE": case,
-        # The containerized CI runner executes as root. Open MPI requires both
+        # Containerized runners often execute as root. Open MPI then requires both
         # variables as an explicit acknowledgement before launching ranks.
         "OMPI_ALLOW_RUN_AS_ROOT": "1",
         "OMPI_ALLOW_RUN_AS_ROOT_CONFIRM": "1",
