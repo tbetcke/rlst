@@ -29,15 +29,17 @@ pub(crate) mod sealed {
     }
 }
 
-/// The transform family of a [`Plan`]: [`C2c`] (r2c, c2r, r2r and the split families follow).
+/// The transform family of a [`Plan`]: [`C2c`] or [`SplitC2c`] (r2c, c2r, r2r and the other
+/// split families follow).
 ///
 /// The trait is sealed.
 ///
 /// ```
-/// use rlst::fftw::{C2c, Family};
+/// use rlst::fftw::{C2c, Family, SplitC2c};
 ///
 /// fn family<F: Family>() {}
 /// family::<C2c>();
+/// family::<SplitC2c>();
 /// ```
 pub trait Family: sealed::Family {}
 
@@ -67,6 +69,72 @@ pub trait Policy: sealed::Policy {}
 /// ```
 #[derive(Clone, Copy, Debug)]
 pub enum C2c {}
+
+/// Complex-to-complex transforms on split complex storage: the real and imaginary parts in
+/// one buffer of reals, a fixed gap apart.
+///
+/// Plans of this family are made for layouts with gaps ([`Layout::new_split`],
+/// [`Layout::split_along_axis`] and their companions) by
+/// [`Planner::split_c2c`](super::Planner::split_c2c) and its companions, and execute on
+/// buffers of reals: slices of `f32` or `f64`, and real RLST arrays and views, whose part axis
+/// of extent 2 holds the real part at index 0 and the imaginary part at index 1. A type-level
+/// marker; it is never constructed.
+///
+/// FFTW's SIMD code needs interleaved complex storage, so a split plan can use fewer SIMD
+/// stages than an interleaved plan of the same transform, copying into buffers for some
+/// stages and using scalar code for others (design, Sections 3 item 7 and 4.5). Copying split
+/// data into interleaved scratch and using an interleaved plan can then be faster; the
+/// benchmarks of the FFTW rework (task F8b) compare the two. Results of the two agree to
+/// round-off, not bit for bit.
+///
+/// ```
+/// use rlst::rlst_dynamic_array;
+/// use rlst::fftw::{Direction, Layout, Plan, Planner, Preserving, SplitC2c};
+///
+/// // Two transforms of length 8, real plane then imaginary plane.
+/// let mut input = rlst_dynamic_array!(f64, [8, 2, 2] | rlst::FFTW_ALIGNED);
+/// let mut output = rlst_dynamic_array!(f64, [8, 2, 2] | rlst::FFTW_ALIGNED);
+/// input[[0, 1, 0]] = 1.0;
+/// let layout = Layout::split_along_axis(&input, 2, &output, 2, 0)?;
+/// let plan: Plan<f64, SplitC2c, Preserving> =
+///     Planner::new().split_c2c(&layout, Direction::Forward)?;
+/// plan.execute(&input, &mut output)?;
+/// // The transform of a unit impulse is constant, with no imaginary part.
+/// assert!((0..8).all(|k| output[[k, 1, 0]] == 1.0 && output[[k, 1, 1]] == 0.0));
+/// # Ok::<(), rlst::fftw::FftwError>(())
+/// ```
+///
+/// A split plan executes on real buffers, so complex arrays do not compile:
+///
+/// ```compile_fail,E0277
+/// use rlst::{c64, rlst_dynamic_array};
+/// use rlst::fftw::{Direction, Layout, Planner};
+///
+/// let input = rlst_dynamic_array!(f64, [8, 2] | rlst::FFTW_ALIGNED);
+/// let mut output = rlst_dynamic_array!(f64, [8, 2] | rlst::FFTW_ALIGNED);
+/// let layout = Layout::split_along_axis(&input, 1, &output, 1, 0)?;
+/// let plan = Planner::<f64>::new().split_c2c(&layout, Direction::Forward)?;
+/// let complex_input = rlst_dynamic_array!(c64, [8] | rlst::FFTW_ALIGNED);
+/// let mut complex_output = rlst_dynamic_array!(c64, [8] | rlst::FFTW_ALIGNED);
+/// plan.execute(&complex_input, &mut complex_output)?;
+/// # Ok::<(), rlst::fftw::FftwError>(())
+/// ```
+///
+/// while the same code on the real arrays does:
+///
+/// ```
+/// use rlst::rlst_dynamic_array;
+/// use rlst::fftw::{Direction, Layout, Planner};
+///
+/// let input = rlst_dynamic_array!(f64, [8, 2] | rlst::FFTW_ALIGNED);
+/// let mut output = rlst_dynamic_array!(f64, [8, 2] | rlst::FFTW_ALIGNED);
+/// let layout = Layout::split_along_axis(&input, 1, &output, 1, 0)?;
+/// let plan = Planner::<f64>::new().split_c2c(&layout, Direction::Forward)?;
+/// plan.execute(&input, &mut output)?;
+/// # Ok::<(), rlst::fftw::FftwError>(())
+/// ```
+#[derive(Clone, Copy, Debug)]
+pub enum SplitC2c {}
 
 /// An out-of-place plan that leaves its input unchanged; it executes with `&input`.
 ///
@@ -107,6 +175,9 @@ pub enum InPlace {}
 
 impl sealed::Family for C2c {}
 impl Family for C2c {}
+
+impl sealed::Family for SplitC2c {}
+impl Family for SplitC2c {}
 
 impl sealed::Policy for Preserving {
     const FLAGS: c_uint = fftw_sys::FFTW_PRESERVE_INPUT;
@@ -371,6 +442,60 @@ impl<T: FftwReal, P: Policy> Plan<T, C2c, P> {
     /// ```
     pub fn direction(&self) -> Direction {
         self.direction
+    }
+}
+
+impl<T: FftwReal, P: Policy> Plan<T, SplitC2c, P> {
+    /// The direction of the transform.
+    ///
+    /// FFTW's split planner has no sign and always plans a forward transform; a backward
+    /// plan is FFTW's forward plan with the real and imaginary parts swapped on both sides,
+    /// at planning and at every execution (design, Section 3 item 8). Nothing else of the
+    /// plan depends on the direction.
+    ///
+    /// ```
+    /// use rlst::fftw::{Dim, Direction, Layout, Placement, Planner};
+    ///
+    /// let layout =
+    ///     Layout::new_split(&[Dim { n: 8, is: 1, os: 1 }], &[], (8, 8), Placement::OutOfPlace)?;
+    /// let plan = Planner::<f32>::new().split_c2c(&layout, Direction::Backward)?;
+    /// assert_eq!(plan.direction(), Direction::Backward);
+    /// # Ok::<(), rlst::fftw::FftwError>(())
+    /// ```
+    pub fn direction(&self) -> Direction {
+        self.direction
+    }
+
+    /// The offsets, in reals from the real part of the first element, of the two pointers
+    /// FFTW receives on each side, as in [`split_offsets`].
+    pub(crate) fn split_offsets(&self) -> [(usize, usize); 2] {
+        let (input_gap, output_gap) = self
+            .layout
+            .gaps()
+            .expect("split plans are made for layouts with gaps");
+        [
+            split_offsets(self.direction, input_gap),
+            split_offsets(self.direction, output_gap),
+        ]
+    }
+}
+
+/// The offsets, in reals from the real part of the first element of a side with gap `gap`,
+/// of the pointers FFTW receives as its real and imaginary parts for a split transform in
+/// `direction`.
+///
+/// FFTW's split planner always plans a forward transform (design, Section 3 item 8). Forward,
+/// it receives the real part and the real part plus the gap. Backward, the parts are swapped:
+/// it receives the real part plus the gap as its real part and the real part as its imaginary
+/// part, so that it sees the signed gap −gap, and its forward transform of the swapped parts
+/// is the backward transform of the data. Planning and execution use this one function, so
+/// they pass FFTW the same arrangement.
+pub(crate) fn split_offsets(direction: Direction, gap: isize) -> (usize, usize) {
+    // Layouts with gaps have positive gaps (`Layout::new_split`).
+    let gap = gap.unsigned_abs();
+    match direction {
+        Direction::Forward => (0, gap),
+        Direction::Backward => (gap, 0),
     }
 }
 

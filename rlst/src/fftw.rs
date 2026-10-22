@@ -132,7 +132,8 @@
 //! RLST 0.11 replaces the interface above. Until it is complete, the new types live in this
 //! module beside the 0.10 ones, which keep their names and share the new FFTW lock; the 0.10
 //! types are removed when the new interface is complete. So far the new interface has
-//! complex-to-complex plans on slices and on RLST arrays and views:
+//! complex-to-complex plans, on interleaved and on split complex storage, on slices and on
+//! RLST arrays and views:
 //!
 //! - [`Layout`], made from [`Dim`]s and a [`Placement`]: transform and batch dimensions with
 //!   strides, validated and normalised;
@@ -142,9 +143,14 @@
 //! - [`Planner`], a builder with [`Rigor`], wisdom-only, unaligned, time-limit, alignment-class
 //!   and scratch options, whose input-policy requests ([`DefaultRequest`],
 //!   [`PreserveRequest`], [`DestroyRequest`]) decide a plan's policy;
-//! - [`Plan`], of precision [`FftwReal`], family [`C2c`] and policy [`Preserving`],
-//!   [`Destroying`] or [`InPlace`], which runs on any buffers that fit its layout and
-//!   [`AlignmentClass`]es, from any thread, with [`Plan::description`] and
+//! - split complex storage, the real and imaginary parts in one buffer of reals a fixed gap
+//!   apart, such as a real plane and then an imaginary plane: a split complex array is a real
+//!   array with a *part axis* of extent 2, and [`Layout::split_along_axis`],
+//!   [`Layout::split_over_axes`], their in-place variants and [`Layout::new_split`] make
+//!   layouts with gaps, which count reals, for [`Planner::split_c2c`] and its companions;
+//! - [`Plan`], of precision [`FftwReal`], family [`C2c`] or [`SplitC2c`] and policy
+//!   [`Preserving`], [`Destroying`] or [`InPlace`], which runs on any buffers that fit its
+//!   layout and [`AlignmentClass`]es, from any thread, with [`Plan::description`] and
 //!   [`Plan::fingerprint`];
 //! - [`FftBuffer`] and [`FftBufferMut`], implemented for slices and for RLST arrays and views
 //!   through [`StridedRawAccess`](crate::StridedRawAccess), checked at execution by shape,
@@ -154,8 +160,9 @@
 //!
 //! Plans are made through FFTW's 64-bit guru interface, on scratch buffers unless a `*_on`
 //! method is used, so planning never touches user data. Execution checks the buffers against
-//! the plan before calling FFTW and takes no lock. Split storage, the real-to-complex and
-//! real-to-real families, wisdom and threads follow.
+//! the plan before calling FFTW and takes no lock. Split plans can use fewer of FFTW's SIMD
+//! stages than interleaved ones (see [`SplitC2c`]). The real-to-complex and real-to-real
+//! families, wisdom and threads follow.
 //!
 //! ```
 //! use rlst::{c64, rlst_dynamic_array};
@@ -220,7 +227,7 @@ pub use error::{FftwError, Side};
 pub use kind::Direction;
 pub use layout::{Dim, Layout, Placement};
 pub use options::{DefaultRequest, DestroyRequest, PreserveRequest, Rigor};
-pub use plan::{C2c, Destroying, Family, InPlace, Plan, Policy, Preserving};
+pub use plan::{C2c, Destroying, Family, InPlace, Plan, Policy, Preserving, SplitC2c};
 pub use planner::{DEFAULT_MAX_SCRATCH, Planner};
 pub use real::FftwReal;
 

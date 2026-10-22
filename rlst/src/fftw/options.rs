@@ -55,8 +55,9 @@ impl fmt::Display for Rigor {
 
 /// The planner's default input policy: each family follows FFTW's default.
 ///
-/// For c2c, the plan preserves its input ([`Preserving`](super::Preserving)). This is the
-/// type parameter of [`Planner::new`](super::Planner::new); it is never constructed.
+/// For c2c and split c2c, the plan preserves its input ([`Preserving`](super::Preserving)).
+/// This is the type parameter of [`Planner::new`](super::Planner::new); it is never
+/// constructed.
 ///
 /// ```
 /// use rlst::fftw::{DefaultRequest, Planner};
@@ -70,8 +71,8 @@ pub enum DefaultRequest {}
 /// A request that the plan preserves its input, made with
 /// [`Planner::preserve_input`](super::Planner::preserve_input).
 ///
-/// For c2c this is FFTW's default as well. It is a type parameter of the planner and is never
-/// constructed.
+/// For c2c and split c2c this is FFTW's default as well. It is a type parameter of the
+/// planner and is never constructed.
 ///
 /// ```
 /// use rlst::fftw::{Planner, PreserveRequest};
@@ -98,7 +99,7 @@ pub enum PreserveRequest {}
 pub enum DestroyRequest {}
 
 pub(crate) mod sealed {
-    use crate::fftw::plan::{C2c, Destroying, Policy, Preserving};
+    use crate::fftw::plan::{C2c, Destroying, Policy, Preserving, SplitC2c};
 
     use super::{DefaultRequest, DestroyRequest, PreserveRequest};
 
@@ -117,6 +118,18 @@ pub(crate) mod sealed {
     }
 
     impl PolicyFor<C2c> for DestroyRequest {
+        type Policy = Destroying;
+    }
+
+    impl PolicyFor<SplitC2c> for DefaultRequest {
+        type Policy = Preserving;
+    }
+
+    impl PolicyFor<SplitC2c> for PreserveRequest {
+        type Policy = Preserving;
+    }
+
+    impl PolicyFor<SplitC2c> for DestroyRequest {
         type Policy = Destroying;
     }
 }
