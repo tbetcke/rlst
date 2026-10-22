@@ -1,6 +1,6 @@
 # FFTW interfaces for RLST: design proposal
 
-Draft 0.12, 2026-10-22. A proposal for the RLST maintainers, not a plan until it is signed
+Draft 0.13, 2026-10-22. A proposal for the RLST maintainers, not a plan until it is signed
 off. It records the decisions taken on 2026-10-21 and 2026-10-22. It replaces RLST's FFTW interface
 completely: every transform family of FFTW 3.3's serial interface, plans that are
 independent of the arrays they run on, checked and sound execution, wisdom, threads,
@@ -18,7 +18,7 @@ for nd-fmm: Section 11 lists open points and options for nd-fmm's own review.
 In the RLST repository this document is `docs/fftw/rlst-fftw-design.md`; the task briefs
 are in `docs/fftw/tasks/` and the workflow in `docs/fftw/README.md`.
 
-What drafts 0.6 to 0.12 change, for the start of the implementation:
+What drafts 0.6 to 0.13 change, for the start of the implementation:
 
 - **Work plan** (Section 9): the removal of `fftw_source` and `fftw_mkl` moves from F7 to
   F1; the 0.10 module coexists with the new types until F7 and shares the new FFTW lock;
@@ -48,6 +48,11 @@ What drafts 0.6 to 0.12 change, for the start of the implementation:
   tested to be independent of earlier `Estimate` planning of other problems (Section 7.6,
   DC22); F4 documents rules 2 to 6 of Section 5 on `Plan` (DC23); the split of Sections 7.5
   and 7.6 between F4 and F6 (Section 9, DC24).
+- **Split layouts** (draft 0.13, from the F3 brief): an optional gap per side in `Layout`,
+  and raw split layouts for slices (Section 4.5, DC25); the split layout functions count
+  logical axes (DC26); execution finds the part axis by its extent and stride (Section 4.8,
+  DC27); a layout of the other storage kind is an `InvalidLayout` (Section 4.15, DC28); the
+  split layout functions take real arrays (DC29).
 
 Every decision for the RLST maintainers and every design choice is settled (Section 10).
 This document makes no decisions for nd-fmm (Section 11). Earlier drafts' changes are
@@ -337,6 +342,7 @@ plan.execute(&box_in, &mut box_out)?;
   array. The functions are generic over RLST arrays and views of any element type with
   `StridedRawAccess + Shape<N> + Stride<N>`, with `N` the rank of both arrays, so the input
   and output may differ in element type and shape (real and complex for r2c and c2r).
+  The split layout functions take real arrays only (Section 4.5, DC29).
 - **Strided storage (DC11).** `StridedRawAccess::storage` returns a view's backing storage
   and the offset of its first element; with the view's strides, element `i` is
   `storage[offset + Σ i[k] · stride[k]]`, and the slice may hold elements of other views
@@ -464,6 +470,21 @@ index 0 is the real part, index 1 the imaginary part. The stride of that axis is
 part_out, axis)` and `split_over_axes` build split layouts. Because the gap is a stride of
 the layout, the comparison of strides at execution checks it.
 
+- **Representation (DC25).** A split layout's dimensions, gaps and spans count reals.
+  `Layout` records an optional gap per side, never as a batch dimension, so normalisation
+  never merges the part axis into a batch axis; `Layout::gaps()` returns
+  `Some((input_gap, output_gap))` for a split c2c layout. `Layout::new_split(dims, batch,
+  (input_gap, output_gap), placement)` builds raw split layouts for slices, with the rules
+  of `Layout::new`, positive gaps, equal gaps in place, and the distinct-output rule with
+  the part axis as a dimension of extent 2. F5's split r2c and c2r, which have a gap on one
+  side only, fit the per-side record without a breaking change.
+- **Axes (DC26).** `axis` and `axes` count **logical axes**: the array's axes with its part
+  axis removed, numbered in order. One `axes` then means the same transform on an input
+  and an output whose part axes are at different positions; errors name the logical axis.
+- **Real arrays (DC29).** The split layout functions require real items on both arrays
+  (`BaseItem<Item = T>` with `T: FftwReal`), a bound only, so that a layout built from
+  complex arrays, which would count complex elements, does not compile.
+
 - nd-fmm's split planes, the real plane then the imaginary plane of each box at a size
   fixed per level, are a part axis outermost with a stride equal to the plane size, the same
   for every box. Four independent arrays, as in draft 0.1, cannot be expressed and are not
@@ -530,7 +551,12 @@ Before every FFTW call, in O(rank) time:
    given, through the exclusive borrow for a buffer the plan writes. The check returns that
    pointer and execution uses no other, so an implementation of the safe traits that returns
    another slice on another call, or a shorter one from `storage_mut()`, cannot get around it
-   (DC21). For a slice, the layout's span fits within it;
+   (DC21). For a slice, the layout's span fits within it. For split storage the layout
+   records gaps, not the position of the part axis (DC27): on each side, the part axis is
+   an axis of extent 2 whose stride is that side's gap and that no transform dimension
+   needs, and the array is accepted if any such choice fits, since several can qualify on
+   an input; when both buffers are arrays of the same rank, each side's part axis is
+   removed and the remaining axes pair by index;
 3. the alignment class of every data pointer equals the plan's, unless the plan is
    unaligned;
 4. placement: an in-place plan gets one array; for an out-of-place plan the address spans
@@ -653,7 +679,10 @@ precision. Section 5 states their role in determinism.
 `FftwError` variants, each carrying the values involved: `InvalidLayout`, `LayoutMismatch`,
 `AlignmentMismatch`, `Overlap`, `PlacementMismatch`, `InvalidKind` (for example REDFT00
 with n = 1), `PreserveInputUnsupported`, `ScratchTooLarge`, `VersionTooOld`, `PlanCreationFailed` (FFTW returned NULL; the flags and layout are
-attached, since FFTW gives no reason) and `WisdomImportFailed`.
+attached, since FFTW gives no reason) and `WisdomImportFailed`. A layout of the other
+storage kind, an interleaved layout given to a split planner method or a split layout to an
+interleaved one, is an `InvalidLayout` naming the part axis, with a reason naming the
+family and the storage the layout describes (DC28).
 
 ## 5. Thread safety and determinism: the rules users get
 
@@ -919,6 +948,11 @@ waits for is the complete one. When that release comes is Helmholtz decision D14
 | DC22 | The determinism tests assert that an `ESTIMATE` plan made after `ESTIMATE` planning of unrelated problems in the same process has the fingerprint and bits of a fresh process; a failure is a design question (Section 7.6) | accepted (F4 brief) |
 | DC23 | F4 states rules 2 to 6 of Section 5 in the rustdoc of `Plan` and `Plan::fingerprint`; F7's guide states all seven and links them (Section 9) | accepted (F4 brief) |
 | DC24 | F4 tests the items of Sections 7.5 and 7.6 that need only F1's planner, wisdom-only planning without wisdom and the `ESTIMATE` plan after a `MEASURE` plan included; F6 tests wisdom export, import and forgetting and `fftw_threads` (Section 9) | accepted (F4 brief) |
+| DC25 | `Layout` records an optional gap per side, exposed by `Layout::gaps()`; `Layout::new_split` builds raw split layouts for slices (Section 4.5) | accepted (F3 brief) |
+| DC26 | The split layout functions count logical axes, the array's axes without its part axis (Section 4.5) | accepted (F3 brief) |
+| DC27 | Execution finds each side's part axis as an axis of extent 2 with that side's gap as stride, accepting any choice that fits; arrays of the same rank pair by index without their part axes (Section 4.8) | accepted (F3 brief) |
+| DC28 | A layout of the other storage kind given to a planner method is an `InvalidLayout` naming the part axis (Section 4.15) | accepted (F3 brief) |
+| DC29 | The split layout functions require real items on both arrays (Sections 4.3 and 4.5) | accepted (F3 brief) |
 
 ### 10.2 DF6: why `fftw_source` is dropped
 
@@ -1147,6 +1181,15 @@ review.
   documents rules 2 to 6 of Section 5 on `Plan` and `Plan::fingerprint`, and F7's guide all
   seven (Section 9, DC23); the tests of Sections 7.5 and 7.6 are split between F4 and F6 by
   whether they need the wisdom API or threads (Section 9, DC24).
+
+- **Draft 0.13** (2026-10-22), from the open questions of the F3 brief
+  (`docs/fftw/tasks/F3-split.md`), settled by the maintainer before the task started, each
+  with the proposed option: `Layout` records an optional gap per side, and
+  `Layout::new_split` builds raw split layouts (Section 4.5, DC25); the split layout
+  functions count logical axes (Section 4.5, DC26); execution finds the part axis by its
+  extent and stride, and pairs arrays without their part axes (Section 4.8, DC27); a layout
+  of the other storage kind is an `InvalidLayout` (Section 4.15, DC28); the split layout
+  functions require real arrays (Sections 4.3 and 4.5, DC29).
 
 ## Appendix B. Migration from 0.10
 
