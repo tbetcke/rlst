@@ -1,6 +1,6 @@
 # FFTW interfaces for RLST: design proposal
 
-Draft 0.10, 2026-10-22. A proposal for the RLST maintainers, not a plan until it is signed
+Draft 0.11, 2026-10-22. A proposal for the RLST maintainers, not a plan until it is signed
 off. It records the decisions taken on 2026-10-21 and 2026-10-22. It replaces RLST's FFTW interface
 completely: every transform family of FFTW 3.3's serial interface, plans that are
 independent of the arrays they run on, checked and sound execution, wisdom, threads,
@@ -18,7 +18,7 @@ for nd-fmm: Section 11 lists open points and options for nd-fmm's own review.
 In the RLST repository this document is `docs/fftw/rlst-fftw-design.md`; the task briefs
 are in `docs/fftw/tasks/` and the workflow in `docs/fftw/README.md`.
 
-What drafts 0.6 to 0.10 change, for the start of the implementation:
+What drafts 0.6 to 0.11 change, for the start of the implementation:
 
 - **Work plan** (Section 9): the removal of `fftw_source` and `fftw_mkl` moves from F7 to
   F1; the 0.10 module coexists with the new types until F7 and shares the new FFTW lock;
@@ -42,6 +42,8 @@ What drafts 0.6 to 0.10 change, for the start of the implementation:
   (DC19).
 - **A view offset that overflows** (draft 0.10, from task F2a): a view whose offset does not
   fit in `usize`, which only a view without elements can have, has no storage (DC20).
+- **The pointer that execution checks** (draft 0.11, from task F2b): the span check covers
+  the storage behind the very pointer FFTW is given (Section 4.8, DC21).
 
 Every decision for the RLST maintainers and every design choice is settled (Section 10).
 This document makes no decisions for nd-fmm (Section 11). Earlier drafts' changes are
@@ -520,7 +522,11 @@ Before every FFTW call, in O(rank) time:
    rank, their axes are also paired by index: equal shapes, each transform dimension matched
    by one axis with its extent and both strides, and the other axes, normalised together,
    equal to the layout's batch (DC15). The offset of the array's first element plus the
-   layout's span fits its strided storage. For a slice, the layout's span fits within it;
+   layout's span fits its strided storage: the storage behind the pointer that FFTW is
+   given, through the exclusive borrow for a buffer the plan writes. The check returns that
+   pointer and execution uses no other, so an implementation of the safe traits that returns
+   another slice on another call, or a shorter one from `storage_mut()`, cannot get around it
+   (DC21). For a slice, the layout's span fits within it;
 3. the alignment class of every data pointer equals the plan's, unless the plan is
    unaligned;
 4. placement: an in-place plan gets one array; for an out-of-place plan the address spans
@@ -901,6 +907,7 @@ waits for is the complete one. When that release comes is Helmholtz decision D14
 | DC18 | Inherent `Array::storage()` and `Array::storage_mut()` beside `data()` and `data_mut()`, added in F2 (Section 4.3) | accepted (F2 brief), changed from the brief's proposal of none |
 | DC19 | For a view without elements, the storage offset may lie past the end of the slice and must not be used to index it; the traits' contract says so (Section 4.3) | accepted (F2 brief) |
 | DC20 | A view whose storage offset does not fit in `usize`, which only a view without elements can have, returns `None` from `storage()` and `storage_mut()`; offsets are computed with checked arithmetic (Section 4.3) | accepted (F2a) |
+| DC21 | Execution checks an array's span against the storage behind the pointer it passes FFTW, obtained through the exclusive borrow for a written buffer; the sealed side checks return that pointer (Section 4.8) | accepted (F2b) |
 
 ### 10.2 DF6: why `fftw_source` is dropped
 
@@ -1114,6 +1121,13 @@ review.
   strides, so the offset of a view of it can overflow `usize`; such a view returns `None`
   from `storage()` and `storage_mut()` rather than panicking in debug builds or wrapping in
   release builds (Section 4.3, DC20).
+
+- **Draft 0.11** (2026-10-22), from task F2b (`docs/fftw/tasks/F2-layouts.md`, "Open
+  questions" item 8), confirmed by the maintainer: `StridedRawAccess` and
+  `StridedRawAccessMut` are safe to implement, so a pointer taken from a later call than the
+  one whose storage was checked need not lie in checked memory. Section 4.8 item 2 now says
+  that the span is checked against the storage behind the pointer FFTW is given, which the
+  check returns (DC21).
 
 ## Appendix B. Migration from 0.10
 

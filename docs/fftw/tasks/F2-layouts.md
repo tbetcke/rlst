@@ -3,7 +3,7 @@
 | | |
 | --- | --- |
 | Task | F2 (design, Section 9) |
-| Status | in progress (F2a merged in #8; F2b) |
+| Status | done |
 | Depends on | F1 |
 | Pull requests | two, into `fftw-0.11`: F2a (strided storage of arrays and views, `Array::storage()` and `storage_mut()`), F2b (layouts from arrays, execution on arrays, tests) |
 | Read first | design: Section 2.5, Section 3 (all items), Sections 4.1–4.8, Section 5, Sections 7.1–7.4 and 7.7, Section 9 (F2 row, Transition), Section 10, in particular DC11–DC19, Appendix A (drafts 0.8 and 0.9); `docs/fftw/tasks/F1-core.md`, including its "Open questions"; `docs/fftw/F0-findings.md`; `CLAUDE.md` |
@@ -536,5 +536,6 @@ Raised during F2b:
    returns the mutable pointer. Execution and the `*_on` planner methods pass FFTW only these
    pointers; the alignment and overlap checks run on them. The order of the checks and their
    errors are those of work items 5 and 6, and no public signature changes. A test with a
-   type whose `storage_mut()` is shorter than its `storage()` covers it. *Raised in the F2b
-   pull request for confirmation.*
+   type whose `storage_mut()` is shorter than its `storage()` covers it. *Confirmed by the
+   maintainer after F2b: DC21, design draft 0.11, which states in Section 4.8 that the span
+   is checked against the storage behind the pointer FFTW is given.*
