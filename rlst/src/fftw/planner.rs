@@ -17,7 +17,7 @@ use super::layout::{Dim, Layout, Placement};
 use super::lock::{SettingsGuard, with_fftw};
 use super::options::sealed::PolicyFor;
 use super::options::{DefaultRequest, DestroyRequest, PreserveRequest, Rigor};
-use super::plan::{C2c, InPlace, Plan, Policy};
+use super::plan::{C2c, InPlace, Plan, Policy, SplitC2c, split_offsets};
 use super::real::FftwReal;
 
 /// The default bound on scratch memory for planning: 1 GiB for input and output together.
@@ -40,6 +40,10 @@ pub const DEFAULT_MAX_SCRATCH: usize = 1 << 30;
 /// | `Planner::new().c2c(…)`, `.preserve_input().c2c(…)` | `Plan<T, C2c, Preserving>` |
 /// | `Planner::new().may_destroy_input().c2c(…)` | `Plan<T, C2c, Destroying>` |
 /// | `Planner::new().c2c_inplace(…)` | `Plan<T, C2c, InPlace>` |
+/// | `Planner::new().split_c2c(…)` | `Plan<T, SplitC2c, Preserving>` |
+/// | `Planner::new().preserve_input().split_c2c(…)` | `Plan<T, SplitC2c, Preserving>` |
+/// | `Planner::new().may_destroy_input().split_c2c(…)` | `Plan<T, SplitC2c, Destroying>` |
+/// | `Planner::new().split_c2c_inplace(…)` | `Plan<T, SplitC2c, InPlace>` |
 ///
 /// Planning methods without `_on` plan on scratch buffers that the planner allocates for the
 /// layout's span, at the requested alignment classes, and frees after planning, so planning
@@ -269,13 +273,14 @@ impl<T: FftwReal, S> Planner<T, S> {
         flags
     }
 
-    /// Plan a c2c transform of policy `P` on scratch.
-    fn c2c_on_scratch<P: Policy>(
+    /// The alignment classes to plan scratch for: the planner's, checked to be equal in
+    /// place and multiples of `align` bytes, the alignment of the element type `what`.
+    fn scratch_classes(
         &self,
         layout: &Layout,
-        direction: Direction,
-    ) -> Result<Plan<T, C2c, P>, FftwError> {
-        check_placement::<P>(layout)?;
+        align: usize,
+        what: &str,
+    ) -> Result<(AlignmentClass, AlignmentClass), FftwError> {
         let (input_class, output_class) = self.alignment;
         if layout.placement() == Placement::InPlace && input_class != output_class {
             return Err(FftwError::InvalidLayout {
@@ -287,44 +292,61 @@ impl<T: FftwReal, S> Planner<T, S> {
             });
         }
         for class in [input_class, output_class] {
-            if class.offset() % align_of::<Complex<T>>() != 0 {
+            if class.offset() % align != 0 {
                 return Err(FftwError::InvalidLayout {
                     dimension: "alignment".to_string(),
                     reason: format!(
-                        "the class {class} is not a multiple of the {}-byte alignment of the \
-                         complex type",
-                        align_of::<Complex<T>>()
+                        "the class {class} is not a multiple of the {align}-byte alignment of \
+                         the {what}"
                     ),
                 });
             }
         }
+        Ok((input_class, output_class))
+    }
 
+    /// Check the scratch of `layout`, with elements of `size` bytes, against the bound.
+    fn check_scratch_size(&self, layout: &Layout, size: usize) -> Result<(), FftwError> {
         // A size that overflows `usize` is above every bound, `usize::MAX` included.
         let elements = match layout.placement() {
             Placement::OutOfPlace => layout.input_span().checked_add(layout.output_span()),
             Placement::InPlace => Some(layout.input_span()),
         };
-        let needed = elements.and_then(|elements| elements.checked_mul(size_of::<Complex<T>>()));
+        let needed = elements.and_then(|elements| elements.checked_mul(size));
         match needed {
-            Some(needed) if needed <= self.max_scratch => {}
-            _ => {
-                return Err(FftwError::ScratchTooLarge {
-                    needed: needed.unwrap_or(usize::MAX),
-                    bound: self.max_scratch,
-                });
-            }
+            Some(needed) if needed <= self.max_scratch => Ok(()),
+            _ => Err(FftwError::ScratchTooLarge {
+                needed: needed.unwrap_or(usize::MAX),
+                bound: self.max_scratch,
+            }),
         }
+    }
+
+    /// Plan a c2c transform of policy `P` on scratch.
+    fn c2c_on_scratch<P: Policy>(
+        &self,
+        layout: &Layout,
+        direction: Direction,
+    ) -> Result<Plan<T, C2c, P>, FftwError> {
+        check_storage(layout, false)?;
+        check_placement::<P>(layout)?;
+        let (input_class, output_class) =
+            self.scratch_classes(layout, align_of::<Complex<T>>(), "complex type")?;
+        self.check_scratch_size(layout, size_of::<Complex<T>>())?;
 
         // The scratch lives until the end of this function, after planning.
-        let mut input = Scratch::<T>::new(layout.input_span(), input_class);
+        let mut input = Scratch::<T>::new(layout.input_span(), 2, input_class);
         let mut output = match layout.placement() {
-            Placement::OutOfPlace => Some(Scratch::<T>::new(layout.output_span(), output_class)),
+            Placement::OutOfPlace => Some(Scratch::<T>::new(layout.output_span(), 2, output_class)),
             Placement::InPlace => None,
         };
-        let input_ptr = input.as_mut_ptr();
-        let output_ptr = output.as_mut().map_or(input_ptr, Scratch::as_mut_ptr);
+        let input_ptr = input.as_mut_ptr().cast::<Complex<T>>();
+        let output_ptr = output
+            .as_mut()
+            .map_or(input_ptr, |output| output.as_mut_ptr().cast::<Complex<T>>());
         // SAFETY: `input_ptr` and `output_ptr` point to scratch buffers of at least the input
-        // and output spans, which outlive the call; in place they are the same buffer.
+        // and output spans, in complex elements, which outlive the call; `Complex<T>` is two
+        // `T`s with the alignment of `T`, and in place they are the same buffer.
         unsafe {
             self.plan_c2c(
                 layout,
@@ -373,39 +395,28 @@ impl<T: FftwReal, S> Planner<T, S> {
         classes: (AlignmentClass, AlignmentClass),
     ) -> Result<Plan<T, C2c, P>, FftwError> {
         let flags = self.flags::<P>();
-        let dims = iodims(layout.dims());
-        let batch = iodims(layout.batch());
-        let too_many = |what: &str| FftwError::InvalidLayout {
-            dimension: "layout".to_string(),
-            reason: format!("FFTW takes at most {} {what} dimensions", c_int::MAX),
-        };
-        let rank = c_int::try_from(dims.len()).map_err(|_| too_many("transform"))?;
-        let howmany_rank = c_int::try_from(batch.len()).map_err(|_| too_many("batch"))?;
+        let guru = GuruDims::new(layout)?;
 
         let raw = with_fftw(|state| {
             state.version_check()?;
             let _settings = SettingsGuard::<T>::new(state, self.time_limit);
-            // SAFETY: the FFTW lock is held. `dims` and `batch` hold `rank` and
-            // `howmany_rank` dimensions with non-negative strides, and by this function's
-            // contract `input` and `output` cover the spans of these dimensions; they are
-            // equal exactly for an in-place layout, whose strides are equal on both sides.
+            // SAFETY: the FFTW lock is held. `guru` holds `rank` and `howmany_rank`
+            // dimensions with non-negative strides, and by this function's contract `input`
+            // and `output` cover the spans of these dimensions; they are equal exactly for an
+            // in-place layout, whose strides are equal on both sides.
             let raw = unsafe {
                 T::plan_guru64_dft(
-                    rank,
-                    dims.as_ptr(),
-                    howmany_rank,
-                    batch.as_ptr(),
+                    guru.rank,
+                    guru.dims.as_ptr(),
+                    guru.howmany_rank,
+                    guru.batch.as_ptr(),
                     input,
                     output,
                     direction.sign(),
                     flags,
                 )
             };
-            NonNull::new(raw).ok_or_else(|| FftwError::PlanCreationFailed {
-                rigor: self.rigor,
-                flags,
-                layout: layout.describe(),
-            })
+            self.plan_or_error(raw, flags, layout)
         })?;
 
         let alignment = (!self.unaligned).then_some(classes);
@@ -418,37 +429,193 @@ impl<T: FftwReal, S> Planner<T, S> {
             alignment,
         ))
     }
+
+    /// Plan a split c2c transform of policy `P` on scratch.
+    fn split_c2c_on_scratch<P: Policy>(
+        &self,
+        layout: &Layout,
+        direction: Direction,
+    ) -> Result<Plan<T, SplitC2c, P>, FftwError> {
+        check_storage(layout, true)?;
+        check_placement::<P>(layout)?;
+        let (input_class, output_class) =
+            self.scratch_classes(layout, align_of::<T>(), "real type")?;
+        self.check_scratch_size(layout, size_of::<T>())?;
+
+        // The scratch lives until the end of this function, after planning. The real part of
+        // each side's first element is at the requested class.
+        let mut input = Scratch::<T>::new(layout.input_span(), 1, input_class);
+        let mut output = match layout.placement() {
+            Placement::OutOfPlace => Some(Scratch::<T>::new(layout.output_span(), 1, output_class)),
+            Placement::InPlace => None,
+        };
+        let input_ptr = input.as_mut_ptr();
+        let output_ptr = output.as_mut().map_or(input_ptr, Scratch::as_mut_ptr);
+        // SAFETY: `input_ptr` and `output_ptr` point to scratch buffers of at least the input
+        // and output spans, in reals, which outlive the call; in place they are the same
+        // buffer.
+        unsafe {
+            self.plan_split_c2c(
+                layout,
+                direction,
+                input_ptr,
+                output_ptr,
+                (input_class, output_class),
+            )
+        }
+    }
+
+    /// Plan a split c2c transform of policy `P` on the caller's buffers.
+    fn split_c2c_on_buffers<P: Policy>(
+        &self,
+        layout: &Layout,
+        direction: Direction,
+        input: *mut T,
+        output: *mut T,
+    ) -> Result<Plan<T, SplitC2c, P>, FftwError> {
+        if layout.placement() == Placement::OutOfPlace {
+            check_overlap(input, layout.input_span(), output, layout.output_span())?;
+        }
+        // The classes of the real parts; those of the imaginary parts follow from the gaps.
+        let classes = (
+            AlignmentClass::of_ptr(input),
+            AlignmentClass::of_ptr(output),
+        );
+        // SAFETY: `input` and `output` are the pointers to the real parts that
+        // `check_side_mut` returned after checking the caller's buffers against the input
+        // and output spans of `layout`, gaps included, and the caller borrows the buffers
+        // mutably for the call.
+        unsafe { self.plan_split_c2c(layout, direction, input, output, classes) }
+    }
+
+    /// Call FFTW's guru64 split planner under the FFTW lock.
+    ///
+    /// # Safety
+    ///
+    /// `layout` has gaps; `input` and `output` point to the real parts of the first elements
+    /// of buffers of at least the input and output spans of `layout`, in reals and gaps
+    /// included, valid for reads and writes for the duration of the call (FFTW writes them
+    /// with rigors other than `Estimate`); for an in-place layout they are equal.
+    unsafe fn plan_split_c2c<P: Policy>(
+        &self,
+        layout: &Layout,
+        direction: Direction,
+        input: *mut T,
+        output: *mut T,
+        classes: (AlignmentClass, AlignmentClass),
+    ) -> Result<Plan<T, SplitC2c, P>, FftwError> {
+        let flags = self.flags::<P>();
+        let guru = GuruDims::new(layout)?;
+        let (input_gap, output_gap) = layout
+            .gaps()
+            .expect("`check_storage` accepted only layouts with gaps");
+        // FFTW plans forward only; a backward plan swaps the parts on both sides.
+        let (ri, ii) = split_offsets(direction, input_gap);
+        let (ro, io) = split_offsets(direction, output_gap);
+
+        let raw = with_fftw(|state| {
+            state.version_check()?;
+            let _settings = SettingsGuard::<T>::new(state, self.time_limit);
+            // SAFETY: the FFTW lock is held. `guru` holds `rank` and `howmany_rank`
+            // dimensions with non-negative strides, in reals. By this function's contract
+            // `input` and `output` cover the spans of these dimensions, which include the gap
+            // of each side, so the four pointers, at offsets 0 and the gap from the real
+            // parts, lie inside the buffers, and every element FFTW addresses from them does.
+            // In place `input == output` and the gaps are equal, so `ri == ro` and `ii == io`.
+            let raw = unsafe {
+                T::plan_guru64_split_dft(
+                    guru.rank,
+                    guru.dims.as_ptr(),
+                    guru.howmany_rank,
+                    guru.batch.as_ptr(),
+                    input.wrapping_add(ri),
+                    input.wrapping_add(ii),
+                    output.wrapping_add(ro),
+                    output.wrapping_add(io),
+                    flags,
+                )
+            };
+            self.plan_or_error(raw, flags, layout)
+        })?;
+
+        let alignment = (!self.unaligned).then_some(classes);
+        Ok(Plan::from_raw(
+            raw,
+            layout.clone(),
+            direction,
+            self.rigor,
+            flags,
+            alignment,
+        ))
+    }
+
+    /// The plan FFTW returned, or [`FftwError::PlanCreationFailed`] for NULL.
+    fn plan_or_error(
+        &self,
+        raw: *mut T::RawPlan,
+        flags: c_uint,
+        layout: &Layout,
+    ) -> Result<NonNull<T::RawPlan>, FftwError> {
+        NonNull::new(raw).ok_or_else(|| FftwError::PlanCreationFailed {
+            rigor: self.rigor,
+            flags,
+            layout: layout.describe(),
+        })
+    }
 }
 
-/// Scratch for planning: zeroed reals at `PLAN_ALIGNMENT`, long enough for a span of complex
-/// elements starting at an alignment class.
+/// A layout's dimensions as FFTW's guru64 interface takes them.
+struct GuruDims {
+    dims: Vec<fftw_sys::fftw_iodim64>,
+    batch: Vec<fftw_sys::fftw_iodim64>,
+    rank: c_int,
+    howmany_rank: c_int,
+}
+
+impl GuruDims {
+    fn new(layout: &Layout) -> Result<Self, FftwError> {
+        let dims = iodims(layout.dims());
+        let batch = iodims(layout.batch());
+        let too_many = |what: &str| FftwError::InvalidLayout {
+            dimension: "layout".to_string(),
+            reason: format!("FFTW takes at most {} {what} dimensions", c_int::MAX),
+        };
+        let rank = c_int::try_from(dims.len()).map_err(|_| too_many("transform"))?;
+        let howmany_rank = c_int::try_from(batch.len()).map_err(|_| too_many("batch"))?;
+        Ok(Self {
+            dims,
+            batch,
+            rank,
+            howmany_rank,
+        })
+    }
+}
+
+/// Scratch for planning: zeroed reals at `PLAN_ALIGNMENT`, long enough for a span of elements
+/// of one or more reals starting at an alignment class.
 struct Scratch<T> {
     data: AVec<T, ConstAlign<PLAN_ALIGNMENT>>,
     offset: usize,
 }
 
 impl<T: FftwReal> Scratch<T> {
-    /// Scratch for `span` complex elements at `class`, which is a multiple of the alignment of
-    /// `Complex<T>` and therefore of the size of `T`. The caller has checked that `span`
-    /// complex elements fit in `usize` bytes.
-    fn new(span: usize, class: AlignmentClass) -> Self {
+    /// Scratch for `span` elements of `reals` reals each (2 for complex elements, 1 for
+    /// reals) at `class`, which is a multiple of the alignment of the element and therefore
+    /// of the size of `T`. The caller has checked that the span fits in `usize` bytes.
+    fn new(span: usize, reals: usize, class: AlignmentClass) -> Self {
         let offset = class.offset() / size_of::<T>();
         let len = span
-            .checked_mul(2)
+            .checked_mul(reals)
             .and_then(|reals| reals.checked_add(offset))
             .expect("the scratch size was checked against `max_scratch`");
         let data = AVec::from_iter(PLAN_ALIGNMENT, std::iter::repeat_n(T::zero(), len));
         Self { data, offset }
     }
 
-    /// A pointer to the first complex element, at the requested class.
-    fn as_mut_ptr(&mut self) -> *mut Complex<T> {
-        // `offset` reals and 2 * span reals after it lie inside the allocation, and
-        // `Complex<T>` is two `T`s with the alignment of `T`.
-        self.data
-            .as_mut_ptr()
-            .wrapping_add(self.offset)
-            .cast::<Complex<T>>()
+    /// A pointer to the first real, at the requested class.
+    fn as_mut_ptr(&mut self) -> *mut T {
+        // `offset` reals and the span's reals after it lie inside the allocation.
+        self.data.as_mut_ptr().wrapping_add(self.offset)
     }
 }
 
@@ -461,6 +628,27 @@ fn iodims(dims: &[Dim]) -> Vec<fftw_sys::fftw_iodim64> {
             os: dim.os,
         })
         .collect()
+}
+
+/// Check that the layout describes the storage of the planner method: split storage, with
+/// gaps, for the split methods, interleaved storage otherwise (DC28).
+fn check_storage(layout: &Layout, split: bool) -> Result<(), FftwError> {
+    let reason = match (split, layout.gaps()) {
+        (false, Some((input, output))) => format!(
+            "a complex-to-complex plan on interleaved storage was given a layout of split \
+             storage, with gaps (input {input}, output {output}); plan it with the `split_c2c` \
+             planner methods"
+        ),
+        (true, None) => "a split complex-to-complex plan was given a layout of interleaved \
+                         storage, without gaps; make split layouts with `Layout::new_split`, \
+                         `Layout::split_along_axis` or their companions"
+            .to_string(),
+        _ => return Ok(()),
+    };
+    Err(FftwError::InvalidLayout {
+        dimension: "part axis".to_string(),
+        reason,
+    })
 }
 
 /// Check that the layout's placement is that of the policy.
@@ -479,6 +667,7 @@ impl<T: FftwReal, S: PolicyFor<C2c>> Planner<T, S> {
     ///
     /// The plan is [`Preserving`](super::Preserving), or [`Destroying`](super::Destroying)
     /// after [`may_destroy_input`](Planner::may_destroy_input). Returns
+    /// [`FftwError::InvalidLayout`] naming the `part axis` for a layout of split storage,
     /// [`FftwError::PlacementMismatch`] for an in-place layout and
     /// [`FftwError::ScratchTooLarge`] if the scratch would exceed
     /// [`max_scratch`](Planner::max_scratch).
@@ -553,6 +742,7 @@ impl<T: FftwReal, S: PolicyFor<C2c>> Planner<T, S> {
         I: FftBufferMut<Complex<T>> + ?Sized,
         O: FftBufferMut<Complex<T>> + ?Sized,
     {
+        check_storage(layout, false)?;
         check_placement::<S::Policy>(layout)?;
         let input = input.check_side_mut(layout, Side::Input)?;
         let output = output.check_side_mut(layout, Side::Output)?;
@@ -563,7 +753,8 @@ impl<T: FftwReal, S: PolicyFor<C2c>> Planner<T, S> {
 impl<T: FftwReal> Planner<T, DefaultRequest> {
     /// An in-place complex-to-complex plan for `layout`, planned on scratch.
     ///
-    /// Returns [`FftwError::PlacementMismatch`] for an out-of-place layout and
+    /// Returns [`FftwError::InvalidLayout`] naming the `part axis` for a layout of split
+    /// storage, [`FftwError::PlacementMismatch`] for an out-of-place layout and
     /// [`FftwError::ScratchTooLarge`] if the scratch would exceed
     /// [`max_scratch`](Planner::max_scratch). The input-policy requests do not apply in
     /// place, so this method is only available on a planner without one.
@@ -623,10 +814,192 @@ impl<T: FftwReal> Planner<T, DefaultRequest> {
     where
         D: FftBufferMut<Complex<T>> + ?Sized,
     {
+        check_storage(layout, false)?;
         check_placement::<InPlace>(layout)?;
         data.check_side(layout, Side::Output)?;
         // In place the input and output spans are equal, so one check covers both sides.
         let data = data.check_side_mut(layout, Side::Input)?;
         self.c2c_on_buffers(layout, direction, data, data)
+    }
+}
+
+impl<T: FftwReal, S: PolicyFor<SplitC2c>> Planner<T, S> {
+    /// An out-of-place complex-to-complex plan on split storage for `layout`, planned on
+    /// scratch.
+    ///
+    /// `layout` is a layout of split storage, with gaps ([`Layout::new_split`],
+    /// [`Layout::split_along_axis`] and their companions); its dimensions, gaps and spans
+    /// count reals. The plan is [`Preserving`](super::Preserving), or
+    /// [`Destroying`](super::Destroying) after [`may_destroy_input`](Planner::may_destroy_input),
+    /// and executes on buffers of reals. Returns [`FftwError::InvalidLayout`] naming the
+    /// `part axis` for a layout of interleaved storage, without gaps,
+    /// [`FftwError::PlacementMismatch`] for an in-place layout and
+    /// [`FftwError::ScratchTooLarge`] if the scratch would exceed
+    /// [`max_scratch`](Planner::max_scratch). The scratch holds each side's span in reals,
+    /// with the real part of its first element at the requested
+    /// [`alignment`](Planner::alignment) class, which must be a multiple of the alignment of
+    /// `T`.
+    ///
+    /// FFTW's split planner has no sign and always plans a forward transform; for
+    /// [`Direction::Backward`] the plan swaps the real and imaginary parts on both sides, at
+    /// planning and at every execution (design, Section 3 item 8).
+    ///
+    /// Split plans can use fewer SIMD stages than interleaved plans of the same transform,
+    /// since FFTW's SIMD code needs interleaved storage (design, Sections 3 item 7 and 4.5); an
+    /// interleaved copy and an interleaved plan can be faster. The benchmarks of the FFTW
+    /// rework (task F8b) compare the two.
+    ///
+    /// ```
+    /// use rlst::fftw::{Dim, Direction, Layout, Placement, Planner};
+    ///
+    /// // Three transforms of length 8, real plane of 24 reals and then the imaginary plane.
+    /// let layout = Layout::new_split(
+    ///     &[Dim { n: 8, is: 1, os: 1 }],
+    ///     &[Dim { n: 3, is: 8, os: 8 }],
+    ///     (24, 24),
+    ///     Placement::OutOfPlace,
+    /// )?;
+    /// let plan = Planner::<f64>::new().split_c2c(&layout, Direction::Forward)?;
+    ///
+    /// let mut input = rlst::rlst_dynamic_array!(f64, [48] | rlst::FFTW_ALIGNED);
+    /// let mut output = rlst::rlst_dynamic_array!(f64, [48] | rlst::FFTW_ALIGNED);
+    /// // The first transform's input is 1 + 2i at index 0.
+    /// input.data_mut().unwrap()[0] = 1.0;
+    /// input.data_mut().unwrap()[24] = 2.0;
+    /// plan.execute(input.data().unwrap(), output.data_mut().unwrap())?;
+    /// let output = output.data().unwrap();
+    /// assert!((0..8).all(|k| output[k] == 1.0 && output[24 + k] == 2.0));
+    /// # Ok::<(), rlst::fftw::FftwError>(())
+    /// ```
+    pub fn split_c2c(
+        &self,
+        layout: &Layout,
+        direction: Direction,
+    ) -> Result<Plan<T, SplitC2c, S::Policy>, FftwError> {
+        self.split_c2c_on_scratch(layout, direction)
+    }
+
+    /// An out-of-place complex-to-complex plan on split storage for `layout`, planned on the
+    /// caller's buffers.
+    ///
+    /// As [`split_c2c`](Planner::split_c2c), but the buffers, slices of reals or real RLST
+    /// arrays and views, are checked against the layout as at execution
+    /// ([`FftwError::LayoutMismatch`]), and the plan is made for the alignment classes of
+    /// their real parts. No scratch is allocated, so this plans layouts whose span exceeds
+    /// [`max_scratch`](Planner::max_scratch).
+    ///
+    /// With [`Rigor::Estimate`] or wisdom-only planning FFTW leaves the buffers untouched.
+    /// **With [`Rigor::Measure`] and stronger, FFTW overwrites both buffers.**
+    ///
+    /// ```
+    /// use rlst::rlst_dynamic_array;
+    /// use rlst::fftw::{Direction, Layout, Planner};
+    ///
+    /// // Box 1 of a parent of four split boxes [140, 9, 2]; a box is 20160 bytes, a multiple of
+    /// // 64, so every box is at class 0.
+    /// let mut input = rlst_dynamic_array!(f64, [140, 9, 2, 4] | rlst::FFTW_ALIGNED);
+    /// let mut output = rlst_dynamic_array!(f64, [140, 9, 2, 4] | rlst::FFTW_ALIGNED);
+    /// let layout = Layout::split_along_axis(
+    ///     &input.r().slice::<3>(3, 1),
+    ///     2,
+    ///     &output.r().slice::<3>(3, 1),
+    ///     2,
+    ///     0,
+    /// )?;
+    /// let plan = Planner::<f64>::new().split_c2c_on(
+    ///     &mut input.r_mut().slice::<3>(3, 1),
+    ///     &mut output.r_mut().slice::<3>(3, 1),
+    ///     &layout,
+    ///     Direction::Backward,
+    /// )?;
+    /// // The plan runs on every box.
+    /// for k in 0..4 {
+    ///     plan.execute(&input.r().slice::<3>(3, k), &mut output.r_mut().slice::<3>(3, k))?;
+    /// }
+    /// # Ok::<(), rlst::fftw::FftwError>(())
+    /// ```
+    pub fn split_c2c_on<I, O>(
+        &self,
+        input: &mut I,
+        output: &mut O,
+        layout: &Layout,
+        direction: Direction,
+    ) -> Result<Plan<T, SplitC2c, S::Policy>, FftwError>
+    where
+        I: FftBufferMut<T> + ?Sized,
+        O: FftBufferMut<T> + ?Sized,
+    {
+        check_storage(layout, true)?;
+        check_placement::<S::Policy>(layout)?;
+        let input = input.check_side_mut(layout, Side::Input)?;
+        let output = output.check_side_mut(layout, Side::Output)?;
+        self.split_c2c_on_buffers(layout, direction, input, output)
+    }
+}
+
+impl<T: FftwReal> Planner<T, DefaultRequest> {
+    /// An in-place complex-to-complex plan on split storage for `layout`, planned on scratch.
+    ///
+    /// As [`split_c2c`](Planner::split_c2c), for an in-place layout with equal gaps:
+    /// returns [`FftwError::InvalidLayout`] naming the `part axis` for a layout of
+    /// interleaved storage, [`FftwError::PlacementMismatch`] for an out-of-place layout and
+    /// [`FftwError::ScratchTooLarge`] if the scratch would exceed
+    /// [`max_scratch`](Planner::max_scratch). The input-policy requests do not apply in
+    /// place, so this method is only available on a planner without one.
+    ///
+    /// ```
+    /// use rlst::fftw::{Dim, Direction, Layout, Placement, Planner};
+    ///
+    /// // Interleaved storage read as split: the imaginary part follows the real part.
+    /// let layout =
+    ///     Layout::new_split(&[Dim { n: 8, is: 2, os: 2 }], &[], (1, 1), Placement::InPlace)?;
+    /// let plan = Planner::<f64>::new().split_c2c_inplace(&layout, Direction::Backward)?;
+    /// # let _ = plan;
+    /// # Ok::<(), rlst::fftw::FftwError>(())
+    /// ```
+    pub fn split_c2c_inplace(
+        &self,
+        layout: &Layout,
+        direction: Direction,
+    ) -> Result<Plan<T, SplitC2c, InPlace>, FftwError> {
+        self.split_c2c_on_scratch(layout, direction)
+    }
+
+    /// An in-place complex-to-complex plan on split storage for `layout`, planned on the
+    /// caller's buffer.
+    ///
+    /// The buffer is a slice of reals or a real RLST array or view, checked against the
+    /// layout as at execution ([`FftwError::LayoutMismatch`]), and the plan is made for the
+    /// alignment class of its real part. No scratch is allocated.
+    ///
+    /// With [`Rigor::Estimate`] or wisdom-only planning FFTW leaves the buffer untouched.
+    /// **With [`Rigor::Measure`] and stronger, FFTW overwrites it.**
+    ///
+    /// ```
+    /// use rlst::rlst_dynamic_array;
+    /// use rlst::fftw::{Direction, Layout, Planner};
+    ///
+    /// let mut data = rlst_dynamic_array!(f32, [64, 2] | rlst::FFTW_ALIGNED);
+    /// let layout = Layout::split_along_axis_inplace(&data, 1, 0)?;
+    /// let plan =
+    ///     Planner::<f32>::new().split_c2c_inplace_on(&mut data, &layout, Direction::Forward)?;
+    /// plan.execute(&mut data)?;
+    /// # Ok::<(), rlst::fftw::FftwError>(())
+    /// ```
+    pub fn split_c2c_inplace_on<D>(
+        &self,
+        data: &mut D,
+        layout: &Layout,
+        direction: Direction,
+    ) -> Result<Plan<T, SplitC2c, InPlace>, FftwError>
+    where
+        D: FftBufferMut<T> + ?Sized,
+    {
+        check_storage(layout, true)?;
+        check_placement::<InPlace>(layout)?;
+        data.check_side(layout, Side::Output)?;
+        // In place the input and output spans are equal, so one check covers both sides.
+        let data = data.check_side_mut(layout, Side::Input)?;
+        self.split_c2c_on_buffers(layout, direction, data, data)
     }
 }

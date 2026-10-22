@@ -56,6 +56,24 @@ As tested, one plan executes from many threads at once, and `Estimate` plans giv
 fingerprint and the same bits in every fresh process; the rustdoc of `Plan` and
 `Plan::fingerprint` states the rules on threads and determinism.
 
+Complex-to-complex plans also run on split storage: the real and imaginary parts in one
+buffer of reals, a fixed gap apart, such as a real plane followed by an imaginary plane. A
+split complex array is a real array with a *part axis* of extent 2 (index 0 the real part,
+index 1 the imaginary part) whose stride is the gap. `Layout::split_along_axis`,
+`Layout::split_over_axes` and their in-place variants build split layouts from real arrays and
+views of any memory order, with the part axis anywhere and possibly at different positions on
+input and output; their axes count the logical axes, the axes without the part axis.
+`Layout::new_split` builds split layouts from raw dimensions for slices, and `Layout::gaps`
+returns the gaps. `Planner::split_c2c`, `split_c2c_on`, `split_c2c_inplace` and
+`split_c2c_inplace_on` make `Plan<T, SplitC2c, P>` plans with the three input policies, which
+execute on slices of reals and on real arrays and views, checked as interleaved plans are,
+the part axis and the gap included. FFTW's split planner always plans forward; a backward
+plan swaps the real and imaginary parts on both sides. The interleaved planner methods reject
+a split layout, and the split ones an interleaved layout, with `InvalidLayout` naming the part
+axis. Split plans can use fewer of FFTW's SIMD stages than interleaved ones, so copying into
+interleaved storage can be faster; they agree with interleaved plans to round-off, not bit for
+bit.
+
 ### New traits `StridedRawAccess` and `StridedRawAccessMut`
 
 `rlst::StridedRawAccess::storage` and `StridedRawAccessMut::storage_mut` return the backing

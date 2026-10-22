@@ -379,3 +379,32 @@ The work items follow these answers.
    (a) *proposed*: the split functions require real items (`BaseItem<Item = T>` with
    `T: FftwReal`) on both arrays, a bound only; (b) any element type, as the interleaved
    functions, with the rustdoc saying that the arrays must be real. *Decided: (a), DC29.*
+
+Raised during F3. None needs a design change; they are recorded for review and for F5,
+F7 and nd-fmm.
+
+6. **How the plan records the arrangement of the parts.** Work item 2 says a plan records
+   the pointers it passes FFTW as offsets from the real part of each side. The plan stores
+   no extra field: one crate-private function, `split_offsets(direction, gap)`, gives the
+   offsets of FFTW's real and imaginary pointers from the plan's direction and the layout's
+   gap, and planning and execution both call it, so they cannot pass FFTW different
+   arrangements. The `SAFETY:` comment of split execution names it.
+7. **Fingerprints of split and interleaved plans.** On macOS (Homebrew FFTW 3.3.11 without
+   SIMD) the split plan of nd-fmm's box `[140, 9, 2]` and the interleaved plan of the unit
+   `[140, 9]` have the same fingerprint, as do forward and backward and f32 and f64 plans
+   (F4, note 7): `fftw_sprint_plan` names the algorithm, not the storage. On Linux (Ubuntu's
+   FFTW 3.3.10 with SSE2 and AVX, CI of this pull request) the split plan of the planes has
+   another fingerprint than the interleaved plan, as design Section 3 item 7 expects, while
+   the split box with the part axis innermost, `[2, 140, 9]`, whose memory is interleaved,
+   gets the interleaved plan's fingerprint. Bits are compared only to round-off, and a
+   caller comparing fingerprints across ranks should compare plans of one problem and one
+   storage form; F7's guide could say so.
+8. **The sizes of the cells.** The fixed cells of the part axis outermost use nd-fmm's
+   sizes 1, 2, 17, 97 and 140; the other arrangements and views use 17 and 2, with
+   `[6, 5, 4]` over two and three logical axes in every arrangement. The sampled cells draw
+   from F1's sizes up to 588, and cap two-dimensional transforms at 64 per axis, so that the
+   O(n²) reference keeps the added time near 0.5 s in a debug build; F1's sizes above 588
+   are covered on interleaved storage, and split against interleaved runs at 588.
+9. **The test helpers.** `assert_gaps_unchanged` and `storage_bits` of `test_support` now
+   take any `TestElement`, complex values or reals, so that the split tests reuse them; the
+   F2 tests are unchanged.

@@ -1,4 +1,4 @@
-//! Concurrency of complex-to-complex plans (task F4; design Sections 5 and 7.5).
+//! Concurrency of complex-to-complex plans (tasks F4 and F3; design Sections 5 and 7.5).
 //!
 //! The tests run as threads of the test process, beside the other tests, and plan with
 //! `Rigor::Estimate` only, so no wisdom of a greater rigor exists in the process and plans of
@@ -18,11 +18,11 @@ use crate::dense::array::StridedSliceArrayMut;
 use crate::fftw::lock::with_fftw;
 use crate::fftw::test_support::{
     PolicyKind, SEED, TestReal, aligned, assert_matches_reference, fill_view, logical_reference,
-    multi_indices, random_values, sentinel, sentinel_parent,
+    multi_indices, random_values, real_sentinel, real_sentinel_parent, sentinel, sentinel_parent,
 };
 use crate::fftw::{
     AlignmentClass, C2CDirection, C2CPlan, C2c, Destroying, Direction, FftBufferMut,
-    FftPlanInplace, FftwPlanFlags, FftwReal, InPlace, Layout, Plan, Planner, Preserving,
+    FftPlanInplace, FftwPlanFlags, FftwReal, InPlace, Layout, Plan, Planner, Preserving, SplitC2c,
 };
 use crate::{
     Array, BaseItem, DynArray, Shape, SliceArray, SliceArrayMut, Stride, StridedRawAccessMut,
@@ -237,6 +237,12 @@ fn test_plans_are_send_and_sync() {
     send_and_sync::<Plan<f32, C2c, Preserving>>();
     send_and_sync::<Plan<f32, C2c, Destroying>>();
     send_and_sync::<Plan<f32, C2c, InPlace>>();
+    send_and_sync::<Plan<f64, SplitC2c, Preserving>>();
+    send_and_sync::<Plan<f64, SplitC2c, Destroying>>();
+    send_and_sync::<Plan<f64, SplitC2c, InPlace>>();
+    send_and_sync::<Plan<f32, SplitC2c, Preserving>>();
+    send_and_sync::<Plan<f32, SplitC2c, Destroying>>();
+    send_and_sync::<Plan<f32, SplitC2c, InPlace>>();
 }
 
 /// One plan of `policy` executed by `THREADS` threads at once, `ITERATIONS` times each, on
@@ -279,6 +285,138 @@ fn test_one_plan_many_threads() {
     for policy in PolicyKind::ALL {
         check_one_plan_many_threads::<f64>(policy);
         check_one_plan_many_threads::<f32>(policy);
+    }
+}
+
+/// nd-fmm's box as split planes (task F3): `UNIT_SHAPE` with the part axis outermost.
+const SPLIT_SHAPE: [usize; 3] = [140, 8, 2];
+
+/// The reals of a split box: 2240, a multiple of 64 bytes in both precisions, so that
+/// consecutive boxes of an aligned parent all have alignment class 0.
+const SPLIT_UNIT: usize = 2 * UNIT;
+
+/// A split complex-to-complex plan of one of the three input policies.
+enum AnySplitPlan<T: FftwReal> {
+    Preserving(Plan<T, SplitC2c, Preserving>),
+    Destroying(Plan<T, SplitC2c, Destroying>),
+    InPlace(Plan<T, SplitC2c, InPlace>),
+}
+
+impl<T: TestReal> AnySplitPlan<T> {
+    /// A plan of `policy` for nd-fmm's split box, along logical axis 0, at class 0.
+    fn unit(policy: PolicyKind, direction: Direction) -> Self {
+        let scratch = [T::default(); SPLIT_UNIT];
+        let unit = SliceArray::from_shape(&scratch[..], SPLIT_SHAPE);
+        let planner = Planner::<T>::new();
+        match policy {
+            PolicyKind::Preserving => {
+                let layout = Layout::split_along_axis(&unit, 2, &unit, 2, 0).unwrap();
+                Self::Preserving(planner.split_c2c(&layout, direction).unwrap())
+            }
+            PolicyKind::Destroying => {
+                let layout = Layout::split_along_axis(&unit, 2, &unit, 2, 0).unwrap();
+                Self::Destroying(
+                    planner
+                        .may_destroy_input()
+                        .split_c2c(&layout, direction)
+                        .unwrap(),
+                )
+            }
+            PolicyKind::InPlace => {
+                let layout = Layout::split_along_axis_inplace(&unit, 2, 0).unwrap();
+                Self::InPlace(planner.split_c2c_inplace(&layout, direction).unwrap())
+            }
+        }
+    }
+
+    /// Execute from the box `input` into the box `output` out of place, or on `input` in
+    /// place.
+    fn execute(&self, input: &mut [T], output: &mut [T]) {
+        let mut input = SliceArrayMut::from_shape(input, SPLIT_SHAPE);
+        let mut output = SliceArrayMut::from_shape(output, SPLIT_SHAPE);
+        match self {
+            Self::Preserving(plan) => plan.execute(&input, &mut output),
+            Self::Destroying(plan) => plan.execute(&mut input, &mut output),
+            Self::InPlace(plan) => plan.execute(&mut input),
+        }
+        .unwrap()
+    }
+}
+
+/// The bits of reals, for comparisons bit for bit.
+fn real_bits<T: TestReal>(values: &[T]) -> Vec<u64> {
+    values
+        .iter()
+        .map(|&value| TestReal::to_f64(value).to_bits())
+        .collect()
+}
+
+/// One split plan of `policy` executed by `THREADS` threads at once, `ITERATIONS` times
+/// each, on disjoint boxes of one parent, against the sequential results bit for bit.
+fn check_one_split_plan_many_threads<T: TestReal>(policy: PolicyKind) {
+    let plan = AnySplitPlan::<T>::unit(policy, Direction::Forward);
+    let mut input = real_sentinel_parent::<T, 1>([THREADS * SPLIT_UNIT]);
+    let mut output = real_sentinel_parent::<T, 1>([THREADS * SPLIT_UNIT]);
+    let (inputs, _) = input.data_mut().unwrap().as_chunks_mut::<SPLIT_UNIT>();
+    let (outputs, _) = output.data_mut().unwrap().as_chunks_mut::<SPLIT_UNIT>();
+    // Each box with its seeded input and its sequential result.
+    let boxes: Vec<_> = inputs
+        .iter_mut()
+        .zip(outputs)
+        .enumerate()
+        .map(|(k, (input, output))| {
+            let seed = unit_seed(k);
+            let values: Vec<T> = random_values::<T>(seed, UNIT)
+                .into_iter()
+                .flat_map(|value| [value.re, value.im])
+                .collect();
+            input.copy_from_slice(&values);
+            plan.execute(input, output);
+            let expected = real_bits(match policy {
+                PolicyKind::InPlace => &input[..],
+                _ => &output[..],
+            });
+            (input, output, values, expected, seed)
+        })
+        .collect();
+    let barrier = Barrier::new(THREADS);
+    std::thread::scope(|scope| {
+        for (thread, (input, output, values, expected, seed)) in boxes.into_iter().enumerate() {
+            let (plan, barrier) = (&plan, &barrier);
+            scope.spawn(move || {
+                for iteration in 0..ITERATIONS {
+                    let context = Context {
+                        precision: T::NAME,
+                        policy,
+                        seed,
+                        thread,
+                        iteration,
+                        test: "one split plan, many threads",
+                    };
+                    input.copy_from_slice(&values);
+                    output.fill(real_sentinel::<T>());
+                    // Every thread starts each execution together with the others.
+                    barrier.wait();
+                    plan.execute(input, output);
+                    let result = match policy {
+                        PolicyKind::InPlace => &input[..],
+                        _ => &output[..],
+                    };
+                    assert!(
+                        real_bits(result) == expected,
+                        "{context}: the result differs from the sequential one"
+                    );
+                }
+            });
+        }
+    });
+}
+
+#[test]
+fn test_one_split_plan_many_threads() {
+    for policy in PolicyKind::ALL {
+        check_one_split_plan_many_threads::<f64>(policy);
+        check_one_split_plan_many_threads::<f32>(policy);
     }
 }
 

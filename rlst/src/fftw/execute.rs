@@ -9,7 +9,7 @@ use super::align::AlignmentClass;
 use super::buffer::{FftBuffer, FftBufferMut};
 use super::error::{FftwError, Side};
 use super::layout::Placement;
-use super::plan::{C2c, Destroying, InPlace, Plan, Policy, Preserving};
+use super::plan::{C2c, Destroying, Family, InPlace, Plan, Policy, Preserving, SplitC2c};
 use super::real::FftwReal;
 
 /// Check that the bytes of `input_span` elements at `input` and of `output_span` elements at
@@ -34,19 +34,20 @@ pub(crate) fn check_overlap<E>(
     Ok(())
 }
 
-impl<T: FftwReal, P: Policy> Plan<T, C2c, P> {
+impl<T: FftwReal, F: Family, P: Policy> Plan<T, F, P> {
     /// The checks of design Section 4.8 that need the buffers only shared: each buffer fits
     /// its side of the layout (an array by shape, strides and storage, a slice by length), and
-    /// two arrays of the same rank pair their axes by index (DC15). Returns the pointers that
-    /// the side checks validated.
-    fn check_layout<I, O>(
+    /// two arrays of the same rank pair their axes by index (DC15), for split storage without
+    /// their part axes (DC27). Returns the pointers that the side checks validated: the first
+    /// elements, for split storage their real parts.
+    fn check_layout<E, I, O>(
         &self,
         input: &I,
         output: &O,
-    ) -> Result<(*const Complex<T>, *const Complex<T>), FftwError>
+    ) -> Result<(*const E, *const E), FftwError>
     where
-        I: FftBuffer<Complex<T>> + ?Sized,
-        O: FftBuffer<Complex<T>> + ?Sized,
+        I: FftBuffer<E> + ?Sized,
+        O: FftBuffer<E> + ?Sized,
     {
         let layout = self.layout();
         let input_ptr = input.check_side(layout, Side::Input)?;
@@ -76,12 +77,9 @@ impl<T: FftwReal, P: Policy> Plan<T, C2c, P> {
 
     /// The remaining checks of design Section 4.8, on the pointers that the side checks
     /// validated: the alignment classes are the plan's (unless it is unaligned), and, out of
-    /// place, the spans do not overlap.
-    fn check_pointers(
-        &self,
-        input: *const Complex<T>,
-        output: *const Complex<T>,
-    ) -> Result<(), FftwError> {
+    /// place, the spans do not overlap. For split storage the pointers are the real parts,
+    /// and the spans, which include the gaps, count reals.
+    fn check_pointers<E>(&self, input: *const E, output: *const E) -> Result<(), FftwError> {
         let layout = self.layout();
         if let Some((input_class, output_class)) = self.alignment() {
             for (side, expected, found) in [
@@ -102,7 +100,9 @@ impl<T: FftwReal, P: Policy> Plan<T, C2c, P> {
         }
         Ok(())
     }
+}
 
+impl<T: FftwReal, P: Policy> Plan<T, C2c, P> {
     /// Execute the plan on checked pointers.
     ///
     /// # Safety
@@ -320,8 +320,225 @@ impl<T: FftwReal> Plan<T, C2c, InPlace> {
     }
 }
 
+impl<T: FftwReal, P: Policy> Plan<T, SplitC2c, P> {
+    /// Execute the split plan on checked pointers to the real parts of the first elements.
+    ///
+    /// # Safety
+    ///
+    /// `input` and `output` are pointers that the side checks (`check_side`, or
+    /// `check_side_mut` for a buffer that is written) returned for this plan's layout, and
+    /// that `check_pointers` accepted; their buffers are borrowed for the duration of the call
+    /// (`output` mutably, and `input` mutably unless the plan is `Preserving`), and for an
+    /// in-place plan `input == output`.
+    unsafe fn execute_split_unchecked(&self, input: *mut T, output: *mut T) {
+        let [(ri, ii), (ro, io)] = self.split_offsets();
+        // SAFETY: FFTW's four new-array conditions (design, Section 3 item 1) hold:
+        // 1. sizes and strides: the plan was made for `self.layout()`, whose dimensions count
+        //    reals and whose spans include the gap of each side. The side checks found that
+        //    these spans fit the buffers behind the very pointers they returned, the real
+        //    parts of the first elements: a slice by its length, an array or view by its
+        //    storage from the first element on, after finding a part axis of extent 2 whose
+        //    stride is the side's gap (DC27). The pointers FFTW receives are those real parts
+        //    and the real parts plus the gaps, formed here with `wrapping_add` inside the
+        //    checked spans, so every element FFTW addresses from them lies inside the
+        //    buffers. As for c2c, this span check, not the comparison of shapes and strides,
+        //    is what holds for a wrong implementation of the safe traits `StridedRawAccess`,
+        //    `Shape` or `Stride`. FFTW reads and writes only the elements the layout
+        //    addresses, never the gaps between them or between the planes, which the sentinel
+        //    tests check;
+        // 2. placement: the plan's type fixes it, and an in-place plan is executed on one
+        //    buffer (`input == output`, and its gaps are equal, so `ri == ro` and `ii == io`)
+        //    while an out-of-place plan gets two buffers whose byte ranges, gaps included,
+        //    `check_pointers` found disjoint;
+        // 3. split arrays: the gaps `ii − ri` and `io − ro` FFTW sees equal those of
+        //    planning. Planning and execution form the four pointers with the one function
+        //    `split_offsets`, from the plan's direction and the layout's gaps, which the side
+        //    checks compared with each array's part-axis stride: forward, FFTW sees the gaps;
+        //    backward, the real and imaginary parts are swapped on both sides, at planning
+        //    and here alike, so FFTW sees the negated gaps of planning;
+        // 4. alignment: unless the plan was made with `FFTW_UNALIGNED`, the alignment class of
+        //    each real part equals the class of the corresponding planning array's real part
+        //    modulo 64. The class of each imaginary part is that class plus the gap times the
+        //    size of `T`, modulo 64, with the gap of planning, so all four pointers have the
+        //    classes of planning, and FFTW's alignment (modulo 16 or less) is equal too.
+        // `output`, and `input` unless the plan is `Preserving`, come from `check_side_mut`
+        // and derive from exclusive borrows; the imaginary parts' pointers derive from them,
+        // so writing through them is permitted. For a `Preserving` plan, `input` may derive
+        // from a shared borrow: FFTW was given `FFTW_PRESERVE_INPUT`, so it never writes
+        // through either input pointer. Execution needs no lock.
+        unsafe {
+            T::execute_split_dft(
+                self.raw(),
+                input.wrapping_add(ri),
+                input.wrapping_add(ii),
+                output.wrapping_add(ro),
+                output.wrapping_add(io),
+            )
+        }
+    }
+}
+
+impl<T: FftwReal> Plan<T, SplitC2c, Preserving> {
+    /// Transform the split complex `input` into `output`, leaving `input` unchanged.
+    ///
+    /// The buffers are slices of reals or real RLST arrays and views. The checks are those of
+    /// the preserving interleaved plan's `execute`, in the same order: the buffers against
+    /// the layout ([`FftwError::LayoutMismatch`]), alignment classes
+    /// ([`FftwError::AlignmentMismatch`]) and overlap ([`FftwError::Overlap`]), with the part
+    /// axis: an array fits its side when it has an axis of extent 2 whose stride is that
+    /// side's gap, its part axis, and its other axes fit the layout as for interleaved
+    /// storage; several such axes can only occur on an input, which is accepted if any choice
+    /// fits. When both buffers are arrays of the same rank, their axes pair by index after
+    /// each side's part axis is removed. The storage of an array, or a slice, must hold the
+    /// layout's span, gap included. The alignment class checked is that of each buffer's
+    /// first real, the real part of its first element; the classes of the imaginary parts
+    /// follow from the gaps. On an error nothing is written.
+    ///
+    /// ```
+    /// use rlst::rlst_dynamic_array;
+    /// use rlst::fftw::{Direction, Layout, Planner};
+    ///
+    /// // The input as planes, the part axis outermost; the output interleaved, part axis 0.
+    /// let mut input = rlst_dynamic_array!(f64, [8, 3, 2] | rlst::FFTW_ALIGNED);
+    /// let mut output = rlst_dynamic_array!(f64, [2, 8, 3] | rlst::FFTW_ALIGNED);
+    /// input.fill_from_seed_equally_distributed(0);
+    ///
+    /// let layout = Layout::split_along_axis(&input, 2, &output, 0, 0)?;
+    /// let plan = Planner::<f64>::new().split_c2c(&layout, Direction::Backward)?;
+    /// plan.execute(&input, &mut output)?;
+    /// let (re, im): (f64, f64) = (0..8)
+    ///     .map(|i| (input[[i, 2, 0]], input[[i, 2, 1]]))
+    ///     .fold((0.0, 0.0), |(a, b), (x, y)| (a + x, b + y));
+    /// assert!((output[[0, 0, 2]] - re).abs() < 1e-12);
+    /// assert!((output[[1, 0, 2]] - im).abs() < 1e-12);
+    /// # Ok::<(), rlst::fftw::FftwError>(())
+    /// ```
+    pub fn execute<I, O>(&self, input: &I, output: &mut O) -> Result<(), FftwError>
+    where
+        I: FftBuffer<T> + ?Sized,
+        O: FftBufferMut<T> + ?Sized,
+    {
+        let (input, _) = self.check_layout(input, &*output)?;
+        let output = output.check_side_mut(self.layout(), Side::Output)?;
+        self.check_pointers(input, output)?;
+        // SAFETY: the pointers come from the side checks and passed `check_pointers`;
+        // `output` is borrowed mutably and `input` shared, which suffices for a `Preserving`
+        // plan.
+        unsafe { self.execute_split_unchecked(input.cast_mut(), output) };
+        Ok(())
+    }
+}
+
+impl<T: FftwReal> Plan<T, SplitC2c, Destroying> {
+    /// Transform the split complex `input` into `output`; FFTW may overwrite `input`.
+    ///
+    /// The checks are those of the preserving split plan's `execute`: the buffers against the
+    /// layout, with the part axis, alignment classes and overlap, in this order, before FFTW
+    /// is called. On an error nothing is written.
+    /// FFTW may overwrite the reals of `input` that the layout addresses, never the elements
+    /// of a view's storage between them.
+    ///
+    /// ```
+    /// use rlst::rlst_dynamic_array;
+    /// use rlst::fftw::{Direction, Layout, Planner};
+    ///
+    /// let mut input = rlst_dynamic_array!(f64, [8, 2] | rlst::FFTW_ALIGNED);
+    /// let mut output = rlst_dynamic_array!(f64, [8, 2] | rlst::FFTW_ALIGNED);
+    /// let layout = Layout::split_along_axis(&input, 1, &output, 1, 0)?;
+    /// let plan = Planner::<f64>::new()
+    ///     .may_destroy_input()
+    ///     .split_c2c(&layout, Direction::Forward)?;
+    /// plan.execute(&mut input, &mut output)?;
+    /// # Ok::<(), rlst::fftw::FftwError>(())
+    /// ```
+    ///
+    /// A destroying plan needs its input mutably, so this does not compile:
+    ///
+    /// ```compile_fail,E0308
+    /// use rlst::rlst_dynamic_array;
+    /// use rlst::fftw::{Direction, Layout, Planner};
+    ///
+    /// let input = rlst_dynamic_array!(f64, [8, 2] | rlst::FFTW_ALIGNED);
+    /// let mut output = rlst_dynamic_array!(f64, [8, 2] | rlst::FFTW_ALIGNED);
+    /// let layout = Layout::split_along_axis(&input, 1, &output, 1, 0)?;
+    /// let plan = Planner::<f64>::new()
+    ///     .may_destroy_input()
+    ///     .split_c2c(&layout, Direction::Forward)?;
+    /// plan.execute(&input, &mut output)?;
+    /// # Ok::<(), rlst::fftw::FftwError>(())
+    /// ```
+    pub fn execute<I, O>(&self, input: &mut I, output: &mut O) -> Result<(), FftwError>
+    where
+        I: FftBufferMut<T> + ?Sized,
+        O: FftBufferMut<T> + ?Sized,
+    {
+        self.check_layout(&*input, &*output)?;
+        let input = input.check_side_mut(self.layout(), Side::Input)?;
+        let output = output.check_side_mut(self.layout(), Side::Output)?;
+        self.check_pointers(input, output)?;
+        // SAFETY: the pointers come from the side checks on the exclusive borrows of both
+        // buffers, and passed `check_pointers`.
+        unsafe { self.execute_split_unchecked(input, output) };
+        Ok(())
+    }
+}
+
+impl<T: FftwReal> Plan<T, SplitC2c, InPlace> {
+    /// Transform the split complex `data` in place.
+    ///
+    /// Before FFTW is called: the buffer must fit the layout, a slice of reals by its length
+    /// and a real array by its part axis, shape, strides and storage
+    /// ([`FftwError::LayoutMismatch`]), and the class of its first real must be the plan's,
+    /// unless the plan is unaligned ([`FftwError::AlignmentMismatch`]). On an error nothing
+    /// is written.
+    ///
+    /// ```
+    /// use rlst::rlst_dynamic_array;
+    /// use rlst::fftw::{Direction, Layout, Planner};
+    ///
+    /// let mut data = rlst_dynamic_array!(f64, [8, 2] | rlst::FFTW_ALIGNED);
+    /// data[[0, 0]] = 1.0;
+    /// let layout = Layout::split_along_axis_inplace(&data, 1, 0)?;
+    /// let plan = Planner::<f64>::new().split_c2c_inplace(&layout, Direction::Forward)?;
+    /// plan.execute(&mut data)?;
+    /// assert!((0..8).all(|k| data[[k, 0]] == 1.0 && data[[k, 1]] == 0.0));
+    /// # Ok::<(), rlst::fftw::FftwError>(())
+    /// ```
+    ///
+    /// An in-place plan executes on one buffer, so this does not compile:
+    ///
+    /// ```compile_fail,E0061
+    /// use rlst::rlst_dynamic_array;
+    /// use rlst::fftw::{Direction, Layout, Planner};
+    ///
+    /// let mut input = rlst_dynamic_array!(f64, [8, 2] | rlst::FFTW_ALIGNED);
+    /// let mut output = rlst_dynamic_array!(f64, [8, 2] | rlst::FFTW_ALIGNED);
+    /// let layout = Layout::split_along_axis_inplace(&input, 1, 0)?;
+    /// let plan = Planner::<f64>::new().split_c2c_inplace(&layout, Direction::Forward)?;
+    /// plan.execute(&mut input, &mut output)?;
+    /// # Ok::<(), rlst::fftw::FftwError>(())
+    /// ```
+    pub fn execute<D>(&self, data: &mut D) -> Result<(), FftwError>
+    where
+        D: FftBufferMut<T> + ?Sized,
+    {
+        self.check_layout(&*data, &*data)?;
+        // In place the input and output spans are equal, so one check covers both sides.
+        let data = data.check_side_mut(self.layout(), Side::Input)?;
+        self.check_pointers(data, data)?;
+        // SAFETY: the pointer comes from the side check on the exclusive borrow of the
+        // buffer, passed `check_pointers`, and is passed as both input and output of the
+        // in-place plan.
+        unsafe { self.execute_split_unchecked(data, data) };
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod array_tests;
+
+#[cfg(test)]
+mod split_tests;
 
 #[cfg(test)]
 mod tests {

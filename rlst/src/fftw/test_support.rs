@@ -26,7 +26,7 @@ pub(crate) const C2C_TOLERANCE_FACTOR: f64 = 4.0;
 pub(crate) const SEED: u64 = 0x5e_ed0f_ff7e;
 
 /// A precision under test.
-pub(crate) trait TestReal: FftwReal {
+pub(crate) trait TestReal: FftwReal + TestElement {
     /// The machine epsilon.
     const EPSILON: f64;
     /// The name of the precision, for messages.
@@ -346,27 +346,61 @@ where
     values
 }
 
+/// An element of the buffers of the tests: a complex value, or a real for split storage.
+pub(crate) trait TestElement: Copy + std::fmt::Debug {
+    /// The name of the precision, for messages.
+    const PRECISION: &'static str;
+    /// The sentinel of the gaps between and around views.
+    fn sentinel() -> Self;
+    /// The bits of the element: of the real and imaginary parts, of a real and 0.
+    fn bits(self) -> (u64, u64);
+}
+
+impl<T: TestReal> TestElement for Complex<T> {
+    const PRECISION: &'static str = T::NAME;
+    fn sentinel() -> Self {
+        sentinel::<T>()
+    }
+    fn bits(self) -> (u64, u64) {
+        (self.re.to_f64().to_bits(), self.im.to_f64().to_bits())
+    }
+}
+
+macro_rules! impl_test_element_for_real {
+    ($real:ty) => {
+        impl TestElement for $real {
+            const PRECISION: &'static str = <$real as TestReal>::NAME;
+            fn sentinel() -> Self {
+                real_sentinel::<$real>()
+            }
+            fn bits(self) -> (u64, u64) {
+                (self.to_f64().to_bits(), 0)
+            }
+        }
+    };
+}
+
+impl_test_element_for_real!(f32);
+impl_test_element_for_real!(f64);
+
 /// The bits of every element of the storage of `view`, the elements of other views included.
-pub(crate) fn storage_bits<T, A, const N: usize>(view: &Array<A, N>) -> Vec<(u64, u64)>
+pub(crate) fn storage_bits<E, A, const N: usize>(view: &Array<A, N>) -> Vec<(u64, u64)>
 where
-    T: TestReal,
-    A: BaseItem<Item = Complex<T>> + StridedRawAccess,
+    E: TestElement,
+    A: BaseItem<Item = E> + StridedRawAccess,
 {
     let (storage, _) = view.storage().unwrap();
-    storage
-        .iter()
-        .map(|value| (value.re.to_f64().to_bits(), value.im.to_f64().to_bits()))
-        .collect()
+    storage.iter().map(|&value| value.bits()).collect()
 }
 
 /// Assert that every element of the storage of `view` outside the view is still the
 /// sentinel, bit for bit. The view's elements are found from its storage offset and strides.
-pub(crate) fn assert_gaps_unchanged<T, A, const N: usize>(
+pub(crate) fn assert_gaps_unchanged<E, A, const N: usize>(
     view: &Array<A, N>,
     context: &dyn std::fmt::Display,
 ) where
-    T: TestReal,
-    A: BaseItem<Item = Complex<T>> + StridedRawAccess + Shape<N> + Stride<N>,
+    E: TestElement,
+    A: BaseItem<Item = E> + StridedRawAccess + Shape<N> + Stride<N>,
 {
     let (storage, offset) = view.storage().unwrap();
     let stride = view.stride();
@@ -374,13 +408,12 @@ pub(crate) fn assert_gaps_unchanged<T, A, const N: usize>(
     for index in multi_indices(view.shape()) {
         own[offset + convert_nd_raw(index, stride)] = true;
     }
-    let sentinel = sentinel::<T>();
-    let bits = |value: Complex<T>| (value.re.to_f64().to_bits(), value.im.to_f64().to_bits());
+    let sentinel = E::sentinel().bits();
     for (position, (&value, &own)) in storage.iter().zip(&own).enumerate() {
         assert!(
-            own || bits(value) == bits(sentinel),
+            own || value.bits() == sentinel,
             "{} {context}: storage element {position}, outside the view, changed to {value:?}",
-            T::NAME
+            E::PRECISION
         );
     }
 }
@@ -450,4 +483,79 @@ pub(crate) fn assert_matches_reference<T, A, const N: usize>(
             T::NAME
         );
     }
+}
+
+// Helpers for split storage (task F3): a split view is a real view with a part axis of
+// extent 2, the real part at index 0 and the imaginary part at index 1.
+
+/// The real sentinel of the split tests, compared by its bits.
+pub(crate) fn real_sentinel<T: TestReal>() -> T {
+    T::round_from(1234.5)
+}
+
+/// A column-major real parent of `shape` at `FFTW_ALIGNED`, filled with the real sentinel.
+pub(crate) fn real_sentinel_parent<T: TestReal, const N: usize>(
+    shape: [usize; N],
+) -> AlignedDynArray<T, N, FFTW_ALIGNED> {
+    let mut parent = AlignedDynArray::<T, N, FFTW_ALIGNED>::from_shape(shape);
+    parent.fill_with_value(real_sentinel::<T>());
+    parent
+}
+
+/// `values` with `value` inserted at `position`: a logical multi-index or shape with its part
+/// axis.
+pub(crate) fn insert_axis<const M: usize, const N: usize>(
+    values: [usize; M],
+    position: usize,
+    value: usize,
+) -> [usize; N] {
+    assert_eq!(N, M + 1);
+    let mut result = [value; N];
+    result[..position].copy_from_slice(&values[..position]);
+    result[position + 1..].copy_from_slice(&values[position..]);
+    result
+}
+
+/// Write random complex values from `seed` into the two parts of the split view `view` with
+/// part axis `part`, by logical multi-index, and return them in column-major order of the
+/// logical shape `shape`.
+pub(crate) fn fill_split_view<T, A, const M: usize, const N: usize>(
+    view: &mut Array<A, N>,
+    part: usize,
+    shape: [usize; M],
+    seed: u64,
+) -> Vec<Complex<T>>
+where
+    T: TestReal,
+    A: BaseItem<Item = T> + UnsafeRandomAccessMut<N> + Shape<N>,
+{
+    assert_eq!(view.shape(), insert_axis(shape, part, 2));
+    let values = random_values::<T>(seed, shape.iter().product());
+    for (index, value) in multi_indices(shape).zip(&values) {
+        *view.get_mut(insert_axis(index, part, 0)).unwrap() = value.re;
+        *view.get_mut(insert_axis(index, part, 1)).unwrap() = value.im;
+    }
+    values
+}
+
+/// The complex values of the split view `view` with part axis `part`, read by logical
+/// multi-index from its two parts.
+pub(crate) fn split_values<T, A, const M: usize, const N: usize>(
+    view: &Array<A, N>,
+    part: usize,
+    shape: [usize; M],
+) -> DynArray<Complex<T>, M>
+where
+    T: TestReal,
+    A: BaseItem<Item = T> + UnsafeRandomAccessByRef<N> + Shape<N>,
+{
+    assert_eq!(view.shape(), insert_axis(shape, part, 2));
+    let mut values = DynArray::<Complex<T>, M>::from_shape(shape);
+    for index in multi_indices(shape) {
+        values[index] = Complex::new(
+            *view.get(insert_axis(index, part, 0)).unwrap(),
+            *view.get(insert_axis(index, part, 1)).unwrap(),
+        );
+    }
+    values
 }

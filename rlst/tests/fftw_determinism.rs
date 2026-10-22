@@ -1,4 +1,5 @@
-//! Determinism of FFTW plans across fresh processes (task F4; design Sections 5 and 7.6).
+//! Determinism of FFTW plans across fresh processes (tasks F4 and F3; design Sections 5 and
+//! 7.6).
 //!
 //! FFTW's wisdom is global to the process, so these tests cannot run as threads of one test
 //! process. This executable has `harness = false` and is both parent and child:
@@ -75,6 +76,9 @@ impl Precision for f64 {
 /// An array of complex values at `FFTW_ALIGNED`, so at alignment class 0 in every process.
 type Aligned<T, const N: usize> = AlignedDynArray<Complex<T>, N, { rlst::FFTW_ALIGNED }>;
 
+/// An array of reals at `FFTW_ALIGNED`, for split storage.
+type AlignedReal<T, const N: usize> = AlignedDynArray<T, N, { rlst::FFTW_ALIGNED }>;
+
 /// The 64-bit FNV-1a hash of `bytes`.
 fn fnv1a_64(bytes: &[u8]) -> u64 {
     bytes.iter().fold(0xcbf2_9ce4_8422_2325, |hash, &byte| {
@@ -126,6 +130,53 @@ fn fingerprint_of(line: &str) -> Option<&str> {
 /// The sentinel of the padding between units.
 fn sentinel() -> c64 {
     c64::new(1234.5, -678.25)
+}
+
+// Split boxes (task F3): nd-fmm's box `[n_phi, RINGS]` as a real array with a part axis of
+// extent 2, the planes `[n_phi, RINGS, 2]` (part axis 2) or the interleaved memory
+// `[2, n_phi, RINGS]` (part axis 0).
+
+/// The index of a split box with part axis `part` (2 or 0) for logical index `[i, j]` and
+/// part `p`.
+fn split_index(part: usize, [i, j]: [usize; 2], p: usize) -> [usize; 3] {
+    if part == 0 { [p, i, j] } else { [i, j, p] }
+}
+
+/// The shape of a split box with part axis `part`.
+fn split_shape(part: usize, n_phi: usize) -> [usize; 3] {
+    split_index(part, [n_phi, RINGS], 2)
+}
+
+/// Write `values`, in column-major order of the logical shape `[n_phi, RINGS]`, into the two
+/// parts of a split box.
+fn fill_split<T, A>(view: &mut rlst::Array<A, 3>, part: usize, values: &[Complex<T>])
+where
+    T: Precision,
+    A: rlst::RandomAccessMut<3> + rlst::BaseItem<Item = T>,
+{
+    let n_phi = values.len() / RINGS;
+    for (k, value) in values.iter().enumerate() {
+        let index = [k % n_phi, k / n_phi];
+        *view.get_mut(split_index(part, index, 0)).unwrap() = value.re;
+        *view.get_mut(split_index(part, index, 1)).unwrap() = value.im;
+    }
+}
+
+/// The complex values of a split box, in column-major order of its logical shape.
+fn split_values<T, A>(view: &rlst::Array<A, 3>, part: usize, n_phi: usize) -> Vec<Complex<T>>
+where
+    T: Precision,
+    A: rlst::RandomAccessByRef<3> + rlst::BaseItem<Item = T>,
+{
+    (0..n_phi * RINGS)
+        .map(|k| {
+            let index = [k % n_phi, k / n_phi];
+            Complex::new(
+                *view.get(split_index(part, index, 0)).unwrap(),
+                *view.get(split_index(part, index, 1)).unwrap(),
+            )
+        })
+        .collect()
 }
 
 // Problems.
@@ -194,6 +245,44 @@ where
     }
 }
 
+/// Plan a split c2c transform with `planner` and `policy`, on scratch, and execute once: from
+/// `input` into `output` out of place, on `input` in place. Returns the plan's fingerprint.
+fn plan_and_execute_split<T, I, O>(
+    planner: &Planner<T>,
+    policy: Policy,
+    layout: &Layout,
+    direction: Direction,
+    input: &mut I,
+    output: &mut O,
+) -> u64
+where
+    T: Precision,
+    I: FftBufferMut<T> + ?Sized,
+    O: FftBufferMut<T> + ?Sized,
+{
+    match policy {
+        Policy::Preserving => {
+            let plan = planner.split_c2c(layout, direction).unwrap();
+            plan.execute(&*input, output).unwrap();
+            plan.fingerprint()
+        }
+        Policy::Destroying => {
+            let plan = planner
+                .clone()
+                .may_destroy_input()
+                .split_c2c(layout, direction)
+                .unwrap();
+            plan.execute(input, output).unwrap();
+            plan.fingerprint()
+        }
+        Policy::InPlace => {
+            let plan = planner.split_c2c_inplace(layout, direction).unwrap();
+            plan.execute(input).unwrap();
+            plan.fingerprint()
+        }
+    }
+}
+
 /// A problem of the `estimate` case.
 #[derive(Clone, Copy, Debug)]
 enum Problem {
@@ -212,6 +301,15 @@ enum Problem {
     /// A view `[10, 3]` with steps of 2, strides `[2, 20]`, over aligned storage, along axis
     /// 0, f64, forward.
     Strided,
+    /// nd-fmm's box `[n_phi, RINGS]` on split storage along logical axis 0, `Preserving`: the
+    /// planes `[n_phi, RINGS, 2]` with part axis 2, or with `innermost` the interleaved
+    /// memory `[2, n_phi, RINGS]` with part axis 0.
+    Split {
+        n_phi: usize,
+        double: bool,
+        direction: Direction,
+        innermost: bool,
+    },
 }
 
 impl fmt::Display for Problem {
@@ -241,7 +339,33 @@ impl fmt::Display for Problem {
                 f,
                 "view [10, 3] with strides [2, 20] along axis 0, Preserving, Forward, f64"
             ),
+            Problem::Split {
+                n_phi,
+                double,
+                direction,
+                innermost,
+            } => {
+                let part = if innermost { 0 } else { 2 };
+                write!(
+                    f,
+                    "split box {:?}, part axis {part}, along logical axis 0, Preserving, \
+                     {direction:?}, {}",
+                    split_shape(part, n_phi),
+                    if double { "f64" } else { "f32" }
+                )
+            }
         }
+    }
+}
+
+/// nd-fmm's box as split planes `[n_phi, RINGS, 2]`, forward, f64, preserving: the problem of
+/// the `split-fixed-batch-units` case.
+fn split_box_f64_forward(n_phi: usize) -> Problem {
+    Problem::Split {
+        n_phi,
+        double: true,
+        direction: Direction::Forward,
+        innermost: false,
     }
 }
 
@@ -287,6 +411,28 @@ impl Problem {
                 policy,
             });
         }
+        // Split storage (task F3).
+        for direction in [Direction::Forward, Direction::Backward] {
+            problems.push(Problem::Split {
+                n_phi: 140,
+                double: true,
+                direction,
+                innermost: false,
+            });
+        }
+        problems.push(split_box_f64_forward(588));
+        problems.push(Problem::Split {
+            n_phi: 140,
+            double: false,
+            direction: Direction::Forward,
+            innermost: false,
+        });
+        problems.push(Problem::Split {
+            n_phi: 140,
+            double: true,
+            direction: Direction::Forward,
+            innermost: true,
+        });
         problems
     }
 
@@ -364,8 +510,45 @@ impl Problem {
                 );
                 line(&label, fingerprint, output.iter_value())
             }
+            Problem::Split {
+                n_phi,
+                double: true,
+                direction,
+                innermost,
+            } => split::<f64>(&label, n_phi, direction, innermost, rigor),
+            Problem::Split {
+                n_phi,
+                double: false,
+                direction,
+                innermost,
+            } => split::<f32>(&label, n_phi, direction, innermost, rigor),
         }
     }
+}
+
+/// Plan nd-fmm's box `[n_phi, RINGS]` on split storage along logical axis 0, preserving, and
+/// execute it once.
+fn split<T: Precision>(
+    label: &str,
+    n_phi: usize,
+    direction: Direction,
+    innermost: bool,
+    rigor: Rigor,
+) -> String {
+    let part = if innermost { 0 } else { 2 };
+    let mut input = AlignedReal::<T, 3>::from_shape(split_shape(part, n_phi));
+    let mut output = AlignedReal::<T, 3>::from_shape(split_shape(part, n_phi));
+    fill_split(&mut input, part, &values::<T>(label, n_phi * RINGS));
+    let layout = Layout::split_along_axis(&input, part, &output, part, 0).unwrap();
+    let fingerprint = plan_and_execute_split(
+        &Planner::new().rigor(rigor),
+        Policy::Preserving,
+        &layout,
+        direction,
+        &mut input,
+        &mut output,
+    );
+    line(label, fingerprint, split_values(&output, part, n_phi))
 }
 
 /// Plan nd-fmm's unit `[n_phi, RINGS]` along axis 0 and execute it once.
@@ -425,6 +608,33 @@ fn other_plans<T: Precision>() {
             input.fill_from_iter(values::<T>(&label, shape[0] * shape[1]).into_iter());
             let layout = layout(policy, &input, &output, axes);
             plan_and_execute(
+                &Planner::new(),
+                policy,
+                &layout,
+                direction,
+                &mut input,
+                &mut output,
+            );
+        }
+    }
+    // Split plans of other sizes and policies (task F3).
+    for (n_phi, policy) in [
+        (100, Policy::Preserving),
+        (252, Policy::Destroying),
+        (216, Policy::Preserving),
+        (588, Policy::InPlace),
+    ] {
+        for direction in [Direction::Forward, Direction::Backward] {
+            let label = format!("other split [{n_phi}, {RINGS}, 2] {policy:?} {direction:?}");
+            let mut input = AlignedReal::<T, 3>::from_shape(split_shape(2, n_phi));
+            let mut output = AlignedReal::<T, 3>::from_shape(split_shape(2, n_phi));
+            fill_split(&mut input, 2, &values::<T>(&label, n_phi * RINGS));
+            let layout = match policy {
+                Policy::InPlace => Layout::split_along_axis_inplace(&input, 2, 0),
+                _ => Layout::split_along_axis(&input, 2, &output, 2, 0),
+            }
+            .unwrap();
+            plan_and_execute_split(
                 &Planner::new(),
                 policy,
                 &layout,
@@ -596,6 +806,147 @@ fn case_fixed_batch_units() -> Vec<String> {
     vec![line(&label, plan.fingerprint(), expected)]
 }
 
+/// `split-fixed-batch-units`: one split plan of nd-fmm's box `[140, 9, 2]`, the first plan of
+/// the process, executed on boxes at different positions of larger buffers: the boxes
+/// `slice(3, k)` of a parent `[140, 9, 2, 4]`, and four boxes of a flat buffer with 8 reals
+/// (64 bytes) of padding between them. Every box holds the input of the split box in
+/// `estimate`.
+fn case_split_fixed_batch_units() -> Vec<String> {
+    const N_PHI: usize = 140;
+    const UNITS: usize = 4;
+    const LEN: usize = 2 * N_PHI * RINGS;
+    const PADDING: usize = 8;
+    let shape = split_shape(2, N_PHI);
+    let label = split_box_f64_forward(N_PHI).to_string();
+    let values = values::<f64>(&label, N_PHI * RINGS);
+
+    let mut parent_in = AlignedReal::<f64, 4>::from_shape([N_PHI, RINGS, 2, UNITS]);
+    let mut parent_out = AlignedReal::<f64, 4>::from_shape([N_PHI, RINGS, 2, UNITS]);
+    for k in 0..UNITS {
+        fill_split(&mut parent_in.r_mut().slice::<3>(3, k), 2, &values);
+    }
+    let layout = Layout::split_along_axis(
+        &parent_in.r().slice::<3>(3, 0),
+        2,
+        &parent_out.r().slice::<3>(3, 0),
+        2,
+        0,
+    )
+    .unwrap();
+    let plan = Planner::<f64>::new()
+        .split_c2c(&layout, Direction::Forward)
+        .unwrap();
+
+    // The same plan on a standalone aligned copy.
+    let mut copy = AlignedReal::<f64, 3>::from_shape(shape);
+    let mut copy_out = AlignedReal::<f64, 3>::from_shape(shape);
+    fill_split(&mut copy, 2, &values);
+    plan.execute(&copy, &mut copy_out).unwrap();
+    let expected: Vec<f64> = copy_out.iter_value().collect();
+    let same = |result: &[f64], what: &str| {
+        assert!(
+            result.len() == expected.len()
+                && result
+                    .iter()
+                    .zip(&expected)
+                    .all(|(a, b)| a.to_bits() == b.to_bits()),
+            "split fixed-batch units: {what} differs, bit for bit, from the plan on a standalone \
+             copy"
+        );
+    };
+
+    // The boxes of the parent.
+    let mut own_out = AlignedReal::<f64, 4>::from_shape([N_PHI, RINGS, 2, UNITS]);
+    for k in 0..UNITS {
+        plan.execute(
+            &parent_in.r().slice::<3>(3, k),
+            &mut parent_out.r_mut().slice::<3>(3, k),
+        )
+        .unwrap();
+        let result: Vec<f64> = parent_out.r().slice::<3>(3, k).iter_value().collect();
+        same(&result, &format!("box {k} of the parent"));
+
+        let own = Planner::<f64>::new()
+            .split_c2c_on(
+                &mut parent_in.r_mut().slice::<3>(3, k),
+                &mut own_out.r_mut().slice::<3>(3, k),
+                &layout,
+                Direction::Forward,
+            )
+            .unwrap();
+        own.execute(
+            &parent_in.r().slice::<3>(3, k),
+            &mut own_out.r_mut().slice::<3>(3, k),
+        )
+        .unwrap();
+        let result: Vec<f64> = own_out.r().slice::<3>(3, k).iter_value().collect();
+        same(&result, &format!("a plan made for box {k} of the parent"));
+    }
+
+    // The boxes of a flat buffer, at real offsets k (LEN + PADDING): 2528 doubles are a
+    // multiple of 64 bytes, so every box is at class 0.
+    let total = UNITS * LEN + (UNITS - 1) * PADDING;
+    let start = |k: usize| k * (LEN + PADDING);
+    let mut flat_in = AlignedReal::<f64, 1>::from_shape([total]);
+    let mut flat_out = AlignedReal::<f64, 1>::from_shape([total]);
+    let mut own_flat = AlignedReal::<f64, 1>::from_shape([total]);
+    for buffer in [&mut flat_in, &mut flat_out, &mut own_flat] {
+        buffer.data_mut().unwrap().fill(sentinel().re);
+    }
+    for k in 0..UNITS {
+        let range = start(k)..start(k) + LEN;
+        fill_split(
+            &mut SliceArrayMut::from_shape(&mut flat_in.data_mut().unwrap()[range], shape),
+            2,
+            &values,
+        );
+    }
+    for k in 0..UNITS {
+        let range = start(k)..start(k) + LEN;
+        let input = SliceArray::from_shape(&flat_in.data().unwrap()[range.clone()], shape);
+        let mut output =
+            SliceArrayMut::from_shape(&mut flat_out.data_mut().unwrap()[range.clone()], shape);
+        plan.execute(&input, &mut output).unwrap();
+        let result: Vec<f64> = output.iter_value().collect();
+        same(&result, &format!("box {k} of the flat buffer"));
+
+        let mut input_mut =
+            SliceArrayMut::from_shape(&mut flat_in.data_mut().unwrap()[range.clone()], shape);
+        let mut own_output =
+            SliceArrayMut::from_shape(&mut own_flat.data_mut().unwrap()[range.clone()], shape);
+        let own = Planner::<f64>::new()
+            .split_c2c_on(&mut input_mut, &mut own_output, &layout, Direction::Forward)
+            .unwrap();
+        let input = SliceArray::from_shape(&flat_in.data().unwrap()[range.clone()], shape);
+        let mut own_output =
+            SliceArrayMut::from_shape(&mut own_flat.data_mut().unwrap()[range], shape);
+        own.execute(&input, &mut own_output).unwrap();
+        let result: Vec<f64> = own_output.iter_value().collect();
+        same(
+            &result,
+            &format!("a plan made for box {k} of the flat buffer"),
+        );
+    }
+    for buffer in [&flat_in, &flat_out, &own_flat] {
+        let data = buffer.data().unwrap();
+        for k in 0..UNITS - 1 {
+            let padding = &data[start(k) + LEN..start(k + 1)];
+            assert!(
+                padding
+                    .iter()
+                    .all(|value| value.to_bits() == sentinel().re.to_bits()),
+                "split fixed-batch units: the padding after box {k} changed"
+            );
+        }
+    }
+
+    vec![line(
+        &label,
+        plan.fingerprint(),
+        split_values(&copy_out, 2, N_PHI),
+    )]
+}
+
 /// `wisdom-only-without-wisdom`: as the first planning of the process, wisdom-only planning
 /// fails with `PlanCreationFailed` in both precisions; an `Estimate` plan of the same problem
 /// then succeeds.
@@ -650,6 +1001,7 @@ const CASES: &[Case] = &[
         case_estimate_after_other_plans,
     ),
     ("fixed-batch-units", case_fixed_batch_units),
+    ("split-fixed-batch-units", case_split_fixed_batch_units),
     (
         "wisdom-only-without-wisdom",
         case_wisdom_only_without_wisdom,
@@ -731,14 +1083,16 @@ fn check_planning_history(runs: &Runs) -> Result<Vec<String>, String> {
     )
 }
 
-fn check_fixed_batch_units(runs: &Runs) -> Result<Vec<String>, String> {
+/// Two runs of the fixed-batch `case` agree, and its line equals that of `problem` in
+/// `estimate`.
+fn check_units(runs: &Runs, case: &str, problem: Problem) -> Result<Vec<String>, String> {
     let mut notes = compare(
-        runs.lines("fixed-batch-units", 0),
-        runs.lines("fixed-batch-units", 1),
+        runs.lines(case, 0),
+        runs.lines(case, 1),
         "two fresh processes",
     )?;
-    let line = &runs.lines("fixed-batch-units", 0)[0];
-    let estimate = estimate_line(runs, unit_f64_forward(140))?;
+    let line = &runs.lines(case, 0)[0];
+    let estimate = estimate_line(runs, problem)?;
     if fingerprint_of(line) != fingerprint_of(estimate) {
         return Err(format!(
             "the plan of the units differs from the plan of the unit in `estimate`:\n  {line}\n  {estimate}"
@@ -753,6 +1107,14 @@ fn check_fixed_batch_units(runs: &Runs) -> Result<Vec<String>, String> {
     }
     notes.push("the output equals that of the unit in `estimate`".to_string());
     Ok(notes)
+}
+
+fn check_fixed_batch_units(runs: &Runs) -> Result<Vec<String>, String> {
+    check_units(runs, "fixed-batch-units", unit_f64_forward(140))
+}
+
+fn check_split_fixed_batch_units(runs: &Runs) -> Result<Vec<String>, String> {
+    check_units(runs, "split-fixed-batch-units", split_box_f64_forward(140))
 }
 
 fn check_wisdom_only(_: &Runs) -> Result<Vec<String>, String> {
@@ -801,6 +1163,11 @@ const SCENARIOS: &[Scenario] = &[
         name: "fixed-batch units",
         runs: &[("estimate", 1), ("fixed-batch-units", 2)],
         check: check_fixed_batch_units,
+    },
+    Scenario {
+        name: "split fixed-batch units",
+        runs: &[("estimate", 1), ("split-fixed-batch-units", 2)],
+        check: check_split_fixed_batch_units,
     },
     Scenario {
         name: "wisdom-only",

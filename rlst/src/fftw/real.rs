@@ -9,7 +9,7 @@ pub(crate) mod sealed {
 
     /// Seals [`FftwReal`](super::FftwReal) and carries FFTW's functions for one precision.
     ///
-    /// Every function except `execute_dft` must be called inside
+    /// Every function except `execute_dft` and `execute_split_dft` must be called inside
     /// [`with_fftw`](crate::fftw::lock::with_fftw).
     pub trait Sealed: Sized {
         /// FFTW's opaque plan type of this precision, `fftw_plan_s` or `fftwf_plan_s`.
@@ -45,6 +45,43 @@ pub(crate) mod sealed {
             plan: *mut Self::RawPlan,
             input: *mut Complex<Self>,
             output: *mut Complex<Self>,
+        );
+
+        /// `fftw_plan_guru64_split_dft` or `fftwf_plan_guru64_split_dft`, which always plans a
+        /// forward transform.
+        ///
+        /// # Safety
+        ///
+        /// The arguments must satisfy FFTW's conditions for the guru64 split planner: `dims`
+        /// and `howmany_dims` point to `rank` and `howmany_rank` dimensions, in reals, and
+        /// `ri`, `ii`, `ro` and `io` point to the real and imaginary parts of the first input
+        /// and output elements of buffers that cover the spans of those dimensions. The
+        /// caller holds the FFTW lock.
+        #[expect(clippy::too_many_arguments, reason = "mirrors FFTW's guru64 planner")]
+        unsafe fn plan_guru64_split_dft(
+            rank: c_int,
+            dims: *const fftw_sys::fftw_iodim64,
+            howmany_rank: c_int,
+            howmany_dims: *const fftw_sys::fftw_iodim64,
+            ri: *mut Self,
+            ii: *mut Self,
+            ro: *mut Self,
+            io: *mut Self,
+            flags: c_uint,
+        ) -> *mut Self::RawPlan;
+
+        /// `fftw_execute_split_dft` or `fftwf_execute_split_dft`.
+        ///
+        /// # Safety
+        ///
+        /// `plan` is a live split plan, and `ri`, `ii`, `ro` and `io` satisfy FFTW's
+        /// new-array conditions for it, the gaps `ii − ri` and `io − ro` included.
+        unsafe fn execute_split_dft(
+            plan: *mut Self::RawPlan,
+            ri: *mut Self,
+            ii: *mut Self,
+            ro: *mut Self,
+            io: *mut Self,
         );
 
         /// `fftw_destroy_plan` or `fftwf_destroy_plan`.
@@ -108,6 +145,44 @@ pub(crate) mod sealed {
                     ) {
                         // SAFETY: forwarded from the caller, see the trait's contract.
                         unsafe { fftw_sys::[<$prefix execute_dft>](plan, input, output) }
+                    }
+
+                    unsafe fn plan_guru64_split_dft(
+                        rank: c_int,
+                        dims: *const fftw_sys::fftw_iodim64,
+                        howmany_rank: c_int,
+                        howmany_dims: *const fftw_sys::fftw_iodim64,
+                        ri: *mut Self,
+                        ii: *mut Self,
+                        ro: *mut Self,
+                        io: *mut Self,
+                        flags: c_uint,
+                    ) -> *mut Self::RawPlan {
+                        // SAFETY: forwarded from the caller, see the trait's contract.
+                        unsafe {
+                            fftw_sys::[<$prefix plan_guru64_split_dft>](
+                                rank,
+                                dims,
+                                howmany_rank,
+                                howmany_dims,
+                                ri,
+                                ii,
+                                ro,
+                                io,
+                                flags,
+                            )
+                        }
+                    }
+
+                    unsafe fn execute_split_dft(
+                        plan: *mut Self::RawPlan,
+                        ri: *mut Self,
+                        ii: *mut Self,
+                        ro: *mut Self,
+                        io: *mut Self,
+                    ) {
+                        // SAFETY: forwarded from the caller, see the trait's contract.
+                        unsafe { fftw_sys::[<$prefix execute_split_dft>](plan, ri, ii, ro, io) }
                     }
 
                     unsafe fn destroy_plan(plan: *mut Self::RawPlan) {

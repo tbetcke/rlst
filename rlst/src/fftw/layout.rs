@@ -1,15 +1,17 @@
-//! Transform layouts: dimensions, batch dimensions and placement.
+//! Transform layouts: dimensions, batch dimensions, placement and, for split storage, gaps.
 
 use std::fmt;
 
-use crate::{Array, Shape, Stride, StridedRawAccess};
+use crate::{Array, BaseItem, Shape, Stride, StridedRawAccess};
 
 use super::error::{FftwError, Side};
+use super::real::FftwReal;
 
 /// One dimension of a layout: its extent and its input and output strides.
 ///
 /// Strides are counted in elements of the input and output buffers (complex elements for
-/// complex-to-complex transforms), and are non-negative. The fields are `isize`, as FFTW's
+/// complex-to-complex transforms on interleaved storage, reals for split storage), and are
+/// non-negative. The fields are `isize`, as FFTW's
 /// `fftw_iodim64` uses `ptrdiff_t`.
 ///
 /// ```
@@ -56,8 +58,9 @@ impl fmt::Display for Placement {
 /// The layout of a batch of transforms, in normalised form.
 ///
 /// A layout lists the transform dimensions, in the order given, and the batch dimensions over
-/// which the transform is repeated, with the placement. Offsets are counted in elements from
-/// the start of each buffer. A layout is validated when it is made, and normalised: batch
+/// which the transform is repeated, with the placement, and for split complex storage the
+/// gap of each side (see [`Layout::new_split`]). Offsets are counted in elements from the start
+/// of each buffer. A layout is validated when it is made, and normalised: batch
 /// dimensions of extent 1 are dropped, the batch dimensions are sorted by input stride and
 /// then output stride, largest first, and adjacent batch dimensions that are contiguous on
 /// both sides are merged. Two layouts that describe the same transforms of the same elements
@@ -81,6 +84,8 @@ pub struct Layout {
     dims: Vec<Dim>,
     batch: Vec<Dim>,
     placement: Placement,
+    /// For split storage, the input and output gaps, in reals; `None` for interleaved storage.
+    gaps: Option<(isize, isize)>,
     input_span: usize,
     output_span: usize,
 }
@@ -124,16 +129,91 @@ impl Layout {
             dims,
             batch,
             placement,
+            None,
             |index| format!("transform dimension {index}"),
             |index| format!("batch dimension {index}"),
         )
     }
 
-    /// [`Layout::new`], with the names its errors give each transform and batch dimension.
+    /// Make a layout of split complex storage from transform dimensions, batch dimensions, the
+    /// gaps of input and output, and a placement.
+    ///
+    /// Split storage keeps the real and imaginary parts of the complex values in one buffer of
+    /// reals: the real part of an element at an offset, its imaginary part a fixed *gap*
+    /// further on. The strides of `dims` and `batch`, the gaps `(input_gap, output_gap)` and
+    /// the spans count reals, and the offsets of a slice count reals from its start, where the
+    /// real part of the first element is. Plans of this layout are made by
+    /// [`Planner::split_c2c`](super::Planner::split_c2c) and its companions. The gaps are
+    /// recorded beside the dimensions, never as a batch dimension, so normalisation never
+    /// merges them into the batch.
+    ///
+    /// The checks, in this order, each returning [`FftwError::InvalidLayout`] with the
+    /// dimension (`part axis` for the gaps) and the reason:
+    ///
+    /// 1. checks 1 to 4 of [`Layout::new`] on the dimensions: at least one transform
+    ///    dimension, extents at least 1, non-negative strides, and in place equal strides;
+    /// 2. both gaps are positive, and in place they are equal;
+    /// 3. the distinct-output rule of [`Layout::new`], with the gaps as a dimension of extent
+    ///    2, the *part axis*, whose output stride is the output gap: no real or imaginary
+    ///    part of one output element is a part of another;
+    /// 4. the spans, which include the gap of their side, fit in `isize`.
+    ///
+    /// ```
+    /// use rlst::fftw::{Dim, FftwError, Layout, Placement};
+    ///
+    /// // Nine transforms of length 140, the real plane of 1260 reals and then the imaginary
+    /// // plane, as nd-fmm keeps the rings of a box.
+    /// let layout = Layout::new_split(
+    ///     &[Dim { n: 140, is: 1, os: 1 }],
+    ///     &[Dim { n: 9, is: 140, os: 140 }],
+    ///     (1260, 1260),
+    ///     Placement::OutOfPlace,
+    /// )?;
+    /// assert_eq!(layout.gaps(), Some((1260, 1260)));
+    /// assert_eq!(layout.input_span(), 2520);
+    ///
+    /// // Interleaved storage read as split: the imaginary part follows the real part.
+    /// let layout = Layout::new_split(
+    ///     &[Dim { n: 8, is: 2, os: 2 }],
+    ///     &[],
+    ///     (1, 1),
+    ///     Placement::InPlace,
+    /// )?;
+    /// assert_eq!(layout.input_span(), 16);
+    ///
+    /// // A gap of 4 makes the parts of elements 0 to 3 overlap the real parts of 4 to 7.
+    /// let error = Layout::new_split(
+    ///     &[Dim { n: 8, is: 1, os: 1 }],
+    ///     &[],
+    ///     (8, 4),
+    ///     Placement::OutOfPlace,
+    /// );
+    /// assert!(matches!(error, Err(FftwError::InvalidLayout { .. })));
+    /// # Ok::<(), FftwError>(())
+    /// ```
+    pub fn new_split(
+        dims: &[Dim],
+        batch: &[Dim],
+        (input_gap, output_gap): (isize, isize),
+        placement: Placement,
+    ) -> Result<Self, FftwError> {
+        Self::with_names(
+            dims,
+            batch,
+            placement,
+            Some((input_gap, output_gap)),
+            |index| format!("transform dimension {index}"),
+            |index| format!("batch dimension {index}"),
+        )
+    }
+
+    /// [`Layout::new`], or [`Layout::new_split`] with `gaps`, with the names its errors give
+    /// each transform and batch dimension.
     fn with_names(
         dims: &[Dim],
         batch: &[Dim],
         placement: Placement,
+        gaps: Option<(isize, isize)>,
         dim_name: impl Fn(usize) -> String,
         batch_name: impl Fn(usize) -> String,
     ) -> Result<Self, FftwError> {
@@ -149,7 +229,7 @@ impl Layout {
             ));
         }
 
-        let named: Vec<(String, Dim)> = dims
+        let mut named: Vec<(String, Dim)> = dims
             .iter()
             .enumerate()
             .map(|(index, &dim)| (dim_name(index), dim))
@@ -190,6 +270,36 @@ impl Layout {
                     ));
                 }
             }
+        }
+        if let Some((input_gap, output_gap)) = gaps {
+            if input_gap < 1 || output_gap < 1 {
+                return Err(invalid(
+                    PART_AXIS,
+                    format!(
+                        "the gaps must be positive, found input gap {input_gap} and output gap \
+                         {output_gap}"
+                    ),
+                ));
+            }
+            if placement == Placement::InPlace && input_gap != output_gap {
+                return Err(invalid(
+                    PART_AXIS,
+                    format!(
+                        "in place, the input gap {input_gap} and the output gap {output_gap} \
+                         must be equal"
+                    ),
+                ));
+            }
+            // The part axis takes part in the distinct-output rule and the spans, never in
+            // the batch.
+            named.push((
+                PART_AXIS.to_string(),
+                Dim {
+                    n: 2,
+                    is: input_gap,
+                    os: output_gap,
+                },
+            ));
         }
 
         // Distinct outputs, by the sufficient rule of design Section 4.3.
@@ -245,6 +355,7 @@ impl Layout {
             dims: dims.to_vec(),
             batch: normalise_batch(batch),
             placement,
+            gaps,
             input_span,
             output_span,
         })
@@ -295,8 +406,26 @@ impl Layout {
         self.placement
     }
 
+    /// The gaps `(input_gap, output_gap)` of a layout of split complex storage, in reals:
+    /// the stride from an element's real part to its imaginary part on each side. `None` for
+    /// interleaved storage.
+    ///
+    /// ```
+    /// use rlst::fftw::{Dim, Layout, Placement};
+    ///
+    /// let dims = [Dim { n: 8, is: 1, os: 1 }];
+    /// let split = Layout::new_split(&dims, &[], (8, 16), Placement::OutOfPlace)?;
+    /// assert_eq!(split.gaps(), Some((8, 16)));
+    /// let interleaved = Layout::new(&dims, &[], Placement::OutOfPlace)?;
+    /// assert_eq!(interleaved.gaps(), None);
+    /// # Ok::<(), rlst::fftw::FftwError>(())
+    /// ```
+    pub fn gaps(&self) -> Option<(isize, isize)> {
+        self.gaps
+    }
+
     /// The number of input elements the layout spans: 1 plus the sum of (n − 1) · is over
-    /// all dimensions.
+    /// all dimensions, plus the input gap for split storage.
     ///
     /// An input buffer must have at least this many elements.
     ///
@@ -312,7 +441,7 @@ impl Layout {
     }
 
     /// The number of output elements the layout spans: 1 plus the sum of (n − 1) · os over
-    /// all dimensions.
+    /// all dimensions, plus the output gap for split storage.
     ///
     /// An output buffer must have at least this many elements.
     ///
@@ -363,12 +492,24 @@ impl Layout {
                 .collect::<Vec<_>>()
                 .join(", ")
         };
+        let gaps = match self.gaps {
+            Some((input, output)) => format!(" and gaps (input {input}, output {output})"),
+            None => String::new(),
+        };
         format!(
-            "the {} layout with transform dimensions [{}] and batch dimensions [{}]",
+            "the {} layout with transform dimensions [{}] and batch dimensions [{}]{gaps}",
             self.placement,
             list(&self.dims),
             list(&self.batch)
         )
+    }
+
+    /// The gap of `side`, for split storage.
+    pub(crate) fn gap(&self, side: Side) -> Option<isize> {
+        self.gaps.map(|(input, output)| match side {
+            Side::Input => input,
+            Side::Output => output,
+        })
     }
 
     /// One-dimensional transforms along `axis` of two arrays of rank `N`, batched over the
@@ -504,10 +645,11 @@ impl Layout {
         AOut: StridedRawAccess + Shape<N> + Stride<N>,
     {
         Self::from_arrays(
-            (input.shape(), input.stride()),
-            (output.shape(), output.stride()),
+            (&input.shape(), &input.stride()),
+            (&output.shape(), &output.stride()),
             axes,
             Placement::OutOfPlace,
+            None,
         )
     }
 
@@ -563,21 +705,38 @@ impl Layout {
     where
         A: StridedRawAccess + Shape<N> + Stride<N>,
     {
-        let geometry = (data.shape(), data.stride());
-        Self::from_arrays(geometry, geometry, axes, Placement::InPlace)
+        let (shape, stride) = (data.shape(), data.stride());
+        Self::from_arrays(
+            (&shape, &stride),
+            (&shape, &stride),
+            axes,
+            Placement::InPlace,
+            None,
+        )
     }
 
     /// The layout of transforms over `axes` of arrays with the given shapes and strides, with
-    /// the checks of [`over_axes`](Layout::over_axes).
-    fn from_arrays<const N: usize>(
-        (input_shape, input_stride): ([usize; N], [usize; N]),
-        (output_shape, output_stride): ([usize; N], [usize; N]),
+    /// the checks of [`over_axes`](Layout::over_axes). For split storage, the shapes and
+    /// strides are those of the logical axes, without the part axes, and `part_strides` are
+    /// the strides of the input's and the output's part axis, which become the gaps.
+    fn from_arrays(
+        (input_shape, input_stride): (&[usize], &[usize]),
+        (output_shape, output_stride): (&[usize], &[usize]),
         axes: &[usize],
         placement: Placement,
+        part_strides: Option<(usize, usize)>,
     ) -> Result<Self, FftwError> {
         let invalid =
             |dimension: String, reason: String| FftwError::InvalidLayout { dimension, reason };
-        let name = |axis: usize| format!("axis {axis}");
+        let rank = input_shape.len();
+        // The split functions count logical axes (DC26), and their errors say so.
+        let (name, out_of_range): (fn(usize) -> String, String) = match part_strides {
+            None => (|axis| format!("axis {axis}"), format!("the rank {rank}")),
+            Some(_) => (
+                |axis| format!("logical axis {axis}"),
+                format!("{rank}, the rank of the arrays without their part axes"),
+            ),
+        };
 
         if axes.is_empty() {
             return Err(invalid(
@@ -585,10 +744,10 @@ impl Layout {
                 "no axis is given, and a transform needs at least one".to_string(),
             ));
         }
-        if let Some(&axis) = axes.iter().find(|&&axis| axis >= N) {
+        if let Some(&axis) = axes.iter().find(|&&axis| axis >= rank) {
             return Err(invalid(
                 "axes".to_string(),
-                format!("the axis {axis} is not below the rank {N}"),
+                format!("the {} is not below {out_of_range}", name(axis)),
             ));
         }
         for (position, &axis) in axes.iter().enumerate() {
@@ -599,7 +758,7 @@ impl Layout {
                 ));
             }
         }
-        for axis in 0..N {
+        for axis in 0..rank {
             if input_shape[axis] != output_shape[axis] {
                 return Err(invalid(
                     name(axis),
@@ -611,38 +770,298 @@ impl Layout {
                 ));
             }
         }
-        if let Some(axis) = (0..N).find(|&axis| input_shape[axis] == 0) {
+        if let Some(axis) = (0..rank).find(|&axis| input_shape[axis] == 0) {
             return Err(invalid(
                 name(axis),
                 "the extent is 0, so there is nothing to transform".to_string(),
             ));
         }
-        let mut dim_of = Vec::with_capacity(N);
-        for axis in 0..N {
-            let convert = |what: &str, value: usize| {
-                isize::try_from(value).map_err(|_| {
-                    invalid(
-                        name(axis),
-                        format!("the {what} {value} does not fit in isize"),
-                    )
-                })
-            };
+        let convert = |dimension: String, what: &str, value: usize| {
+            isize::try_from(value).map_err(|_| {
+                invalid(
+                    dimension,
+                    format!("the {what} {value} does not fit in isize"),
+                )
+            })
+        };
+        let mut dim_of = Vec::with_capacity(rank);
+        for axis in 0..rank {
             dim_of.push(Dim {
-                n: convert("extent", input_shape[axis])?,
-                is: convert("input stride", input_stride[axis])?,
-                os: convert("output stride", output_stride[axis])?,
+                n: convert(name(axis), "extent", input_shape[axis])?,
+                is: convert(name(axis), "input stride", input_stride[axis])?,
+                os: convert(name(axis), "output stride", output_stride[axis])?,
             });
         }
+        let gaps = match part_strides {
+            Some((input, output)) => Some((
+                convert(PART_AXIS.to_string(), "input gap", input)?,
+                convert(PART_AXIS.to_string(), "output gap", output)?,
+            )),
+            None => None,
+        };
 
-        let batch_axes: Vec<usize> = (0..N).filter(|axis| !axes.contains(axis)).collect();
+        let batch_axes: Vec<usize> = (0..rank).filter(|axis| !axes.contains(axis)).collect();
         let dims: Vec<Dim> = axes.iter().map(|&axis| dim_of[axis]).collect();
         let batch: Vec<Dim> = batch_axes.iter().map(|&axis| dim_of[axis]).collect();
         Self::with_names(
             &dims,
             &batch,
             placement,
+            gaps,
             |index| name(axes[index]),
             |index| name(batch_axes[index]),
+        )
+    }
+
+    /// One-dimensional transforms on split complex storage along the logical axis `axis` of
+    /// two real arrays of rank `N`, batched over the other logical axes.
+    ///
+    /// The same as [`split_over_axes`](Layout::split_over_axes) with the one axis `axis`,
+    /// whose checks, errors and notes apply. `part_in` and `part_out` are the *part axes*,
+    /// of extent 2: index 0 along them is the real part, index 1 the imaginary part.
+    ///
+    /// nd-fmm keeps the rings of a box as split planes: a column-major box `[n_phi, rings,
+    /// 2]`, the real plane and then the imaginary plane, with the part axis outermost and a
+    /// gap of one plane.
+    ///
+    /// ```
+    /// use rlst::rlst_dynamic_array;
+    /// use rlst::fftw::{Dim, Direction, Layout, Planner};
+    ///
+    /// let (n_phi, rings) = (16, 3);
+    /// let mut input = rlst_dynamic_array!(f64, [n_phi, rings, 2] | rlst::FFTW_ALIGNED);
+    /// let mut output = rlst_dynamic_array!(f64, [n_phi, rings, 2] | rlst::FFTW_ALIGNED);
+    /// input.fill_from_seed_equally_distributed(0);
+    ///
+    /// // Transforms of length n_phi along each ring; the part axis is axis 2.
+    /// let layout = Layout::split_along_axis(&input, 2, &output, 2, 0)?;
+    /// assert_eq!(layout.dims(), &[Dim { n: 16, is: 1, os: 1 }]);
+    /// assert_eq!(layout.batch(), &[Dim { n: 3, is: 16, os: 16 }]);
+    /// assert_eq!(layout.gaps(), Some((48, 48)));
+    ///
+    /// let plan = Planner::<f64>::new().split_c2c(&layout, Direction::Forward)?;
+    /// plan.execute(&input, &mut output)?;
+    ///
+    /// // The first entry of each ring's transform is the sum of the ring, in both planes.
+    /// for ring in 0..rings {
+    ///     for part in 0..2 {
+    ///         let sum: f64 = (0..n_phi).map(|i| input[[i, ring, part]]).sum();
+    ///         assert!((output[[0, ring, part]] - sum).abs() < 1e-12);
+    ///     }
+    /// }
+    /// # Ok::<(), rlst::fftw::FftwError>(())
+    /// ```
+    ///
+    /// The arrays must be real, so complex arrays do not compile:
+    ///
+    /// ```compile_fail,E0277
+    /// use rlst::{c64, rlst_dynamic_array};
+    /// use rlst::fftw::Layout;
+    ///
+    /// let input = rlst_dynamic_array!(c64, [16, 2] | rlst::FFTW_ALIGNED);
+    /// let output = rlst_dynamic_array!(c64, [16, 2] | rlst::FFTW_ALIGNED);
+    /// let layout = Layout::split_along_axis(&input, 1, &output, 1, 0)?;
+    /// # Ok::<(), rlst::fftw::FftwError>(())
+    /// ```
+    ///
+    /// while real arrays of the same shape do:
+    ///
+    /// ```
+    /// use rlst::rlst_dynamic_array;
+    /// use rlst::fftw::Layout;
+    ///
+    /// let input = rlst_dynamic_array!(f64, [16, 2] | rlst::FFTW_ALIGNED);
+    /// let output = rlst_dynamic_array!(f64, [16, 2] | rlst::FFTW_ALIGNED);
+    /// let layout = Layout::split_along_axis(&input, 1, &output, 1, 0)?;
+    /// assert_eq!(layout.gaps(), Some((16, 16)));
+    /// # Ok::<(), rlst::fftw::FftwError>(())
+    /// ```
+    pub fn split_along_axis<T, AIn, AOut, const N: usize>(
+        input: &Array<AIn, N>,
+        part_in: usize,
+        output: &Array<AOut, N>,
+        part_out: usize,
+        axis: usize,
+    ) -> Result<Self, FftwError>
+    where
+        T: FftwReal,
+        AIn: BaseItem<Item = T> + StridedRawAccess + Shape<N> + Stride<N>,
+        AOut: BaseItem<Item = T> + StridedRawAccess + Shape<N> + Stride<N>,
+    {
+        Self::split_over_axes(input, part_in, output, part_out, &[axis])
+    }
+
+    /// Transforms on split complex storage over the logical axes `axes`, in the order given,
+    /// of two real arrays of rank `N`, batched over the other logical axes.
+    ///
+    /// A split complex array is a real array with one extra axis of extent 2, its *part axis*
+    /// (`part_in` for the input, `part_out` for the output): index 0 along it is the real
+    /// part, index 1 the imaginary part, and its stride is the array's *gap*. The other
+    /// axes are the array's *logical axes*, numbered from 0 in their order without the part
+    /// axis, and `axes` counts them: for an input with part axis 0, logical axis 1 is its
+    /// axis 2. One `axes` therefore means the same transform on an input and an output whose
+    /// part axes are at different positions.
+    ///
+    /// The checks, in this order, each returning [`FftwError::InvalidLayout`] that names
+    /// `part axis`, `axes` or the logical axis concerned (`logical axis 1`):
+    ///
+    /// 1. `part_in` and `part_out` are below `N`, and each array's extent along its part axis
+    ///    is 2;
+    /// 2. the checks of [`over_axes`](Layout::over_axes) on the logical axes: `axes` is not
+    ///    empty, its entries are below `N − 1` and not repeated, the logical shapes of input
+    ///    and output are equal, every extent is at least 1, and every extent and stride fits
+    ///    in `isize`;
+    ///
+    /// and those of [`Layout::new_split`], whose dimensions are the logical axes of `axes`
+    /// with the strides of both arrays, whose batch dimensions are the other logical axes,
+    /// and whose gaps are the strides of the two part axes, in reals.
+    ///
+    /// The arrays must be real arrays, of `f32` or `f64`; the layout counts reals. Its notes
+    /// on memory are those of [`over_axes`](Layout::over_axes): building a layout reads only
+    /// shapes and strides, and a plan describes memory, not logical axes, so two arrays with
+    /// the same memory layout, such as column-major `[2, 8, 3]` with part axis 0 and row-major
+    /// `[3, 8, 2]` with part axis 2, give equal layouts.
+    ///
+    /// ```
+    /// use rlst::rlst_dynamic_array;
+    /// use rlst::fftw::{Dim, Layout};
+    ///
+    /// // A real plane [4, 5] and an imaginary plane after it.
+    /// let input = rlst_dynamic_array!(f32, [4, 5, 2] | rlst::FFTW_ALIGNED);
+    /// // The same values interleaved: the part axis first.
+    /// let output = rlst_dynamic_array!(f32, [2, 4, 5] | rlst::FFTW_ALIGNED);
+    /// let layout = Layout::split_over_axes(&input, 2, &output, 0, &[0, 1])?;
+    /// assert_eq!(layout.dims(), &[Dim { n: 4, is: 1, os: 2 }, Dim { n: 5, is: 4, os: 8 }]);
+    /// assert!(layout.batch().is_empty());
+    /// assert_eq!(layout.gaps(), Some((20, 1)));
+    /// # Ok::<(), rlst::fftw::FftwError>(())
+    /// ```
+    pub fn split_over_axes<T, AIn, AOut, const N: usize>(
+        input: &Array<AIn, N>,
+        part_in: usize,
+        output: &Array<AOut, N>,
+        part_out: usize,
+        axes: &[usize],
+    ) -> Result<Self, FftwError>
+    where
+        T: FftwReal,
+        AIn: BaseItem<Item = T> + StridedRawAccess + Shape<N> + Stride<N>,
+        AOut: BaseItem<Item = T> + StridedRawAccess + Shape<N> + Stride<N>,
+    {
+        Self::from_split_arrays(
+            &[
+                ("input", part_in, &input.shape(), &input.stride()),
+                ("output", part_out, &output.shape(), &output.stride()),
+            ],
+            axes,
+            Placement::OutOfPlace,
+        )
+    }
+
+    /// In-place one-dimensional transforms on split complex storage along the logical axis
+    /// `axis` of a real array of rank `N` with part axis `part`, batched over the other
+    /// logical axes.
+    ///
+    /// The same as [`split_over_axes_inplace`](Layout::split_over_axes_inplace) with the one
+    /// axis `axis`.
+    ///
+    /// ```
+    /// use rlst::rlst_dynamic_array;
+    /// use rlst::fftw::{Dim, Layout, Placement};
+    ///
+    /// // Three transforms of length 8 on interleaved storage read as split: part axis 0.
+    /// let data = rlst_dynamic_array!(f64, [2, 8, 3] | rlst::FFTW_ALIGNED);
+    /// let layout = Layout::split_along_axis_inplace(&data, 0, 0)?;
+    /// assert_eq!(layout.placement(), Placement::InPlace);
+    /// assert_eq!(layout.dims(), &[Dim { n: 8, is: 2, os: 2 }]);
+    /// assert_eq!(layout.batch(), &[Dim { n: 3, is: 16, os: 16 }]);
+    /// assert_eq!(layout.gaps(), Some((1, 1)));
+    /// # Ok::<(), rlst::fftw::FftwError>(())
+    /// ```
+    pub fn split_along_axis_inplace<T, A, const N: usize>(
+        data: &Array<A, N>,
+        part: usize,
+        axis: usize,
+    ) -> Result<Self, FftwError>
+    where
+        T: FftwReal,
+        A: BaseItem<Item = T> + StridedRawAccess + Shape<N> + Stride<N>,
+    {
+        Self::split_over_axes_inplace(data, part, &[axis])
+    }
+
+    /// In-place transforms on split complex storage over the logical axes `axes`, in the
+    /// order given, of a real array of rank `N` with part axis `part`, batched over the other
+    /// logical axes.
+    ///
+    /// As [`split_over_axes`](Layout::split_over_axes) with `data` as both input and output,
+    /// whose checks, errors and notes apply; the placement is [`Placement::InPlace`].
+    ///
+    /// ```
+    /// use rlst::rlst_dynamic_array;
+    /// use rlst::fftw::{Dim, Layout};
+    ///
+    /// // The part axis in the middle: [4, 2, 6], transforms over logical axes 1 and 0.
+    /// let data = rlst_dynamic_array!(f64, [4, 2, 6] | rlst::FFTW_ALIGNED);
+    /// let layout = Layout::split_over_axes_inplace(&data, 1, &[1, 0])?;
+    /// assert_eq!(layout.dims(), &[Dim { n: 6, is: 8, os: 8 }, Dim { n: 4, is: 1, os: 1 }]);
+    /// assert_eq!(layout.gaps(), Some((4, 4)));
+    /// # Ok::<(), rlst::fftw::FftwError>(())
+    /// ```
+    pub fn split_over_axes_inplace<T, A, const N: usize>(
+        data: &Array<A, N>,
+        part: usize,
+        axes: &[usize],
+    ) -> Result<Self, FftwError>
+    where
+        T: FftwReal,
+        A: BaseItem<Item = T> + StridedRawAccess + Shape<N> + Stride<N>,
+    {
+        Self::from_split_arrays(
+            &[("array", part, &data.shape(), &data.stride())],
+            axes,
+            Placement::InPlace,
+        )
+    }
+
+    /// The split layout of transforms over the logical axes `axes` of arrays given as
+    /// `(name, part axis, shape, strides)`: input and output, or one array in place, with the
+    /// checks of [`split_over_axes`](Layout::split_over_axes).
+    fn from_split_arrays(
+        arrays: &[(&str, usize, &[usize], &[usize])],
+        axes: &[usize],
+        placement: Placement,
+    ) -> Result<Self, FftwError> {
+        let invalid = |reason: String| FftwError::InvalidLayout {
+            dimension: PART_AXIS.to_string(),
+            reason,
+        };
+        let mut logical = Vec::with_capacity(arrays.len());
+        for &(name, part, shape, stride) in arrays {
+            let rank = shape.len();
+            if part >= rank {
+                return Err(invalid(format!(
+                    "the {name}'s part axis {part} is not below the rank {rank}"
+                )));
+            }
+            if shape[part] != 2 {
+                return Err(invalid(format!(
+                    "the {name}'s extent along its part axis {part} is {}, and split storage \
+                     needs 2, the real and the imaginary part",
+                    shape[part]
+                )));
+            }
+            let gap = stride[part];
+            let (shape, stride) = remove_axis(shape, stride, part);
+            logical.push((shape, stride, gap));
+        }
+        let (input, output) = (&logical[0], &logical[logical.len() - 1]);
+        Self::from_arrays(
+            (&input.0, &input.1),
+            (&output.0, &output.1),
+            axes,
+            placement,
+            Some((input.2, output.2)),
         )
     }
 
@@ -650,7 +1069,26 @@ impl Layout {
     /// 4.8 item 2, DC15): each transform dimension is matched by an axis of the same extent
     /// and, above extent 1, the same stride, and the other axes, normalised on this side
     /// alone, equal the layout's batch on this side, normalised in the same way.
+    ///
+    /// For split storage (DC27) the part axis is found first: an axis of extent 2 whose
+    /// stride is this side's gap. The array fits if, for some such axis, the other axes fit
+    /// as above. A part axis that a transform dimension needs leaves that dimension without
+    /// a match, so trying every candidate covers the rule that no transform dimension needs
+    /// it; several candidates can exist only on an input, whose elements need not be
+    /// distinct.
     pub(crate) fn fits_array_side(&self, side: Side, shape: &[usize], stride: &[usize]) -> bool {
+        match self.gap(side) {
+            None => self.fits_logical_side(side, shape, stride),
+            Some(gap) => part_axes(shape, stride, gap).any(|part| {
+                let (shape, stride) = remove_axis(shape, stride, part);
+                self.fits_logical_side(side, &shape, &stride)
+            }),
+        }
+    }
+
+    /// The check of [`fits_array_side`](Layout::fits_array_side) on axes without a part
+    /// axis.
+    fn fits_logical_side(&self, side: Side, shape: &[usize], stride: &[usize]) -> bool {
         let on_side = |dim: &Dim| {
             let stride = match side {
                 Side::Input => dim.is,
@@ -679,7 +1117,34 @@ impl Layout {
     /// paired by index (DC15): equal shapes, each transform dimension matched by one axis
     /// with its extent and, above extent 1, both strides, and the other axes, normalised
     /// together, equal to the layout's batch.
+    ///
+    /// For split storage (DC27) each side's part axis, found as in
+    /// [`fits_array_side`](Layout::fits_array_side), is removed first, and the remaining
+    /// logical axes pair by index; the arrays fit if some choice of part axes does.
     pub(crate) fn fits_array_pair(
+        &self,
+        (input_shape, input_stride): (&[usize], &[usize]),
+        (output_shape, output_stride): (&[usize], &[usize]),
+    ) -> bool {
+        let Some((input_gap, output_gap)) = self.gaps else {
+            return self
+                .fits_logical_pair((input_shape, input_stride), (output_shape, output_stride));
+        };
+        part_axes(input_shape, input_stride, input_gap).any(|input_part| {
+            let (input_shape, input_stride) = remove_axis(input_shape, input_stride, input_part);
+            part_axes(output_shape, output_stride, output_gap).any(|output_part| {
+                let (output_shape, output_stride) =
+                    remove_axis(output_shape, output_stride, output_part);
+                self.fits_logical_pair(
+                    (&input_shape, &input_stride),
+                    (&output_shape, &output_stride),
+                )
+            })
+        })
+    }
+
+    /// The check of [`fits_array_pair`](Layout::fits_array_pair) on axes without part axes.
+    fn fits_logical_pair(
         &self,
         (input_shape, input_stride): (&[usize], &[usize]),
         (output_shape, output_stride): (&[usize], &[usize]),
@@ -712,12 +1177,42 @@ impl Layout {
                 .collect::<Vec<_>>()
                 .join(", ")
         };
+        let part = match self.gap(side) {
+            Some(gap) => format!(" and a part axis (n 2, stride {gap})"),
+            None => String::new(),
+        };
         format!(
-            "transform dimensions [{}] and batch dimensions [{}]",
+            "transform dimensions [{}] and batch dimensions [{}]{part}",
             list(&self.dims),
             list(&self.batch)
         )
     }
+}
+
+/// The name of the part axis of split storage in errors.
+const PART_AXIS: &str = "part axis";
+
+/// The axes of extent 2 whose stride is `gap`: the candidates for a split array's part axis.
+fn part_axes<'a>(
+    shape: &'a [usize],
+    stride: &'a [usize],
+    gap: isize,
+) -> impl Iterator<Item = usize> + 'a {
+    (0..shape.len())
+        .filter(move |&axis| shape[axis] == 2 && isize::try_from(stride[axis]) == Ok(gap))
+}
+
+/// The shape and strides without `axis`.
+fn remove_axis(shape: &[usize], stride: &[usize], axis: usize) -> (Vec<usize>, Vec<usize>) {
+    let without = |values: &[usize]| {
+        values
+            .iter()
+            .enumerate()
+            .filter(|&(index, _)| index != axis)
+            .map(|(_, &value)| value)
+            .collect()
+    };
+    (without(shape), without(stride))
 }
 
 /// The axes of an array as dimensions with the given input and output strides, or `None` if
@@ -802,6 +1297,10 @@ mod tests {
     use crate::dense::array::StridedSliceArray;
     use crate::fftw::{FftwError, Side};
     use crate::{DynArray, StridedDynArray, c64};
+
+    fn split(dims: &[Dim], batch: &[Dim], gaps: (isize, isize), placement: Placement) -> Layout {
+        Layout::new_split(dims, batch, gaps, placement).unwrap()
+    }
 
     fn dim(n: isize, is: isize, os: isize) -> Dim {
         Dim { n, is, os }
@@ -1162,5 +1661,245 @@ mod tests {
         // A wrong extent or stride on the transform axis.
         assert!(!layout.fits_array_side(Side::Input, &[5, 2, 3], &[1, 5, 10]));
         assert!(!layout.fits_array_side(Side::Input, &[4, 2, 3], &[2, 8, 16]));
+    }
+
+    // Split layouts (task F3).
+
+    #[test]
+    fn test_split_layouts_of_the_brief() {
+        let out = Placement::OutOfPlace;
+
+        // nd-fmm's box: column-major [140, 9, 2], part axis 2.
+        let a = DynArray::<f64, 3>::from_shape([140, 9, 2]);
+        assert_eq!(a.stride(), [1, 140, 1260]);
+        assert_eq!(
+            Layout::split_along_axis(&a, 2, &a, 2, 0).unwrap(),
+            split(&[dim(140, 1, 1)], &[dim(9, 140, 140)], (1260, 1260), out)
+        );
+
+        // Column-major [2, 8, 3], part axis 0, and the same memory as row-major [3, 8, 2]
+        // with part axis 2: equal layouts (DC15).
+        let a = DynArray::<f64, 3>::from_shape([2, 8, 3]);
+        let interleaved = split(&[dim(8, 2, 2)], &[dim(3, 16, 16)], (1, 1), out);
+        assert_eq!(
+            Layout::split_along_axis(&a, 0, &a, 0, 0).unwrap(),
+            interleaved
+        );
+        let b = StridedDynArray::<f64, 3>::row_major([3, 8, 2]);
+        assert_eq!(b.stride(), [16, 2, 1]);
+        assert_eq!(
+            Layout::split_along_axis(&b, 2, &b, 2, 1).unwrap(),
+            interleaved
+        );
+
+        // Column-major [8, 2, 3], part axis 1 in the middle, along logical axis 1.
+        let a = DynArray::<f64, 3>::from_shape([8, 2, 3]);
+        assert_eq!(
+            Layout::split_along_axis(&a, 1, &a, 1, 1).unwrap(),
+            split(&[dim(3, 16, 16)], &[dim(8, 1, 1)], (8, 8), out)
+        );
+
+        // Column-major [4, 5, 2], part axis 2, over both logical axes.
+        let a = DynArray::<f64, 3>::from_shape([4, 5, 2]);
+        assert_eq!(
+            Layout::split_over_axes(&a, 2, &a, 2, &[0, 1]).unwrap(),
+            split(&[dim(4, 1, 1), dim(5, 4, 4)], &[], (20, 20), out)
+        );
+
+        // Mixed part axes: planes in, interleaved out.
+        let input = DynArray::<f32, 3>::from_shape([8, 3, 2]);
+        let output = DynArray::<f32, 3>::from_shape([2, 8, 3]);
+        assert_eq!(
+            Layout::split_along_axis(&input, 2, &output, 0, 0).unwrap(),
+            split(&[dim(8, 1, 2)], &[dim(3, 8, 16)], (24, 1), out)
+        );
+    }
+
+    #[test]
+    fn test_split_along_axis_is_over_one_axis() {
+        let a = DynArray::<f64, 4>::from_shape([6, 5, 4, 2]);
+        let b = StridedDynArray::<f64, 4>::row_major([2, 6, 5, 4]);
+        for axis in 0..3 {
+            assert_eq!(
+                Layout::split_along_axis(&a, 3, &b, 0, axis).unwrap(),
+                Layout::split_over_axes(&a, 3, &b, 0, &[axis]).unwrap()
+            );
+            assert_eq!(
+                Layout::split_along_axis_inplace(&b, 0, axis).unwrap(),
+                Layout::split_over_axes_inplace(&b, 0, &[axis]).unwrap()
+            );
+        }
+        let layout = Layout::split_over_axes_inplace(&a, 3, &[2, 0]).unwrap();
+        assert_eq!(
+            layout,
+            split(
+                &[dim(4, 30, 30), dim(6, 1, 1)],
+                &[dim(5, 6, 6)],
+                (120, 120),
+                Placement::InPlace
+            )
+        );
+        assert_eq!(layout.input_span(), 240);
+    }
+
+    #[test]
+    fn test_split_part_axis_is_not_merged_into_the_batch() {
+        // A part axis of stride 1 beside a batch axis of stride 2: merging them would describe
+        // one batch of 2 x 3 with stride 1.
+        let a = DynArray::<f64, 3>::from_shape([2, 3, 4]);
+        let layout = Layout::split_along_axis(&a, 0, &a, 0, 1).unwrap();
+        assert_eq!(layout.dims(), &[dim(4, 6, 6)]);
+        assert_eq!(layout.batch(), &[dim(3, 2, 2)]);
+        assert_eq!(layout.gaps(), Some((1, 1)));
+        assert_eq!(layout.input_span(), 24);
+        // A split layout and an interleaved one of the same dimensions differ.
+        assert_ne!(
+            layout,
+            Layout::new(layout.dims(), layout.batch(), Placement::OutOfPlace).unwrap()
+        );
+    }
+
+    #[test]
+    fn test_new_split_rules() {
+        let out = Placement::OutOfPlace;
+        let split_invalid =
+            |dims: &[Dim], gaps, placement| match Layout::new_split(dims, &[], gaps, placement) {
+                Err(FftwError::InvalidLayout { dimension, reason }) => (dimension, reason),
+                other => panic!("expected InvalidLayout, found {other:?}"),
+            };
+
+        // The rules of `Layout::new` on the dimensions.
+        let (dimension, _) = split_invalid(&[], (1, 1), out);
+        assert_eq!(dimension, "layout");
+        let (dimension, _) = split_invalid(&[dim(0, 1, 1)], (1, 1), out);
+        assert_eq!(dimension, "transform dimension 0");
+        let (dimension, _) = split_invalid(&[dim(4, 2, 1)], (8, 8), Placement::InPlace);
+        assert_eq!(dimension, "transform dimension 0");
+
+        // Positive gaps, equal in place.
+        for gaps in [(0, 4), (4, 0), (-4, 4)] {
+            let (dimension, reason) = split_invalid(&[dim(4, 1, 1)], gaps, out);
+            assert_eq!(dimension, "part axis");
+            assert!(reason.contains("positive"), "{reason}");
+        }
+        let (dimension, reason) = split_invalid(&[dim(4, 1, 1)], (4, 8), Placement::InPlace);
+        assert_eq!(dimension, "part axis");
+        assert!(reason.contains("must be equal"), "{reason}");
+        assert!(Layout::new_split(&[dim(4, 1, 1)], &[], (4, 8), out).is_ok());
+
+        // Distinct outputs with the part axis: an output gap below the transform's extent
+        // overlaps, a gap equal to it does not.
+        let (dimension, _) = split_invalid(&[dim(4, 1, 1)], (4, 3), out);
+        assert_eq!(dimension, "part axis");
+        let (dimension, _) = split_invalid(&[dim(4, 2, 2)], (8, 3), out);
+        assert_eq!(dimension, "part axis");
+        assert!(Layout::new_split(&[dim(4, 2, 2)], &[], (8, 1), out).is_ok());
+        // The input may overlap.
+        assert!(Layout::new_split(&[dim(4, 1, 1)], &[], (1, 4), out).is_ok());
+
+        // The spans include the gaps.
+        let layout = split(&[dim(4, 3, 1)], &[dim(2, 12, 4)], (100, 8), out);
+        assert_eq!(layout.input_span(), 1 + 9 + 12 + 100);
+        assert_eq!(layout.output_span(), 1 + 3 + 4 + 8);
+        assert_eq!(layout.logical_size(), 4);
+        let (dimension, reason) = split_invalid(&[dim(2, 1, 1)], (isize::MAX, 2), out);
+        assert_eq!(dimension, "layout");
+        assert!(reason.contains("input span"), "{reason}");
+    }
+
+    #[test]
+    fn test_split_array_layout_errors() {
+        let a = DynArray::<f64, 3>::from_shape([8, 3, 2]);
+        let (dimension, reason) = array_invalid(Layout::split_along_axis(&a, 3, &a, 2, 0));
+        assert_eq!(dimension, "part axis");
+        assert!(
+            reason.contains("input's part axis 3 is not below the rank 3"),
+            "{reason}"
+        );
+        let (dimension, reason) = array_invalid(Layout::split_along_axis(&a, 2, &a, 1, 0));
+        assert_eq!(dimension, "part axis");
+        assert!(
+            reason.contains("output's extent along its part axis 1 is 3"),
+            "{reason}"
+        );
+        let b = DynArray::<f64, 2>::from_shape([8, 3]);
+        let (dimension, reason) = array_invalid(Layout::split_along_axis_inplace(&b, 1, 0));
+        assert_eq!(dimension, "part axis");
+        assert!(reason.contains("array's extent"), "{reason}");
+
+        // Logical axes (DC26): rank 3 with a part axis has logical axes 0 and 1.
+        let (dimension, reason) = array_invalid(Layout::split_along_axis(&a, 2, &a, 2, 2));
+        assert_eq!(dimension, "axes");
+        assert!(reason.contains("logical axis 2 is not below 2"), "{reason}");
+        let (dimension, _) = array_invalid(Layout::split_over_axes(&a, 2, &a, 2, &[]));
+        assert_eq!(dimension, "axes");
+        let (dimension, _) = array_invalid(Layout::split_over_axes_inplace(&a, 2, &[1, 1]));
+        assert_eq!(dimension, "logical axis 1");
+
+        // Unequal logical shapes, named by the logical axis: [8, 3] against [8, 4].
+        let c = DynArray::<f64, 3>::from_shape([2, 8, 4]);
+        let (dimension, reason) = array_invalid(Layout::split_along_axis(&a, 2, &c, 0, 0));
+        assert_eq!(dimension, "logical axis 1");
+        assert!(reason.contains("input extent 3"), "{reason}");
+        // The same logical shape with the part axes elsewhere is accepted.
+        let d = DynArray::<f64, 3>::from_shape([8, 2, 3]);
+        assert!(Layout::split_along_axis(&a, 2, &d, 1, 0).is_ok());
+
+        let empty = DynArray::<f64, 3>::from_shape([8, 0, 2]);
+        let (dimension, reason) = array_invalid(Layout::split_along_axis(&empty, 2, &empty, 2, 0));
+        assert_eq!(dimension, "logical axis 1");
+        assert!(reason.contains("extent is 0"), "{reason}");
+
+        // The checks of `Layout::new_split` name the logical axes: strides [2, 3] fail the
+        // distinct-output rule (DC16) on logical axis 1.
+        let odd = StridedDynArray::<f64, 3>::from_shape_and_stride([2, 2, 2], [2, 3, 8]);
+        let (dimension, _) = array_invalid(Layout::split_along_axis_inplace(&odd, 2, 0));
+        assert_eq!(dimension, "logical axis 1");
+    }
+
+    #[test]
+    fn test_split_array_sides() {
+        let input = DynArray::<f64, 3>::from_shape([8, 3, 2]);
+        let output = DynArray::<f64, 3>::from_shape([2, 8, 3]);
+        let layout = Layout::split_along_axis(&input, 2, &output, 0, 0).unwrap();
+        let geometry = |shape: [usize; 3], stride: [usize; 3]| (shape.to_vec(), stride.to_vec());
+        let (in_shape, in_stride) = geometry(input.shape(), input.stride());
+        let (out_shape, out_stride) = geometry(output.shape(), output.stride());
+        assert!(layout.fits_array_side(Side::Input, &in_shape, &in_stride));
+        assert!(layout.fits_array_side(Side::Output, &out_shape, &out_stride));
+        assert!(layout.fits_array_pair((&in_shape, &in_stride), (&out_shape, &out_stride)));
+        // Each side has its own gap.
+        assert!(!layout.fits_array_side(Side::Output, &in_shape, &in_stride));
+        assert!(!layout.fits_array_side(Side::Input, &out_shape, &out_stride));
+
+        // A wrong gap: planes of a box with one ring more.
+        assert!(!layout.fits_array_side(Side::Input, &[8, 3, 2], &[1, 8, 32]));
+        // A part extent of 3.
+        assert!(!layout.fits_array_side(Side::Input, &[8, 3, 3], &[1, 8, 24]));
+        // The same memory without the part axis, as a rank-2 array, has no part axis.
+        assert!(!layout.fits_array_side(Side::Input, &[8, 3], &[1, 8]));
+
+        // A transform of extent 2 with the stride of the gap: either axis can be the part
+        // axis of an input, and the check accepts the array if one choice fits.
+        let layout =
+            Layout::new_split(&[dim(2, 3, 1)], &[], (3, 2), Placement::OutOfPlace).unwrap();
+        assert!(layout.fits_array_side(Side::Input, &[2, 2], &[3, 3]));
+        assert!(layout.fits_array_side(Side::Output, &[2, 2], &[1, 2]));
+        assert!(layout.fits_array_side(Side::Output, &[2, 2], &[2, 1]));
+        assert!(!layout.fits_array_side(Side::Output, &[2, 2], &[2, 2]));
+
+        // Pairing without the part axes (DC15, DC27): column-major [4, 3, 2] planes fit each
+        // side of a plan from [4, 2, 3] planes along logical axis 0, but their logical axes do
+        // not pair as the layout's when the output's batch is transposed.
+        let input = DynArray::<f64, 4>::from_shape([4, 2, 3, 2]);
+        let output = StridedDynArray::<f64, 4>::from_shape_and_stride([4, 2, 3, 2], [1, 12, 4, 24]);
+        let layout = Layout::split_along_axis(&input, 3, &output, 3, 0).unwrap();
+        let other = (vec![4, 3, 2, 2], vec![1, 4, 12, 24]);
+        assert!(layout.fits_array_side(Side::Input, &other.0, &other.1));
+        assert!(layout.fits_array_side(Side::Output, &other.0, &other.1));
+        assert!(!layout.fits_array_pair((&other.0, &other.1), (&other.0, &other.1)));
+        let (in_shape, in_stride) = (input.shape().to_vec(), input.stride().to_vec());
+        let (out_shape, out_stride) = (output.shape().to_vec(), output.stride().to_vec());
+        assert!(layout.fits_array_pair((&in_shape, &in_stride), (&out_shape, &out_stride)));
     }
 }

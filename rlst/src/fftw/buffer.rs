@@ -52,7 +52,10 @@ pub(crate) mod sealed {
 ///
 /// An array is checked against its side of a plan's layout by shape and strides, and its
 /// storage from the first element on must hold the layout's span. A slice is checked by its
-/// length alone.
+/// length alone. Split plans execute on buffers of reals, `E` = `f32` or `f64`: a slice whose
+/// offsets count reals from the real part of its first element, or a real array whose part
+/// axis, an axis of extent 2 with the stride of the layout's gap, holds the real and
+/// imaginary parts.
 ///
 /// ```
 /// use rlst::{c64, rlst_dynamic_array};
