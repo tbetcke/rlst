@@ -76,8 +76,8 @@ Files touched:
 ## 1. The storage of each side (`layout.rs`; F5a, F5c)
 
 F3 records an optional gap per side (DC25). F5 generalises that record to the storage of
-each side, as DC25 foresaw: complex interleaved, real, or split with a gap. How it is
-represented and exposed is open question 1; the work items follow its *proposed* option:
+each side, as DC25 foresaw: complex interleaved, real, or split with a gap, as DC30 settles
+(open question 1):
 
 ```rust
 pub enum Storage { Complex, Real, Split { gap: isize } }
@@ -395,8 +395,9 @@ measure and report each.
 Record here anything the design leaves unclear, and raise it; do not resolve design questions
 in code.
 
-Raised while writing this brief, for the maintainer to settle before the task starts. The
-work items follow the options marked *proposed*.
+Raised while writing this brief, and **settled by the maintainer before the task started**
+(design draft 0.14, DC30–DC35, Appendix A): all six with the option marked *proposed*. The
+work items follow these answers.
 
 1. **How `Layout` records the storage of each side.** DC14 says F5 "adds to `Layout` what its
    planner then needs", and DC25 records a gap per side so that split r2c and c2r fit "without
@@ -410,6 +411,7 @@ work items follow the options marked *proposed*.
    and a halved side beside F3's gaps, with raw constructors per family (`new_r2c`, `new_c2r`,
    `new_r2r`, `new_split_r2c`, `new_split_c2r`); (c) a layout type per family, which makes
    mismatches compile-time errors at the cost of a type per family in every signature.
+   *Decided: (a), DC30.*
 2. **The element types of the array layout functions.** Design Section 4.3 makes
    `along_axis` and `over_axes` generic over any element type and has them build r2c and c2r
    layouts from a real and a complex array, but a function generic over any element type cannot
@@ -419,6 +421,7 @@ work items follow the options marked *proposed*.
    a compile-time error; the bound is added to F2's functions, whose c2c behaviour does not
    change; (b) separate functions per family (`r2c_over_axes`, `c2r_over_axes`,
    `r2r_over_axes`), `over_axes` staying complex-only (and design Section 4.3 corrected).
+   *Decided: (a), DC31.*
 3. **In-place r2c and c2r: the buffer and the rule.** Design Section 4.3 has in-place r2c and
    c2r use a complex array with `Layout::r2c_inplace(&complex, &axes, n_last)`, the real side
    padded to `2(n/2 + 1)` reals. RLST has no safe way to view a complex buffer as reals, which
@@ -433,6 +436,7 @@ work items follow the options marked *proposed*.
    rule accepts plan, and records any stride FFTW also accepts as an open question rather than
    allowing it; (b) as (a) without the helpers; (c) the padded real array as the buffer, with
    `Layout::r2c_inplace(&real_padded, &axes, n_last)`, which departs from the design.
+   *Decided: (a), DC32.*
 4. **Split r2c and c2r: layout functions and placement.** Design Section 4.5 names only the
    split c2c functions, and the DC1 table gives every family in-place plans. Options:
    (a) *proposed*: `split_r2c_along_axis`, `split_r2c_over_axes`, `split_c2r_along_axis` and
@@ -441,14 +445,16 @@ work items follow the options marked *proposed*.
    the split side, which no user needs and which the checks of DC27 would have to cover), with
    Section 4.4's table and Appendix A corrected; (b) `split_over_axes` taking an
    `Option<usize>` part axis per side; (c) as (a), with in-place variants.
+   *Decided: (a), DC33; design Sections 4.4 and 4.5 are corrected.*
 5. **The hint of `PlanCreationFailed` for HC2R.** Design Section 4.4 says the error carries a
    hint to `may_destroy_input()`; `PlanCreationFailed { rigor, flags, layout }` has no place
    for it. Options: (a) *proposed*: a field `hint: Option<&'static str>`, shown in the message
    when present (the variant's fields change before 0.11.0, which no release has); (b) a new
    variant for preserving plans that FFTW cannot make; (c) no hint, the rustdoc of `r2r`
-   stating the remedy.
+   stating the remedy. *Decided: (a), DC34.*
 6. **`logical_size` and `scale_factor`.** Design Section 4.9 names `Plan::logical_size()` and
    `Plan::scale_factor(s)` without types or the families they cover. Options: (a) *proposed*:
    both on every plan, `logical_size() -> usize` and `scale_factor(Scale) -> T`, with
    `Layout::logical_size` kept as the product of the extents and documented as not being the
    r2r logical size; (b) `scale_factor` returning `f64`; (c) on r2c, c2r and r2r plans only.
+   *Decided: (a), DC35.*
