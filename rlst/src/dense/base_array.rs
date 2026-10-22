@@ -7,9 +7,10 @@ use crate::{
     dense::layout::{check_multi_index_in_bounds, col_major_stride_from_shape},
     traits::{
         accessors::{
-            RawAccess, RawAccessMut, StableRawAccessMut, UnsafeDisjointRandom1DAccessMut,
-            UnsafeRandom1DAccessByRef, UnsafeRandom1DAccessByValue, UnsafeRandom1DAccessMut,
-            UnsafeRandomAccessByRef, UnsafeRandomAccessByValue, UnsafeRandomAccessMut,
+            RawAccess, RawAccessMut, StableRawAccessMut, StridedRawAccess, StridedRawAccessMut,
+            UnsafeDisjointRandom1DAccessMut, UnsafeRandom1DAccessByRef,
+            UnsafeRandom1DAccessByValue, UnsafeRandom1DAccessMut, UnsafeRandomAccessByRef,
+            UnsafeRandomAccessByValue, UnsafeRandomAccessMut,
         },
         base_operations::{BaseItem, ResizeInPlace, Shape, Stride},
         data_container::{
@@ -163,6 +164,23 @@ impl<Data: MutableRawAccessDataContainer, const NDIM: usize> RawAccessMut
     }
 }
 
+// The container holds exactly the elements, column-major from its start.
+impl<Data: RawAccessDataContainer, const NDIM: usize> StridedRawAccess for BaseArray<Data, NDIM> {
+    #[inline(always)]
+    fn storage(&self) -> Option<(&[Self::Item], usize)> {
+        Some((self.data.data()?, 0))
+    }
+}
+
+impl<Data: MutableRawAccessDataContainer, const NDIM: usize> StridedRawAccessMut
+    for BaseArray<Data, NDIM>
+{
+    #[inline(always)]
+    fn storage_mut(&mut self) -> Option<(&mut [Self::Item], usize)> {
+        Some((self.data.data_mut()?, 0))
+    }
+}
+
 impl<Data, const NDIM: usize> Stride<NDIM> for BaseArray<Data, NDIM> {
     #[inline(always)]
     fn stride(&self) -> [usize; NDIM] {
@@ -193,4 +211,82 @@ fn compute_col_major_index<const NDIM: usize>(
         shape_prod *= shape[index];
     }
     acc
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::{
+        DynArray, FFTW_ALIGNED, SliceArray, SliceArrayMut,
+        dense::{
+            array::{
+                AlignedDynArray, StaticArray,
+                storage_test_support::{
+                    assert_storage_addresses_elements, assert_storage_consistent_with_data,
+                    assert_storage_mut_writes_elements,
+                },
+            },
+            base_array::BaseArray,
+            data_container::ArrayContainer,
+        },
+    };
+
+    #[test]
+    fn owned_arrays_address_their_elements_at_offset_zero() {
+        let dyn_array = DynArray::<f64, 3>::from_shape([3, 4, 2]);
+        assert_eq!(assert_storage_addresses_elements(&dyn_array), (24, 0));
+
+        let aligned = AlignedDynArray::<f64, 2, FFTW_ALIGNED>::from_shape([5, 3]);
+        assert_eq!(assert_storage_addresses_elements(&aligned), (15, 0));
+
+        let static_array =
+            StaticArray::new(BaseArray::new(ArrayContainer::<f64, 12>::new(), [3, 4]));
+        assert_eq!(assert_storage_addresses_elements(&static_array), (12, 0));
+
+        let values = [0.0; 6];
+        let slice_array = SliceArray::from_shape(&values, [2, 3]);
+        assert_eq!(assert_storage_addresses_elements(&slice_array), (6, 0));
+
+        let mut values = [0.0; 6];
+        let slice_array_mut = SliceArrayMut::from_shape(&mut values, [3, 2]);
+        assert_eq!(assert_storage_addresses_elements(&slice_array_mut), (6, 0));
+    }
+
+    #[test]
+    fn owned_arrays_write_through_mutable_storage() {
+        let mut dyn_array = DynArray::<f64, 3>::from_shape([3, 4, 2]);
+        assert_storage_mut_writes_elements(&mut dyn_array);
+
+        let mut aligned = AlignedDynArray::<f64, 2, FFTW_ALIGNED>::from_shape([5, 3]);
+        assert_storage_mut_writes_elements(&mut aligned);
+
+        let mut static_array =
+            StaticArray::new(BaseArray::new(ArrayContainer::<f64, 12>::new(), [3, 4]));
+        assert_storage_mut_writes_elements(&mut static_array);
+
+        let mut values = [0.0; 6];
+        let mut slice_array_mut = SliceArrayMut::from_shape(&mut values, [3, 2]);
+        assert_storage_mut_writes_elements(&mut slice_array_mut);
+    }
+
+    #[test]
+    fn owned_storage_is_consistent_with_data() {
+        let dyn_array = DynArray::<f64, 2>::from_shape([4, 3]);
+        assert_eq!(assert_storage_consistent_with_data(&dyn_array), (12, 0));
+
+        let aligned = AlignedDynArray::<f64, 2, FFTW_ALIGNED>::from_shape([4, 3]);
+        assert_eq!(assert_storage_consistent_with_data(&aligned), (12, 0));
+
+        let values = [0.0; 6];
+        let slice_array = SliceArray::from_shape(&values, [2, 3]);
+        assert_eq!(assert_storage_consistent_with_data(&slice_array), (6, 0));
+    }
+
+    #[test]
+    fn empty_owned_array_has_empty_storage_at_offset_zero() {
+        let empty = DynArray::<f64, 2>::from_shape([0, 3]);
+        assert_eq!(assert_storage_consistent_with_data(&empty), (0, 0));
+        let (storage, offset) = empty.storage().unwrap();
+        assert!(storage.is_empty());
+        assert_eq!(offset, 0);
+    }
 }

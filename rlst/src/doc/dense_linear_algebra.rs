@@ -218,6 +218,26 @@
 //! Explicit strides must map each logical element to a distinct storage location. Constructors
 //! panic for overlapping layouts such as a zero stride on an axis with extent greater than one.
 //!
+//! [`data`](crate::Array::data) returns a slice that holds exactly the array's elements, starting
+//! with the first one, and is therefore `None` for most views (see "Array slicing" below).
+//! [`storage`](crate::Array::storage) and [`storage_mut`](crate::Array::storage_mut) also work
+//! for views: they return the backing storage and the offset of the view's first element in
+//! it, so that the element at multi-index `i` is `storage[offset + Σ i[k] · stride[k]]`. For a
+//! view the slice is the parent's whole storage and may hold elements of other views before,
+//! between and after the view's own. Use `data()` when the elements must be one contiguous
+//! slice, and `storage()` to hand a strided view to code that addresses memory through
+//! strides, such as an FFT library.
+//! ```
+//! let mut arr = rlst::rlst_dynamic_array!(i32, [4, 3]);
+//! arr.fill_from_iter(0..12);
+//!
+//! let view = arr.r().into_subview([1, 1], [2, 2]);
+//! let (storage, offset) = view.storage().unwrap();
+//! assert_eq!((storage.len(), offset), (12, 5));
+//! let stride = view.stride();
+//! assert_eq!(storage[offset + stride[1]], view[[0, 1]]);
+//! ```
+//!
 //!
 //! # References and ownership
 //!

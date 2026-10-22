@@ -4,10 +4,11 @@ use itertools::{Itertools, izip};
 
 use crate::{
     Array, BaseItem, ContainerType, IsSmallerThan, MemoryLayout, NumberDifference, NumberType,
-    RawAccess, RawAccessMut, Shape, Stride, SubtractEqual, Unknown,
-    UnsafeDisjointRandom1DAccessMut, UnsafeRandom1DAccessByRef, UnsafeRandom1DAccessByValue,
-    UnsafeRandom1DAccessMut, UnsafeRandomAccessByRef, UnsafeRandomAccessByValue,
-    UnsafeRandomAccessMut, dense::layout::convert_1d_nd_from_shape,
+    RawAccess, RawAccessMut, Shape, Stride, StridedRawAccess, StridedRawAccessMut, SubtractEqual,
+    Unknown, UnsafeDisjointRandom1DAccessMut, UnsafeRandom1DAccessByRef,
+    UnsafeRandom1DAccessByValue, UnsafeRandom1DAccessMut, UnsafeRandomAccessByRef,
+    UnsafeRandomAccessByValue, UnsafeRandomAccessMut,
+    dense::layout::{checked_storage_offset, convert_1d_nd_from_shape},
 };
 
 /// Rank-reducing view obtained by fixing several source axes.
@@ -359,12 +360,90 @@ where
     orig
 }
 
+// The fixed indices move the first element (`offset` is zero on the axes not fixed); the other
+// strides are the parent's.
+impl<ArrayImpl, const ADIM: usize, const SDIM: usize, const NDIM: usize> StridedRawAccess
+    for Multislice<ArrayImpl, ADIM, SDIM, NDIM>
+where
+    NumberType<SDIM>: IsSmallerThan<ADIM>,
+    NumberDifference<ADIM, SDIM>: SubtractEqual<NDIM>,
+    ArrayImpl: StridedRawAccess + Stride<ADIM>,
+{
+    fn storage(&self) -> Option<(&[Self::Item], usize)> {
+        let stride = self.arr.stride();
+        let (storage, offset) = self.arr.storage()?;
+        Some((
+            storage,
+            checked_storage_offset(offset, self.offset, stride)?,
+        ))
+    }
+}
+
+impl<ArrayImpl, const ADIM: usize, const SDIM: usize, const NDIM: usize> StridedRawAccessMut
+    for Multislice<ArrayImpl, ADIM, SDIM, NDIM>
+where
+    NumberType<SDIM>: IsSmallerThan<ADIM>,
+    NumberDifference<ADIM, SDIM>: SubtractEqual<NDIM>,
+    ArrayImpl: StridedRawAccessMut + Stride<ADIM>,
+{
+    fn storage_mut(&mut self) -> Option<(&mut [Self::Item], usize)> {
+        let stride = self.arr.stride();
+        let origin = self.offset;
+        let (storage, offset) = self.arr.storage_mut()?;
+        Some((storage, checked_storage_offset(offset, origin, stride)?))
+    }
+}
+
 #[cfg(test)]
 mod test {
 
     use itertools::{Itertools, izip};
 
-    use crate::{DynArray, StridedDynArray, dense::layout::convert_nd_raw};
+    use crate::{
+        DynArray, StridedDynArray,
+        dense::{
+            array::storage_test_support::{
+                assert_storage_addresses_elements, assert_storage_consistent_with_data,
+                assert_storage_mut_writes_elements,
+            },
+            layout::convert_nd_raw,
+        },
+    };
+
+    #[test]
+    fn multislices_add_the_offsets_of_the_fixed_indices() {
+        // Column-major, strides [1, 2, 6, 24].
+        let arr = DynArray::<f64, 4>::from_shape([2, 3, 4, 5]);
+        let view = arr.r().multislice::<2, 2>([1, 3], [2, 4]);
+        assert_eq!(assert_storage_addresses_elements(&view), (120, 100));
+        let view = arr.r().multislice::<2, 2>([3, 1], [4, 2]);
+        assert_eq!(assert_storage_addresses_elements(&view), (120, 100));
+
+        // Row-major, strides [60, 20, 5, 1].
+        let arr = StridedDynArray::<f64, 4>::row_major([2, 3, 4, 5]);
+        let view = arr.r().multislice::<2, 2>([0, 2], [1, 3]);
+        assert_eq!(assert_storage_addresses_elements(&view), (120, 75));
+    }
+
+    #[test]
+    fn multislices_write_through_mutable_storage() {
+        let mut arr = DynArray::<f64, 4>::from_shape([2, 3, 4, 5]);
+        assert_storage_mut_writes_elements(&mut arr.r_mut().multislice::<2, 2>([1, 3], [2, 4]));
+
+        let mut arr = StridedDynArray::<f64, 4>::row_major([2, 3, 4, 5]);
+        assert_storage_mut_writes_elements(&mut arr.r_mut().multislice::<2, 2>([0, 2], [1, 3]));
+    }
+
+    #[test]
+    fn contiguous_multislices_are_consistent_with_data() {
+        let arr = DynArray::<f64, 4>::from_shape([2, 3, 4, 5]);
+        let view = arr.r().multislice::<2, 2>([2, 3], [1, 2]);
+        assert_eq!(assert_storage_consistent_with_data(&view), (120, 54));
+
+        let arr = StridedDynArray::<f64, 4>::row_major([2, 3, 4, 5]);
+        let view = arr.r().multislice::<2, 2>([0, 1], [1, 2]);
+        assert_eq!(assert_storage_consistent_with_data(&view), (120, 100));
+    }
 
     #[test]
     fn test_multislice_shape() {

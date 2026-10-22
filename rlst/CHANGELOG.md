@@ -45,9 +45,22 @@ complete.
 storage of an array or view and the offset of its first element; with the view's strides,
 element `i` is `storage[offset + Σ i[k] · stride[k]]`. Unlike `RawAccess::data`, which holds
 exactly the array's elements and is `None` for most views, they cover subviews and every
-slice, at the price of a slice that may hold elements of other views. The traits are
-declared in this release cycle and implemented for RLST's arrays and views with the new FFTW
-layouts. `RawAccess` does not change.
+slice, at the price of a slice that may hold elements of other views. `RawAccess` does not
+change.
+
+They are implemented for the owned and borrowed arrays (`DynArray`, `AlignedDynArray`,
+`StaticArray`, `StridedDynArray`, `SliceArray`, `StridedSliceArray` and their mutable forms,
+at offset 0), for `r()` and `r_mut()`, for `slice`, `row`, `col`, `multislice` and
+`into_subview`, nested and mixed, and for the wrappers of `with_container_type`, `coerce_dim`
+and `insert_empty_axis`; `StridedRawAccessMut` wherever the array or view is mutable, so not
+for `r()`. Lazy expressions, `transpose()`, `permute_axes()`, `reverse_axis()`, `into_flat()`,
+the shared references of `into_shared` and `into_shared_atomic`, and `ZeroDimArray` do not
+implement them. For a view without elements the offset may lie past the end of the slice and
+must not be used to index it; a view whose offset does not fit in `usize`, which only a view
+without elements can have, returns `None`.
+
+New inherent methods `Array::storage()` and `Array::storage_mut()`, beside `data()` and
+`data_mut()`, give the same access without naming the implementation type.
 
 ### FFTW: one lock for all FFTW calls
 
