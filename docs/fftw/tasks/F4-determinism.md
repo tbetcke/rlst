@@ -3,7 +3,7 @@
 | | |
 | --- | --- |
 | Task | F4 (design, Section 9) |
-| Status | not started |
+| Status | done |
 | Depends on | F1, F2 |
 | Pull requests | one, into `fftw-0.11`: F4 (concurrency tests, the harness-free determinism binary, rustdoc) |
 | Read first | design: Section 2.5, Section 3 items 1–4 and 6–7, Sections 4.4, 4.6, 4.7 and 4.12, Section 5, Sections 7.4–7.7, Section 9 (F4 and F6 rows), Section 10, in particular DC22–DC24, Section 11 items 3 and 12, Appendix A (draft 0.12); `docs/fftw/tasks/F1-core.md` and `docs/fftw/tasks/F2-layouts.md`, including their "Open questions"; `docs/fftw/F0-findings.md`; `CLAUDE.md` |
