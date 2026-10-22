@@ -3,7 +3,7 @@
 | | |
 | --- | --- |
 | Task | F3 (design, Section 9) |
-| Status | not started |
+| Status | done |
 | Depends on | F1, F2, F4 |
 | Pull requests | one, into `fftw-0.11`: F3 (split layouts, the `SplitC2c` family, execution, tests, the split rows of the determinism binary) |
 | Read first | design: Section 2.5, Section 3 items 1, 5–8, Sections 4.2–4.8, Section 5, Sections 7.1–7.6, Section 9 (F3 row), Section 10, in particular DC1, DC3, DC11–DC29, Section 11 item 2, Appendix A (drafts 0.8 to 0.13); `docs/fftw/tasks/F1-core.md`, `F2-layouts.md` and `F4-determinism.md`, including their "Open questions"; `docs/fftw/F0-findings.md`; `CLAUDE.md` |
