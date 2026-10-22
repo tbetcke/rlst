@@ -4,7 +4,7 @@ This directory holds everything needed to implement the new FFTW interface of RL
 
 | File | What it is |
 | --- | --- |
-| `rlst-fftw-design.md` | The design, draft 0.12. Authoritative for the new interface; its Section 10 records the settled decisions and design choices. |
+| `rlst-fftw-design.md` | The design, draft 0.13. Authoritative for the new interface; its Section 10 records the settled decisions and design choices. |
 | `tasks/F0-baseline.md` | Brief for task F0: integration branch, baseline, CI version reports, a macOS job. |
 | `tasks/F1-core.md` | Brief for task F1: the core of the new interface, with c2c plans on raw layouts and slices. |
 | `tasks/F2-layouts.md` | Brief for task F2: strided storage of RLST arrays and views, layouts from them, and execution on them. |

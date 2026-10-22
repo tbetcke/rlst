@@ -6,7 +6,7 @@
 | Status | not started |
 | Depends on | F1, F2, F4 |
 | Pull requests | one, into `fftw-0.11`: F3 (split layouts, the `SplitC2c` family, execution, tests, the split rows of the determinism binary) |
-| Read first | design: Section 2.5, Section 3 items 1, 5–8, Sections 4.2–4.8, Section 5, Sections 7.1–7.6, Section 9 (F3 row), Section 10, in particular DC1, DC3, DC11–DC24, Section 11 item 2, Appendix A (drafts 0.8 to 0.12); `docs/fftw/tasks/F1-core.md`, `F2-layouts.md` and `F4-determinism.md`, including their "Open questions"; `docs/fftw/F0-findings.md`; `CLAUDE.md` |
+| Read first | design: Section 2.5, Section 3 items 1, 5–8, Sections 4.2–4.8, Section 5, Sections 7.1–7.6, Section 9 (F3 row), Section 10, in particular DC1, DC3, DC11–DC29, Section 11 item 2, Appendix A (drafts 0.8 to 0.13); `docs/fftw/tasks/F1-core.md`, `F2-layouts.md` and `F4-determinism.md`, including their "Open questions"; `docs/fftw/F0-findings.md`; `CLAUDE.md` |
 
 ## Goal
 
@@ -41,7 +41,7 @@ In scope:
 Out of scope, for later tasks:
 
 - split r2c and c2r (F5), which use a split complex array on one side only; work item 1
-  keeps the representation open for them (open question 1);
+  keeps the representation open for them (DC25);
 - r2c, c2r, r2r and `Scale` (F5); wisdom and threads (F6); the user guide in
   `rlst/src/doc/optional_integrations.rs` and the removal of the 0.10 module (F7);
 - benchmarks of split against interleaved plans (F8b, design Section 7.7);
@@ -50,7 +50,7 @@ Out of scope, for later tasks:
 - negative strides, so a buffer with the imaginary plane before the real plane (design,
   Section 4.3: strides are non-negative in 0.11);
 - any change to the interleaved c2c API of F1 and F2, other than the rejection of a split
-  layout by the interleaved planner methods (open question 4). A reason to change more is
+  layout by the interleaved planner methods (DC28). A reason to change more is
   an open question, not an edit.
 
 Files touched:
@@ -77,8 +77,8 @@ Files touched:
 reals, with a gap on each side: the stride, in reals, from an element's real part to its
 imaginary part. The gaps are recorded in `Layout` beside the dimensions, never as a batch
 dimension, so batch normalisation never merges the part axis into another axis. How the
-gaps are recorded and exposed, and how a raw split layout is built for slices, is open
-question 1; this brief writes the proposal, `Layout::gaps() -> Option<(isize, isize)>` and
+gaps are recorded and exposed, and how a raw split layout is built for slices, is DC25:
+`Layout::gaps() -> Option<(isize, isize)>` and
 `Layout::new_split(dims, batch, (input_gap, output_gap), placement)`.
 
 **Rules of a split layout**, checked in `Layout::new_split` and by the array functions
@@ -97,14 +97,14 @@ through it, each failure an `InvalidLayout` naming `part axis` or the dimension:
 is `split_over_axes(&input, part_in, &output, part_out, &[axis])`, the signature of design
 Section 4.5; `split_along_axis_inplace(&data, part, axis)` and
 `split_over_axes_inplace(&data, part, &axes)` take one array. Both arrays are real arrays
-(`BaseItem<Item = T>` with `T: FftwReal`; open question 5) of the same rank `N`, which
+(`BaseItem<Item = T>` with `T: FftwReal`; DC29) of the same rank `N`, which
 includes the part axis. The checks, in this order, each returning `InvalidLayout` naming
 the axis:
 
 1. `part_in` and `part_out` are below `N`; the extent of each array along its part axis is
    2;
 2. the checks of F2's `over_axes`, on the **logical axes**: each array with its part axis
-   removed, axes numbered from 0 in their order (open question 2): `axes` not empty, below
+   removed, axes numbered from 0 in their order (DC26): `axes` not empty, below
    `N − 1`, not repeated; equal logical shapes (DC14); extents at least 1; extents and
    strides fit in `isize`;
 3. the transform dimensions are the logical axes of `axes`, in that order, with the strides
@@ -162,7 +162,7 @@ without gaps.
   is generalised from complex to real elements.
 - **Layouts of the other storage.** `split_c2c` and its companions reject a layout without
   gaps, and `c2c` and its companions reject a layout with gaps, before FFTW is called
-  (open question 4 proposes `InvalidLayout` naming `part axis`).
+  with `InvalidLayout` naming `part axis` (DC28).
 - **Fingerprints, descriptions, `Debug`, `Send + Sync` and destruction** work for every
   family already and need only tests.
 
@@ -175,12 +175,12 @@ without gaps.
   first: an axis of extent 2 whose stride equals that side's gap, not needed by a transform
   dimension; the remaining axes, normalised on that side, equal the layout's batch on that
   side. Several axes can qualify only on an input (outputs address distinct elements), and
-  the check accepts the array if any choice fits (open question 3). The span check (DC21)
+  the check accepts the array if any choice fits (DC27). The span check (DC21)
   covers the part axis.
 - **Pairing (DC15).** When both buffers are arrays of the same rank, each side's part axis is
   removed as found above, and the remaining logical axes pair by index as in F2: equal
   shapes, each transform dimension matched by one axis with its extent and both strides, the
-  other axes normalised together equal to the layout's batch (open question 3).
+  other axes normalised together equal to the layout's batch (DC27).
 - **Pointers.** The checks return the pointer to each side's real part, derived as in F2
   (`check_side_mut` for buffers the plan writes, DC21); execution forms the imaginary part's
   pointer from it and the gap with `wrapping_add`, inside the span the check accepted, and
@@ -275,9 +275,9 @@ Budget: these tests add at most about 1 s in a debug build; measure and report.
 
 - One pull request, titled for example `feat(fftw): F3 split c2c with the part axis`,
   branched from `fftw-0.11`, with this brief's acceptance list ticked.
-- The open questions below are settled before the task starts; their answers go into the
-  design (draft 0.13, Section 10 and Appendix A). A question that arises during the task is
-  recorded below and raised in the pull request.
+- The open questions below were settled before the task started (design draft 0.13,
+  DC25–DC29). A question that arises during the task is recorded below and raised in the
+  pull request.
 - CI runs for pull requests into `fftw-0.11`. Report the determinism binary's summary from
   both jobs in the pull request, as F4 did.
 
@@ -323,7 +323,7 @@ Budget: these tests add at most about 1 s in a debug build; measure and report.
   is every box of an aligned parent of such boxes.
 - **SIMD.** Split plans can mix buffered SIMD stages with scalar ones (design, Section 3 item
   7). Compare split with interleaved only to round-off, and depend on SIMD nowhere.
-- **Axis numbering.** Under the proposal of open question 2, `axes` count logical axes, the
+- **Axis numbering.** `axes` count logical axes (DC26), the
   array's axes without its part axis, so `axis 1` of an input with part axis 0 is its RLST
   axis 2. Errors name the logical axis and say so.
 - **Wisdom, determinism, `strict`, wildcard imports, debug builds**: as in the F1, F2 and F4
@@ -334,8 +334,9 @@ Budget: these tests add at most about 1 s in a debug build; measure and report.
 Record here anything the design leaves unclear, and raise it; do not resolve design
 questions in code.
 
-Raised while writing this brief, to be settled by the maintainer before the task starts.
-The work items follow the option marked *proposed*.
+Raised while writing this brief, and **settled by the maintainer before the task started**
+(design draft 0.13, DC25–DC29, Appendix A): all five with the option marked *proposed*.
+The work items follow these answers.
 
 1. **How a split layout is represented and built from raw dimensions.** Design Section 4.2
    says a `Layout` holds "for split storage, the gap of each side", and Section 4.5 names
@@ -348,14 +349,14 @@ The work items follow the option marked *proposed*.
    `SliceArray` views, and only the array functions build split layouts; (c) a separate
    `SplitLayout` type, which would also make the storage kind part of the planner's
    signature and make open question 4 a compile-time check, at the cost of a second layout
-   type in every split family of F5.
+   type in every split family of F5. *Decided: (a), DC25.*
 2. **What `axis` and `axes` count in the split layout functions.** The arrays include the
    part axis, and `part_in` and `part_out` may differ (design, Sections 4.5 and 7.2: the
    part axis outermost and innermost). Options: (a) *proposed*: logical axes, the array's
    axes without its part axis, numbered in order, so that one `axes` means the same
    transform on an input and an output whose part axes are at different positions; errors
    name the logical axis; (b) RLST axes of the arrays, which needs `part_in == part_out`,
-   and then one `part` argument instead of the two of Section 4.5.
+   and then one `part` argument instead of the two of Section 4.5. *Decided: (a), DC26.*
 3. **Finding the part axis at execution, and pairing (DC15).** A layout records gaps, not
    the position of the part axis, as it records no axes (DC15: a plan describes memory).
    Options: (a) *proposed*: per side, the part axis is an axis of extent 2 whose stride is
@@ -363,18 +364,18 @@ The work items follow the option marked *proposed*.
    input can have, the check accepts the array if any choice fits; when both buffers are
    arrays of the same rank, each side's part axis is removed and the rest pair by index as
    in F2; (b) the layout records the part axes' positions, and execution requires arrays of
-   the layout's rank with the part axis there, which ties a plan to logical axes.
+   the layout's rank with the part axis there, which ties a plan to logical axes. *Decided: (a), DC27.*
 4. **The error for a layout of the other storage kind.** `split_c2c` given an interleaved
    layout, or `c2c` a split one. Design Section 4.15's list has no variant for it.
    Options: (a) *proposed*: `InvalidLayout` with dimension `part axis` and a reason naming
    the family and the storage the layout describes; (b) a new variant, for example
    `StorageMismatch { expected, found }`, like `PlacementMismatch` (`FftwError` is
    `#[non_exhaustive]`, so adding one is not breaking); (c) option 1 (c), which makes it a
-   compile-time error.
+   compile-time error. *Decided: (a), DC28.*
 5. **The element type of the split layout functions.** Design Section 4.3 makes the layout
    functions generic over any element type, which lets the r2c functions of F5 take a real
    input and a complex output. A split layout counts reals, and one built from complex
    arrays would count complex elements and fail every execution check. Options:
    (a) *proposed*: the split functions require real items (`BaseItem<Item = T>` with
    `T: FftwReal`) on both arrays, a bound only; (b) any element type, as the interleaved
-   functions, with the rustdoc saying that the arrays must be real.
+   functions, with the rustdoc saying that the arrays must be real. *Decided: (a), DC29.*
