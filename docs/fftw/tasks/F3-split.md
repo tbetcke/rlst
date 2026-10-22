@@ -392,9 +392,13 @@ F7 and nd-fmm.
 7. **Fingerprints of split and interleaved plans.** On macOS (Homebrew FFTW 3.3.11 without
    SIMD) the split plan of nd-fmm's box `[140, 9, 2]` and the interleaved plan of the unit
    `[140, 9]` have the same fingerprint, as do forward and backward and f32 and f64 plans
-   (F4, note 7): `fftw_sprint_plan` names the algorithm, not the storage. Bits are compared
-   only to round-off (design, Section 3 item 7), and a caller comparing fingerprints across
-   ranks should compare plans of one problem and one storage form; F7's guide could say so.
+   (F4, note 7): `fftw_sprint_plan` names the algorithm, not the storage. On Linux (Ubuntu's
+   FFTW 3.3.10 with SSE2 and AVX, CI of this pull request) the split plan of the planes has
+   another fingerprint than the interleaved plan, as design Section 3 item 7 expects, while
+   the split box with the part axis innermost, `[2, 140, 9]`, whose memory is interleaved,
+   gets the interleaved plan's fingerprint. Bits are compared only to round-off, and a
+   caller comparing fingerprints across ranks should compare plans of one problem and one
+   storage form; F7's guide could say so.
 8. **The sizes of the cells.** The fixed cells of the part axis outermost use nd-fmm's
    sizes 1, 2, 17, 97 and 140; the other arrangements and views use 17 and 2, with
    `[6, 5, 4]` over two and three logical axes in every arrangement. The sampled cells draw
