@@ -56,6 +56,10 @@ impl<T: FftwReal, F: Family, P: Policy> Plan<T, F, P> {
     /// rank compares fingerprints across ranks, for example in one all-reduce, and acts on the
     /// result on all ranks together, so that the ranks never diverge.
     ///
+    /// A fingerprint identifies the algorithm, not the problem: plans of one layout in the
+    /// two directions, in the two precisions, or with different input policies can have
+    /// equal fingerprints. Compare the fingerprints of plans of the same problem.
+    ///
     /// Equal fingerprints do not by themselves mean equal bits. Those also need inputs of the
     /// alignment classes the plan was made for (see [`Plan::alignment`]) and the same FFTW
     /// build, version and configure options alike. An

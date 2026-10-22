@@ -333,7 +333,8 @@ F6 and F7.
    unit, its f64 and f32 plans, and its `Preserving` and `Destroying` plans all have the
    same fingerprint. This matches Section 4.12 (equal fingerprints mean the same
    algorithm), but users comparing fingerprints across ranks should compare plans of one
-   problem; F7's guide could say so.
+   problem; F7's guide could say so. *Decided: the rustdoc of `Plan::fingerprint` says so
+   in F4, and F7's guide repeats it; what the fingerprint hashes does not change.*
 8. **`estimate-after-measure` on macOS.** Locally (Homebrew FFTW 3.3.11 without SIMD,
    arm64) the `Estimate` plan C made after the `Measure` plan B is plan B (C equals B, C
    differs from A), which confirms Section 3 item 4 on that build.
