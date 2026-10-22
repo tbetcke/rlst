@@ -315,18 +315,19 @@ F6 and F7.
    constant chunk size, Clippy 1.99 denies that under `strict`
    (`chunks_exact_to_as_chunks`), so the tests split the parents with
    `as_chunks_mut::<1120>()`, which gives the same disjoint chunks, and build each box with
-   `SliceArrayMut::from_shape` as the brief says.
+   `SliceArrayMut::from_shape` as the brief says. *Decided: accepted.*
 5. **Row-major arrays in "planning while executing".** F2's row-major order is
    `StridedDynArray::row_major`, which is `Vec`-backed, so its alignment class depends on
    the allocator and can differ between threads; plans for different classes are different
    plans (Section 5 rule 3), and the equal-fingerprint assertion would then depend on the
    allocator. The test uses row-major strides over aligned storage
    (`StridedSliceArrayMut::from_shape_and_stride`), the same memory order at class 0.
+   *Decided: row major stays, as work item 1 lists it.*
 6. **The fixed-batch scenario also compares bits with `estimate`.** Work item 2 asserts
    that the fingerprint of `fixed-batch-units` equals that of the unit `[140, 9]` in
    `estimate`. Both cases fill the unit with the same seeded input, so Section 5 rule 3
    also gives equal bits; the scenario asserts the whole result line, fingerprint and
-   output hash.
+   output hash. *Decided: the stronger assertion is kept.*
 7. **What fingerprints do not tell apart.** `fftw_sprint_plan` describes the algorithm,
    not the problem: on macOS (FFTW 3.3.11 without SIMD) the forward and backward plans of a
    unit, its f64 and f32 plans, and its `Preserving` and `Destroying` plans all have the
