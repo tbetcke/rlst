@@ -206,6 +206,64 @@ impl Policy for InPlace {}
 /// plan.execute(input.data_mut().unwrap())?;
 /// # Ok::<(), rlst::fftw::FftwError>(())
 /// ```
+///
+/// # Threads and determinism
+///
+/// - **Concurrent execution.** One plan may be executed from several threads at once on
+///   different buffers. This is safe and takes no lock.
+/// - **Same plan, same bits.** A plan gives bit-for-bit identical results on inputs of the
+///   same alignment class. Two plans are the same plan when they have the same normalised
+///   layout, placement, alignment classes, input policy, rigor and wisdom-only setting, were
+///   made with the same FFTW build on a CPU with the same SIMD support, and found the same
+///   wisdom for their problem in the process. FFTW uses any wisdom of equal or greater rigor,
+///   so an [`Estimate`](Rigor::Estimate) plan made after a [`Measure`](Rigor::Measure) plan
+///   of the same problem can be the `Measure` plan. [`Plan::fingerprint`] tells whether two
+///   plans are the same.
+/// - **Timed planning.** Plans made with [`Rigor::Measure`] and stronger rigor choose
+///   algorithms by timing them, so they, and their bits, can differ between runs and between
+///   processes.
+/// - **Batch and threads.** A plan for another batch count or layout is another plan and can
+///   round differently. For results that do not depend on the number of threads or on
+///   scheduling, fix the unit of work, such as one box of a fixed batch, and execute one plan
+///   on every unit. Never size a plan from a scheduler's chunking.
+///
+/// One plan executed from several threads on disjoint units of one aligned buffer, each unit
+/// a multiple of 64 bytes long so that all of them are at alignment class 0:
+///
+/// ```
+/// use rlst::{SliceArray, SliceArrayMut, c64, rlst_dynamic_array};
+/// use rlst::fftw::{Direction, Layout, Planner};
+///
+/// let (shape, units) = ([16, 4], 8);
+/// let len = shape[0] * shape[1];
+/// let mut input = rlst_dynamic_array!(c64, [len * units] | rlst::FFTW_ALIGNED);
+/// let mut output = rlst_dynamic_array!(c64, [len * units] | rlst::FFTW_ALIGNED);
+/// input.fill_from_seed_equally_distributed(0);
+///
+/// let first = SliceArray::from_shape(&input.data().unwrap()[..len], shape);
+/// let layout = Layout::along_axis(&first, &first, 0)?;
+/// let plan = Planner::<f64>::new().c2c(&layout, Direction::Forward)?;
+///
+/// std::thread::scope(|scope| {
+///     let inputs = input.data().unwrap().chunks_exact(len);
+///     let outputs = output.data_mut().unwrap().chunks_exact_mut(len);
+///     for (input, output) in inputs.zip(outputs) {
+///         let plan = &plan;
+///         scope.spawn(move || {
+///             let input = SliceArray::from_shape(input, shape);
+///             let mut output = SliceArrayMut::from_shape(output, shape);
+///             plan.execute(&input, &mut output).unwrap();
+///         });
+///     }
+/// });
+///
+/// // Every unit's result is that of the plan executed on the unit alone.
+/// let unit = SliceArray::from_shape(&input.data().unwrap()[len..2 * len], shape);
+/// let mut alone = rlst_dynamic_array!(c64, shape | rlst::FFTW_ALIGNED);
+/// plan.execute(&unit, &mut alone)?;
+/// assert_eq!(alone.data().unwrap(), &output.data().unwrap()[len..2 * len]);
+/// # Ok::<(), rlst::fftw::FftwError>(())
+/// ```
 pub struct Plan<T: FftwReal, F: Family, P: Policy> {
     raw: NonNull<T::RawPlan>,
     layout: Layout,

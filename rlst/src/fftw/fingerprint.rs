@@ -52,7 +52,17 @@ impl<T: FftwReal, F: Family, P: Policy> Plan<T, F, P> {
     ///
     /// The hash function is the same in every process and build, so equal fingerprints mean
     /// that FFTW chose the same algorithm, for example on every rank of a distributed
-    /// computation.
+    /// computation. Verify rather than assume: a caller that needs the same plan on every
+    /// rank compares fingerprints across ranks, for example in one all-reduce, and acts on the
+    /// result on all ranks together, so that the ranks never diverge.
+    ///
+    /// Equal fingerprints do not by themselves mean equal bits. Those also need inputs of the
+    /// alignment classes the plan was made for (see [`Plan::alignment`]) and the same FFTW
+    /// build, version and configure options alike. An
+    /// [`Estimate`](super::Rigor::Estimate) plan depends on the wisdom present in the process:
+    /// after a plan of the same problem with greater [`Rigor`](super::Rigor), or a wisdom
+    /// import, it can be another plan, with another fingerprint. See also the section "Threads
+    /// and determinism" of [`Plan`].
     ///
     /// ```
     /// use rlst::fftw::{Dim, Direction, Layout, Placement, Planner};

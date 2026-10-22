@@ -195,6 +195,8 @@ pub use r2r_inplace::{R2RPlan, R2RPlanKind};
 mod align;
 mod backend;
 mod buffer;
+#[cfg(test)]
+mod concurrency_tests;
 mod error;
 mod execute;
 mod fingerprint;

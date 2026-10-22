@@ -52,6 +52,10 @@ called. FFTW touches only the elements a layout addresses, never the elements of
 between them. A plan describes memory, not logical axes: it runs on any arrays of the same
 memory layout and alignment class.
 
+As tested, one plan executes from many threads at once, and `Estimate` plans give the same
+fingerprint and the same bits in every fresh process; the rustdoc of `Plan` and
+`Plan::fingerprint` states the rules on threads and determinism.
+
 ### New traits `StridedRawAccess` and `StridedRawAccessMut`
 
 `rlst::StridedRawAccess::storage` and `StridedRawAccessMut::storage_mut` return the backing

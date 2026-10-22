@@ -37,8 +37,9 @@ The repository uses the Rust 2024 edition for `rlst` and `rlst-suitesparse`, and
   - `src/fftw/`, `src/chebychev.rs` — FFTW-gated transforms and Chebyshev tools.
   - `src/doc/` — crate-level user documentation.
   - `examples/` — executable usage examples; MPI examples declare `required-features = ["mpi"]`.
-  - `tests/` — integration tests for static-type macros and a feature-gated, harness-free
-    `mpi_empty_ranks` executable.
+  - `tests/` — integration tests for static-type macros and two feature-gated, harness-free
+    executables: `mpi_empty_ranks` (`mpi`) and `fftw_determinism` (`fftw`), which runs each
+    FFTW determinism case in a fresh child process of itself.
   - `build.rs` — system FFTW library discovery.
 - `proc-macro/` — `rlst-proc-macro`, which supplies the array-construction, static-type, and
   tracing macros re-exported by `rlst`. Use `-p rlst-proc-macro` or
@@ -233,7 +234,10 @@ workflow and tracks the status of every task; `docs/fftw/tasks/` holds one brief
   - ordinary unit tests plan with `Rigor::Estimate` only: FFTW's wisdom is global to the
     process, so a `Measure` plan in one test can change another test's `Estimate` plan
     (design, Section 3 item 4). Tests that need other rigor, or that depend on the wisdom
-    present, belong in the harness-free determinism test binary of task F4;
+    present, belong in the harness-free binary `rlst/tests/fftw_determinism.rs`, as a case
+    run in a fresh child process (a row of its `CASES`) and a scenario comparing the
+    children's outputs (a row of its `SCENARIOS`). Concurrency tests, which need no fresh
+    process, are in `rlst/src/fftw/concurrency_tests.rs`;
   - no new dependencies beyond those the design names (`libc`, from F1).
 - Section 11 of the design lists open points for nd-fmm, the first user of the new
   interface. They are not RLST tasks and are not decided in this repository.
@@ -293,6 +297,9 @@ cargo doc --no-deps --features "mpi,fftw,fftw_system,strict"
 # The macOS CI job (Homebrew FFTW and pkg-config; BLAS/LAPACK through Accelerate)
 cargo clippy --features "fftw,fftw_system,strict" -- -D warnings
 cargo test --features "fftw,fftw_system,strict"
+
+# The FFTW determinism binary alone (part of every `cargo test` with `fftw`)
+cargo test --features "fftw,fftw_system" --test fftw_determinism
 
 # Work on the proc-macro crate directly
 cargo test -p rlst-proc-macro
