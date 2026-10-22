@@ -6,7 +6,7 @@
 | Status | not started |
 | Depends on | F1, F2 |
 | Pull requests | one, into `fftw-0.11`: F4 (concurrency tests, the harness-free determinism binary, rustdoc) |
-| Read first | design: Section 2.5, Section 3 items 1–4 and 6–7, Sections 4.4, 4.6, 4.7 and 4.12, Section 5, Sections 7.4–7.7, Section 9 (F4 and F6 rows), Section 10, Section 11 items 3 and 12; `docs/fftw/tasks/F1-core.md` and `docs/fftw/tasks/F2-layouts.md`, including their "Open questions"; `docs/fftw/F0-findings.md`; `CLAUDE.md` |
+| Read first | design: Section 2.5, Section 3 items 1–4 and 6–7, Sections 4.4, 4.6, 4.7 and 4.12, Section 5, Sections 7.4–7.7, Section 9 (F4 and F6 rows), Section 10, in particular DC22–DC24, Section 11 items 3 and 12, Appendix A (draft 0.12); `docs/fftw/tasks/F1-core.md` and `docs/fftw/tasks/F2-layouts.md`, including their "Open questions"; `docs/fftw/F0-findings.md`; `CLAUDE.md` |
 
 ## Goal
 
@@ -31,12 +31,12 @@ In scope:
   fresh processes, fixed-batch units at different positions of a larger buffer (which F1
   and F2 tested in process and left to F4 in fresh processes), wisdom-only planning without
   wisdom, and an `Estimate` plan made after a `Measure` plan;
-- rustdoc on threads and determinism for `Plan` and `Plan::fingerprint` (work item 3;
-  "Open questions" item 2);
+- rustdoc on threads and determinism for `Plan` and `Plan::fingerprint` (work item 3,
+  DC23);
 - `rlst/Cargo.toml` (the `[[test]]` entry), `CLAUDE.md`, `rlst/CHANGELOG.md`, the status
   table of `docs/fftw/README.md`, and this brief's "Open questions".
 
-Out of scope, for later tasks (design, Section 9, F6 row: "7.5 and 7.6 for them"):
+Out of scope, for later tasks (design, Section 9, F6 row; DC24):
 
 - wisdom export, import, forgetting and system wisdom, and their tests: wisdom export and
   import concurrent with planning (Section 7.5, third item) and export, forget, import,
@@ -158,17 +158,16 @@ plan for another class is another plan (Section 5 rule 3).
    - the policies: one problem of the list also as `Destroying` and as `InPlace`.
 2. `estimate-after-other-plans`: the child first plans and executes `Estimate` plans of
    unrelated problems (other sizes and layouts, both precisions, through the new interface
-   and through the 0.10 module), and then the problems of case 1 in reverse order
-   ("Open questions" item 1).
+   and through the 0.10 module), and then the problems of case 1 in reverse order (DC22).
 3. `fixed-batch-units` (Section 7.6 second item, Section 7.4 first item): nd-fmm's unit
-   n_phi = 140, rings = 9, f64, forward, in two arrangements: boxes `slice(2, k)` of an aligned parent
-   `[140, 9, 4]`, and units of `[140, 9]` at four positions of one aligned flat buffer,
-   separated by a padding of 4 complex doubles (64 bytes) so that each starts at class 0,
-   with the padding filled with a sentinel. Every unit holds the same seeded values. One
-   plan, made from the first unit's layout as the first plan of the process, executes on
-   every unit; the child asserts that all results are equal bit for bit, equal to those of a
-   plan made with `c2c_on` for each unit and of the same plan on a standalone aligned copy,
-   and that the padding still holds the sentinel. It prints one result line.
+   n_phi = 140, rings = 9, f64, forward, in two arrangements: boxes `slice(2, k)` of an
+   aligned parent `[140, 9, 4]`, and units of `[140, 9]` at four positions of one aligned
+   flat buffer, separated by a padding of 4 complex doubles (64 bytes) so that each starts
+   at class 0, with the padding filled with a sentinel. Every unit holds the same seeded
+   values. One plan, made from the first unit's layout as the first plan of the process,
+   executes on every unit; the child asserts that all results are equal bit for bit, equal
+   to those of a plan made with `c2c_on` for each unit and of the same plan on a standalone
+   aligned copy, and that the padding still holds the sentinel. It prints one result line.
 4. `wisdom-only-without-wisdom` (Section 7.6 fourth item): as the first planning of the
    process, `Planner::new().wisdom_only().c2c(…)` returns
    `FftwError::PlanCreationFailed` for f64 and f32; then an ordinary `Estimate` plan of
@@ -184,7 +183,7 @@ plan for another class is another plan (Section 5 rule 3).
 | Scenario | Children | Assertion |
 | --- | --- | --- |
 | Fresh processes agree | `estimate` twice | the two outputs are equal line for line |
-| Planning history | `estimate-after-other-plans` once | its lines equal those of `estimate` (item 1 of "Open questions") |
+| Planning history | `estimate-after-other-plans` once | its lines equal those of `estimate` (DC22); a failure is raised as a design question, not relaxed |
 | Fixed-batch units | `fixed-batch-units` twice | the child's own assertions; the two outputs are equal; the fingerprint equals that of the unit `[140, 9]`, forward, f64, in `estimate` |
 | Wisdom-only | `wisdom-only-without-wisdom` once | exit status 0 |
 | Estimate after measure | `estimate-after-measure` once | A equals the fingerprint of the same problem in `estimate`; A, B and C are printed, with whether C equals A and whether C equals B. Nothing is asserted about B or C: this documents Section 3 item 4 (design, Section 7.6) |
@@ -192,7 +191,7 @@ plan for another class is another plan (Section 5 rule 3).
 Budget: the binary takes at most about 10 s in a debug build on the CI runners, child
 processes included; measure locally and report.
 
-## 3. Documentation
+## 3. Documentation (DC23)
 
 - `Plan`: a section "Threads and determinism" in its rustdoc, stating Section 5 rules 2,
   3, 5 and 6 in short: concurrent execution of one plan on different buffers is safe and
@@ -281,7 +280,9 @@ processes included; measure locally and report.
 Record here anything the design leaves unclear, and raise it; do not resolve design
 questions in code.
 
-Raised while writing this brief, **to be settled before the task starts**:
+Raised while writing this brief, and **settled by the maintainer before the task started**
+(design draft 0.12, DC22–DC24, Appendix A): all three with the option marked *proposed*.
+The work items follow these answers.
 
 1. **Estimate plans after unrelated planning.** Design Section 7.6 asks that `Estimate`
    plans give the same fingerprint and bits across two fresh processes. nd-fmm also relies
@@ -293,15 +294,16 @@ Raised while writing this brief, **to be settled before the task starts**:
    stated. Options: (a) *proposed*: the `estimate-after-other-plans` scenario asserts that
    fingerprints and bits equal those of fresh processes, and a failure is raised as a
    design question; (b) it only reports whether they are equal, as the
-   `estimate-after-measure` scenario does.
+   `estimate-after-measure` scenario does. *Decided: (a), DC22.*
 2. **Where the rules of Section 5 are documented in F4.** Section 9 gives the
    documentation to F7, but F4 is the task that tests the rules. Options: (a) *proposed*:
    F4 states rules 2, 3, 5 and 6 in the rustdoc of `Plan` and rule 4 in that of
    `Plan::fingerprint` (work item 3), and F7's guide states all seven and links them;
-   (b) F4 adds no documentation, and F7 writes all of it.
+   (b) F4 adds no documentation, and F7 writes all of it. *Decided: (a), DC23.*
 3. **The split between F4 and F6.** Section 9 gives F6 "7.5 and 7.6 for them", wisdom and
    threads. This brief reads that as: F6 tests wisdom export, import and forgetting (7.5
    third item, 7.6 third item) and `fftw_threads` (7.5 last item), while F4 tests
    wisdom-only planning without wisdom (7.6 fourth item) and the `Estimate` plan after a
    `Measure` plan (7.6 fifth item), which need only F1's planner options. Options:
    (a) *proposed*: as read; (b) F6 takes the fourth and fifth items of 7.6 too.
+   *Decided: (a), DC24; the F4 and F6 rows of design Section 9 say so.*

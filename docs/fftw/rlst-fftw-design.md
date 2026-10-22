@@ -1,6 +1,6 @@
 # FFTW interfaces for RLST: design proposal
 
-Draft 0.11, 2026-10-22. A proposal for the RLST maintainers, not a plan until it is signed
+Draft 0.12, 2026-10-22. A proposal for the RLST maintainers, not a plan until it is signed
 off. It records the decisions taken on 2026-10-21 and 2026-10-22. It replaces RLST's FFTW interface
 completely: every transform family of FFTW 3.3's serial interface, plans that are
 independent of the arrays they run on, checked and sound execution, wisdom, threads,
@@ -18,7 +18,7 @@ for nd-fmm: Section 11 lists open points and options for nd-fmm's own review.
 In the RLST repository this document is `docs/fftw/rlst-fftw-design.md`; the task briefs
 are in `docs/fftw/tasks/` and the workflow in `docs/fftw/README.md`.
 
-What drafts 0.6 to 0.11 change, for the start of the implementation:
+What drafts 0.6 to 0.12 change, for the start of the implementation:
 
 - **Work plan** (Section 9): the removal of `fftw_source` and `fftw_mkl` moves from F7 to
   F1; the 0.10 module coexists with the new types until F7 and shares the new FFTW lock;
@@ -44,6 +44,10 @@ What drafts 0.6 to 0.11 change, for the start of the implementation:
   fit in `usize`, which only a view without elements can have, has no storage (DC20).
 - **The pointer that execution checks** (draft 0.11, from task F2b): the span check covers
   the storage behind the very pointer FFTW is given (Section 4.8, DC21).
+- **Concurrency and determinism** (draft 0.12, from the F4 brief): `Estimate` plans are
+  tested to be independent of earlier `Estimate` planning of other problems (Section 7.6,
+  DC22); F4 documents rules 2 to 6 of Section 5 on `Plan` (DC23); the split of Sections 7.5
+  and 7.6 between F4 and F6 (Section 9, DC24).
 
 Every decision for the RLST maintainers and every design choice is settled (Section 10).
 This document makes no decisions for nd-fmm (Section 11). Earlier drafts' changes are
@@ -791,6 +795,10 @@ process, so these tests live in a `harness = false` test binary (as `mpi_empty_r
 already does), which runs each case in a fresh child process:
 
 - `ESTIMATE` plans give the same fingerprint and the same bits across two processes;
+- `ESTIMATE` plans made after `ESTIMATE` planning of other, unrelated problems in the same
+  process give the fingerprints and bits of a fresh process. nd-fmm's operator build plans
+  many sizes in one process and relies on this; the test asserts it, and a failure is a
+  design question (DC22);
 - the same plan executed on fixed-batch units at different positions of a larger buffer
   gives the same bits;
 - export, forget, import, then wisdom-only: the same fingerprint and the same bits;
@@ -849,9 +857,9 @@ document and decides nothing for it.
 | F1 | Core: the feature rules of Section 4.10, with `fftw_source` and `fftw_mkl` removed; `FftwReal`, options, `FftwError`, `Layout` from raw dimensions with normalisation, alignment classes, the FFTW lock (shared with the 0.10 module), versions in `build.rs`, c2c plans through guru64 with the three policies, scratch and `_on` planning, checked execution on slices, fingerprints | 7.2 c2c cells on raw layouts; 7.4; the `compile_fail` doctests | CHR.3, CH4.6 |
 | F2 | Layouts from RLST arrays and views (`along_axis`, `over_axes`, in place), column-major, row-major and strided | 7.2 rank, batch and layout cells for c2c | CHR.3, CH4.6; later Cecka–Darve |
 | F3 | Split c2c with the part axis | 7.2 split c2c cells; 7.3 split against interleaved | CHR.3, CH4.6 ("split planes, or interleaved scratch until then") |
-| F4 | Concurrency and determinism for c2c | 7.5; 7.6 in the harness-free binary | CHR.3, CH4.6, CH8.1 |
+| F4 | Concurrency and determinism for c2c; rules 2 to 6 of Section 5 in the rustdoc of `Plan` and `Plan::fingerprint` (DC23) | 7.5 and 7.6 without the wisdom API and threads, in the harness-free binary, wisdom-only planning without wisdom and the `ESTIMATE` plan after a `MEASURE` plan included (DC24) | CHR.3, CH4.6, CH8.1 |
 | F5 | r2c and c2r (in place with padding), r2r with all kinds and kinds per axis, split r2c and c2r, `Scale` | 7.2 and 7.3 for these families | "not used" |
-| F6 | Wisdom; the `fftw_threads` feature | 4.13, 4.14; 7.5 and 7.6 for them | "not used" |
+| F6 | Wisdom; the `fftw_threads` feature | 4.13, 4.14; 7.5 and 7.6 for them: wisdom export and import during planning, export, forget and import, threaded plans (DC24) | "not used" |
 | F7 | Removal of the 0.10 module; the Chebyshev port (Section 8, after F5); documentation with an example for every public item; the licence warning in its four places and the docs.rs metadata; CHANGELOG with the migration notes of Appendix B | doctests; the warning in the four places; the Chebyshev regressions of 7.3 | CHR.1 (the warning) |
 | F8a | CI on Linux (system FFTW, with and without `fftw_threads`) and macOS; the default-build check; docs | 7.7 F8a | CHR.1 (tests on Linux and macOS) |
 | F8b | Benchmarks; **release 0.11.0** | 7.7 F8b; every task above done | CHR.1 and CHR.2 (the release) |
@@ -908,6 +916,9 @@ waits for is the complete one. When that release comes is Helmholtz decision D14
 | DC19 | For a view without elements, the storage offset may lie past the end of the slice and must not be used to index it; the traits' contract says so (Section 4.3) | accepted (F2 brief) |
 | DC20 | A view whose storage offset does not fit in `usize`, which only a view without elements can have, returns `None` from `storage()` and `storage_mut()`; offsets are computed with checked arithmetic (Section 4.3) | accepted (F2a) |
 | DC21 | Execution checks an array's span against the storage behind the pointer it passes FFTW, obtained through the exclusive borrow for a written buffer; the sealed side checks return that pointer (Section 4.8) | accepted (F2b) |
+| DC22 | The determinism tests assert that an `ESTIMATE` plan made after `ESTIMATE` planning of unrelated problems in the same process has the fingerprint and bits of a fresh process; a failure is a design question (Section 7.6) | accepted (F4 brief) |
+| DC23 | F4 states rules 2 to 6 of Section 5 in the rustdoc of `Plan` and `Plan::fingerprint`; F7's guide states all seven and links them (Section 9) | accepted (F4 brief) |
+| DC24 | F4 tests the items of Sections 7.5 and 7.6 that need only F1's planner, wisdom-only planning without wisdom and the `ESTIMATE` plan after a `MEASURE` plan included; F6 tests wisdom export, import and forgetting and `fftw_threads` (Section 9) | accepted (F4 brief) |
 
 ### 10.2 DF6: why `fftw_source` is dropped
 
@@ -1128,6 +1139,14 @@ review.
   one whose storage was checked need not lie in checked memory. Section 4.8 item 2 now says
   that the span is checked against the storage behind the pointer FFTW is given, which the
   check returns (DC21).
+
+- **Draft 0.12** (2026-10-22), from the open questions of the F4 brief
+  (`docs/fftw/tasks/F4-determinism.md`), settled by the maintainer before the task
+  started: the determinism tests assert that `ESTIMATE` plans do not depend on earlier
+  `ESTIMATE` planning of other problems, which nd-fmm relies on (Section 7.6, DC22); F4
+  documents rules 2 to 6 of Section 5 on `Plan` and `Plan::fingerprint`, and F7's guide all
+  seven (Section 9, DC23); the tests of Sections 7.5 and 7.6 are split between F4 and F6 by
+  whether they need the wisdom API or threads (Section 9, DC24).
 
 ## Appendix B. Migration from 0.10
 
