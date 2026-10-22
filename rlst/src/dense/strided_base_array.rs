@@ -8,9 +8,10 @@ use crate::{
     dense::layout::{check_multi_index_in_bounds, convert_1d_nd_from_shape, convert_nd_raw},
     traits::{
         accessors::{
-            RawAccess, RawAccessMut, StableRawAccessMut, UnsafeDisjointRandom1DAccessMut,
-            UnsafeRandom1DAccessByRef, UnsafeRandom1DAccessByValue, UnsafeRandom1DAccessMut,
-            UnsafeRandomAccessByRef, UnsafeRandomAccessByValue, UnsafeRandomAccessMut,
+            RawAccess, RawAccessMut, StableRawAccessMut, StridedRawAccess, StridedRawAccessMut,
+            UnsafeDisjointRandom1DAccessMut, UnsafeRandom1DAccessByRef,
+            UnsafeRandom1DAccessByValue, UnsafeRandom1DAccessMut, UnsafeRandomAccessByRef,
+            UnsafeRandomAccessByValue, UnsafeRandomAccessMut,
         },
         base_operations::{BaseItem, Shape, Stride},
         data_container::{
@@ -194,6 +195,24 @@ impl<Data: MutableRawAccessDataContainer, const NDIM: usize> RawAccessMut
     }
 }
 
+// The container may hold gaps and be longer than the span. Strides are non-negative, so the
+// first element is at offset 0.
+impl<Data: RawAccessDataContainer, const NDIM: usize> StridedRawAccess
+    for StridedBaseArray<Data, NDIM>
+{
+    fn storage(&self) -> Option<(&[Self::Item], usize)> {
+        Some((self.data.data()?, 0))
+    }
+}
+
+impl<Data: MutableRawAccessDataContainer, const NDIM: usize> StridedRawAccessMut
+    for StridedBaseArray<Data, NDIM>
+{
+    fn storage_mut(&mut self) -> Option<(&mut [Self::Item], usize)> {
+        Some((self.data.data_mut()?, 0))
+    }
+}
+
 impl<Data, const NDIM: usize> Stride<NDIM> for StridedBaseArray<Data, NDIM> {
     fn stride(&self) -> [usize; NDIM] {
         self.stride
@@ -202,7 +221,53 @@ impl<Data, const NDIM: usize> Stride<NDIM> for StridedBaseArray<Data, NDIM> {
 
 #[cfg(test)]
 mod tests {
-    use crate::{StridedDynArray, dense::array::StridedSliceArrayMut};
+    use crate::{
+        StridedDynArray,
+        dense::array::{
+            StridedSliceArray, StridedSliceArrayMut,
+            storage_test_support::{
+                assert_storage_addresses_elements, assert_storage_consistent_with_data,
+                assert_storage_mut_writes_elements,
+            },
+        },
+    };
+
+    #[test]
+    fn strided_arrays_address_their_elements_at_offset_zero() {
+        let row_major = StridedDynArray::<f64, 3>::row_major([3, 4, 2]);
+        assert_eq!(assert_storage_addresses_elements(&row_major), (24, 0));
+
+        let custom = StridedDynArray::<f64, 2>::from_shape_and_stride([3, 2], [2, 7]);
+        assert_eq!(assert_storage_addresses_elements(&custom), (12, 0));
+
+        // A strided view of a slice longer than its span.
+        let values = [0.0; 40];
+        let longer = StridedSliceArray::from_shape_and_stride(&values, [3, 4], [2, 6]);
+        assert_eq!(assert_storage_addresses_elements(&longer), (40, 0));
+    }
+
+    #[test]
+    fn strided_arrays_write_through_mutable_storage() {
+        let mut row_major = StridedDynArray::<f64, 3>::row_major([3, 4, 2]);
+        assert_storage_mut_writes_elements(&mut row_major);
+
+        let mut custom = StridedDynArray::<f64, 2>::from_shape_and_stride([3, 2], [2, 7]);
+        assert_storage_mut_writes_elements(&mut custom);
+
+        let mut values = [0.0; 40];
+        let mut longer = StridedSliceArrayMut::from_shape_and_stride(&mut values, [3, 4], [2, 6]);
+        assert_storage_mut_writes_elements(&mut longer);
+    }
+
+    #[test]
+    fn strided_storage_is_consistent_with_data() {
+        let row_major = StridedDynArray::<f64, 2>::row_major([3, 4]);
+        assert_eq!(assert_storage_consistent_with_data(&row_major), (12, 0));
+
+        let values = [0.0; 40];
+        let longer = StridedSliceArray::from_shape_and_stride(&values, [3, 4], [2, 6]);
+        assert_eq!(assert_storage_consistent_with_data(&longer), (40, 0));
+    }
 
     #[test]
     fn padded_dynamic_layout_allocates_required_span() {

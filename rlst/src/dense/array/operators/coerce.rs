@@ -6,7 +6,8 @@ use crate::{
     dense::array::Array,
     traits::{
         accessors::{
-            RawAccess, RawAccessMut, UnsafeDisjointRandom1DAccessMut, UnsafeRandom1DAccessByRef,
+            RawAccess, RawAccessMut, StridedRawAccess, StridedRawAccessMut,
+            UnsafeDisjointRandom1DAccessMut, UnsafeRandom1DAccessByRef,
             UnsafeRandom1DAccessByValue, UnsafeRandom1DAccessMut, UnsafeRandomAccessByRef,
             UnsafeRandomAccessByValue, UnsafeRandomAccessMut,
         },
@@ -84,6 +85,28 @@ where
     #[inline(always)]
     fn data_mut(&mut self) -> Option<&mut [Self::Item]> {
         self.arr.data_mut()
+    }
+}
+
+impl<ArrayImpl, const NDIM: usize, const CDIM: usize> StridedRawAccess
+    for CoerceArray<ArrayImpl, NDIM, CDIM>
+where
+    ArrayImpl: StridedRawAccess,
+{
+    #[inline(always)]
+    fn storage(&self) -> Option<(&[Self::Item], usize)> {
+        self.arr.storage()
+    }
+}
+
+impl<ArrayImpl, const NDIM: usize, const CDIM: usize> StridedRawAccessMut
+    for CoerceArray<ArrayImpl, NDIM, CDIM>
+where
+    ArrayImpl: StridedRawAccessMut,
+{
+    #[inline(always)]
+    fn storage_mut(&mut self) -> Option<(&mut [Self::Item], usize)> {
+        self.arr.storage_mut()
     }
 }
 
@@ -180,4 +203,39 @@ fn coerce_index<const DIM1: usize, const DIM2: usize>(index: [usize; DIM1]) -> [
     // SAFETY: This is safe because we ensure that DIM1 == DIM2 and the types match.
 
     *unsafe { std::mem::transmute::<&[usize; DIM1], &[usize; DIM2]>(&index) }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::{
+        DynArray,
+        dense::array::storage_test_support::{
+            assert_storage_addresses_elements, assert_storage_consistent_with_data,
+            assert_storage_mut_writes_elements,
+        },
+    };
+
+    #[test]
+    fn coerced_array_forwards_the_storage() {
+        let mut mat = DynArray::<f64, 2>::from_shape([3, 4]);
+        let view = mat.r().coerce_dim::<2>().unwrap();
+        assert_eq!(assert_storage_addresses_elements(&view), (12, 0));
+        assert_eq!(assert_storage_consistent_with_data(&view), (12, 0));
+
+        let view = mat
+            .r()
+            .into_subview([1, 1], [2, 3])
+            .coerce_dim::<2>()
+            .unwrap();
+        assert_eq!(assert_storage_addresses_elements(&view), (12, 4));
+
+        assert_storage_mut_writes_elements(&mut mat.r_mut().coerce_dim::<2>().unwrap());
+        assert_storage_mut_writes_elements(
+            &mut mat
+                .r_mut()
+                .into_subview([1, 1], [2, 3])
+                .coerce_dim::<2>()
+                .unwrap(),
+        );
+    }
 }

@@ -54,8 +54,8 @@ use crate::{
     },
     traits::{
         accessors::{
-            RandomAccessByRef, RandomAccessMut, RawAccess, RawAccessMut,
-            UnsafeDisjointRandom1DAccessMut, UnsafeRandom1DAccessByRef,
+            RandomAccessByRef, RandomAccessMut, RawAccess, RawAccessMut, StridedRawAccess,
+            StridedRawAccessMut, UnsafeDisjointRandom1DAccessMut, UnsafeRandom1DAccessByRef,
             UnsafeRandom1DAccessByValue, UnsafeRandomAccessByRef, UnsafeRandomAccessByValue,
             UnsafeRandomAccessMut,
         },
@@ -77,6 +77,8 @@ pub mod multislice;
 pub mod reference;
 pub mod shared_array;
 pub mod slice;
+#[cfg(test)]
+pub(crate) mod storage_test_support;
 pub mod subview;
 pub mod zero_dim;
 
@@ -548,6 +550,73 @@ where
     #[inline(always)]
     pub fn data_mut(&mut self) -> Option<&mut [ArrayImpl::Item]> {
         self.0.data_mut()
+    }
+}
+
+impl<ArrayImpl, const NDIM: usize> Array<ArrayImpl, NDIM>
+where
+    ArrayImpl: StridedRawAccess,
+{
+    /// Return the backing storage and the offset of the first element in it.
+    ///
+    /// With the array's [`stride`](Array::stride), the element at multi-index `i` is
+    /// `storage[offset + Σ i[k] · stride[k]]`. Unlike [`data`](Array::data), this is
+    /// available for views such as subviews and slices: the slice is the parent's whole
+    /// storage and may hold elements of other views before, between and after the view's own.
+    /// For a view without elements the offset may lie past the end of the slice and must not
+    /// be used to index it. See [`StridedRawAccess`].
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use rlst::DynArray;
+    ///
+    /// let mut arr = DynArray::<f64, 2>::from_shape([4, 3]);
+    /// arr.fill_from_iter((0..12).map(|value| value as f64));
+    ///
+    /// let view = arr.r().into_subview([1, 1], [2, 2]);
+    /// let (storage, offset) = view.storage().unwrap();
+    /// let stride = view.stride();
+    ///
+    /// assert_eq!(storage.len(), 12);
+    /// assert_eq!(offset, 5);
+    /// assert_eq!(storage[offset + 1 * stride[0] + 1 * stride[1]], view[[1, 1]]);
+    /// ```
+    #[inline(always)]
+    pub fn storage(&self) -> Option<(&[ArrayImpl::Item], usize)> {
+        self.0.storage()
+    }
+}
+
+impl<ArrayImpl, const NDIM: usize> Array<ArrayImpl, NDIM>
+where
+    ArrayImpl: StridedRawAccessMut,
+{
+    /// Return the mutable backing storage and the offset of the first element in it.
+    ///
+    /// The mutable counterpart of [`storage`](Array::storage). A mutable view hands out its
+    /// parent's whole storage, elements outside the view included; write only the view's
+    /// elements. See [`StridedRawAccessMut`].
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use rlst::DynArray;
+    ///
+    /// let mut arr = DynArray::<f64, 2>::from_shape([4, 3]);
+    ///
+    /// let mut view = arr.r_mut().into_subview([1, 1], [2, 2]);
+    /// let stride = view.stride();
+    /// let (storage, offset) = view.storage_mut().unwrap();
+    /// // Write the element at multi-index [0, 1] of the view.
+    /// storage[offset + 1 * stride[1]] = 5.0;
+    ///
+    /// assert_eq!(view[[0, 1]], 5.0);
+    /// assert_eq!(arr[[1, 2]], 5.0);
+    /// ```
+    #[inline(always)]
+    pub fn storage_mut(&mut self) -> Option<(&mut [ArrayImpl::Item], usize)> {
+        self.0.storage_mut()
     }
 }
 
@@ -2271,6 +2340,42 @@ mod test {
         a.swap([0], [1]).unwrap();
         assert_eq!(a[[0]], 2);
         assert_eq!(a[[1]], 1);
+    }
+
+    #[test]
+    fn inherent_storage_forwards_to_the_implementation() {
+        fn parts<Item>(storage: Option<(&[Item], usize)>) -> (*const Item, usize, usize) {
+            let (slice, offset) = storage.unwrap();
+            (slice.as_ptr(), slice.len(), offset)
+        }
+        fn parts_mut<Item>(storage: Option<(&mut [Item], usize)>) -> (*const Item, usize, usize) {
+            let (slice, offset) = storage.unwrap();
+            (slice.as_ptr(), slice.len(), offset)
+        }
+
+        let mut arr = DynArray::<f64, 2>::from_shape([4, 3]);
+        let expected = parts(arr.imp().storage());
+        assert_eq!(expected.2, 0);
+        assert_eq!(parts(arr.storage()), expected);
+        assert_eq!(parts_mut(arr.imp_mut().storage_mut()), expected);
+        assert_eq!(parts_mut(arr.storage_mut()), expected);
+
+        let view = arr.r().into_subview([1, 1], [2, 2]);
+        let expected = parts(view.imp().storage());
+        assert_eq!(expected.2, 5);
+        assert_eq!(parts(view.storage()), expected);
+
+        let mut view = arr.r_mut();
+        let expected = parts(view.imp().storage());
+        assert_eq!(parts(view.storage()), expected);
+        assert_eq!(parts_mut(view.imp_mut().storage_mut()), expected);
+        assert_eq!(parts_mut(view.storage_mut()), expected);
+
+        let mut view = arr.r_mut().into_subview([1, 1], [2, 2]);
+        let expected = parts(view.imp().storage());
+        assert_eq!(expected.2, 5);
+        assert_eq!(parts_mut(view.imp_mut().storage_mut()), expected);
+        assert_eq!(parts_mut(view.storage_mut()), expected);
     }
 
     #[test]

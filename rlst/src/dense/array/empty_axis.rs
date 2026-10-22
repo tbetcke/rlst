@@ -5,7 +5,8 @@ use crate::{
     base_types::NumberType,
     traits::{
         accessors::{
-            UnsafeRandom1DAccessByRef, UnsafeRandom1DAccessByValue, UnsafeRandom1DAccessMut,
+            StridedRawAccess, StridedRawAccessMut, UnsafeRandom1DAccessByRef,
+            UnsafeRandom1DAccessByValue, UnsafeRandom1DAccessMut,
         },
         base_operations::BaseItem,
         number_relations::IsSmallerByOne,
@@ -184,6 +185,29 @@ where
     }
 }
 
+// The inserted axis has extent 1, so its stride addresses no other element.
+impl<ArrayImpl: StridedRawAccess, const ADIM: usize, const NDIM: usize> StridedRawAccess
+    for ArrayAppendAxis<ArrayImpl, ADIM, NDIM>
+where
+    NumberType<ADIM>: IsSmallerByOne<NDIM>,
+{
+    #[inline(always)]
+    fn storage(&self) -> Option<(&[Self::Item], usize)> {
+        self.arr.storage()
+    }
+}
+
+impl<ArrayImpl: StridedRawAccessMut, const ADIM: usize, const NDIM: usize> StridedRawAccessMut
+    for ArrayAppendAxis<ArrayImpl, ADIM, NDIM>
+where
+    NumberType<ADIM>: IsSmallerByOne<NDIM>,
+{
+    #[inline(always)]
+    fn storage_mut(&mut self) -> Option<(&mut [Self::Item], usize)> {
+        self.arr.storage_mut()
+    }
+}
+
 impl<ArrayImpl, const ADIM: usize, const NDIM: usize> Stride<NDIM>
     for ArrayAppendAxis<ArrayImpl, ADIM, NDIM>
 where
@@ -248,4 +272,40 @@ where
     NumberType<ADIM>: IsSmallerByOne<NDIM>,
     ArrayImpl: crate::UnsafeDisjointRandom1DAccessMut,
 {
+}
+
+#[cfg(test)]
+mod tests {
+    use super::AxisPosition;
+    use crate::{
+        DynArray,
+        dense::array::storage_test_support::{
+            assert_storage_addresses_elements, assert_storage_consistent_with_data,
+            assert_storage_mut_writes_elements,
+        },
+    };
+
+    #[test]
+    fn inserted_axis_forwards_the_storage() {
+        let mut mat = DynArray::<f64, 2>::from_shape([3, 4]);
+        for position in [AxisPosition::Front, AxisPosition::Back] {
+            let view = mat.r().insert_empty_axis::<3>(position);
+            assert_eq!(assert_storage_addresses_elements(&view), (12, 0));
+            assert_eq!(assert_storage_consistent_with_data(&view), (12, 0));
+
+            let view = mat
+                .r()
+                .into_subview([1, 1], [2, 3])
+                .insert_empty_axis::<3>(position);
+            assert_eq!(assert_storage_addresses_elements(&view), (12, 4));
+
+            assert_storage_mut_writes_elements(&mut mat.r_mut().insert_empty_axis::<3>(position));
+            assert_storage_mut_writes_elements(
+                &mut mat
+                    .r_mut()
+                    .into_subview([1, 1], [2, 3])
+                    .insert_empty_axis::<3>(position),
+            );
+        }
+    }
 }

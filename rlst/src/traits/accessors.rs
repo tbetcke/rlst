@@ -156,9 +156,54 @@ pub trait RawAccessMut: RawAccess {
 /// `&s[offset..offset + d.len()]` the same memory as `d`. For an owned array that is
 /// `(d, 0)`.
 ///
+/// For a view without elements, such as a subview of shape `[0, 0]` at the far corner of its
+/// parent, the offset may lie past the end of the slice; it must not be used to index it.
+///
 /// The trait is safe to implement: callers check the elements they address against the
-/// length of the slice. Implementations for RLST's arrays and views follow with the FFTW
-/// rework (task F2); lazy expressions, which have no storage, do not implement it.
+/// length of the slice.
+///
+/// # Implementations
+///
+/// - Owned and borrowed arrays, [`BaseArray`](crate::dense::base_array::BaseArray) and
+///   [`StridedBaseArray`](crate::dense::strided_base_array::StridedBaseArray) (`DynArray`,
+///   `AlignedDynArray`, `StaticArray`, `StridedDynArray`, `SliceArray`, `StridedSliceArray` and
+///   their mutable forms): their whole container at offset 0.
+/// - The references of `r()` and `r_mut()`: their array's storage and offset.
+/// - `slice`, `row`, `col`, `multislice` and `into_subview`: their parent's storage, with the
+///   offset of their own first element added, so that nested and mixed views compose.
+/// - `with_container_type`, `coerce_dim` and `insert_empty_axis`: the wrapped array's storage
+///   and offset.
+///
+/// A view whose offset does not fit in `usize`, which only a view without elements can have,
+/// returns `None`.
+///
+/// Not implemented by lazy expressions, which have no storage; by `transpose()`,
+/// `permute_axes()`, `reverse_axis()` and `into_flat()`, which have no [`Stride`]
+/// implementation; by the shared references of `into_shared` and `into_shared_atomic`, whose
+/// storage sits behind a lock; and by `ZeroDimArray`.
+///
+/// [`Stride`]: super::base_operations::Stride
+///
+/// # Example
+///
+/// ```
+/// use rlst::{DynArray, StridedRawAccess};
+///
+/// let mut arr = DynArray::<f64, 2>::from_shape([4, 3]);
+/// arr.fill_from_iter((0..12).map(|value| value as f64));
+///
+/// // The 2 x 2 subview whose first element is `arr[[1, 1]]`.
+/// let view = arr.r().into_subview([1, 1], [2, 2]);
+/// let (storage, offset) = view.imp().storage().unwrap();
+/// let stride = view.stride();
+///
+/// // The slice is the whole storage of `arr`, and the offset that of `arr[[1, 1]]`.
+/// assert_eq!(storage.len(), 12);
+/// assert_eq!(offset, 1 + 1 * 4);
+/// assert_eq!(stride, [1, 4]);
+/// assert_eq!(storage[offset + 1 * stride[0] + 1 * stride[1]], view[[1, 1]]);
+/// assert_eq!(view[[1, 1]], arr[[2, 2]]);
+/// ```
 pub trait StridedRawAccess: BaseItem {
     /// The backing storage and the offset of the first element of the view in it, or `None`
     /// if the storage cannot be exposed as a slice.
@@ -171,6 +216,27 @@ pub trait StridedRawAccess: BaseItem {
 /// mutable view hands out its parent's whole storage, elements outside the view included;
 /// this is memory-safe, since the view holds the parent's exclusive borrow, but callers
 /// should write only the view's elements.
+///
+/// It is implemented by the types that implement [`StridedRawAccess`] and give mutable access:
+/// the arrays with a mutable container, `r_mut()`, and the views and wrappers of those.
+/// `r()` holds a shared borrow and does not implement it.
+///
+/// # Example
+///
+/// ```
+/// use rlst::{DynArray, StridedRawAccessMut};
+///
+/// let mut arr = DynArray::<f64, 2>::from_shape([4, 3]);
+///
+/// let mut view = arr.r_mut().into_subview([1, 1], [2, 2]);
+/// let stride = view.stride();
+/// let (storage, offset) = view.imp_mut().storage_mut().unwrap();
+/// // Write the element at multi-index [1, 0] of the view.
+/// storage[offset + 1 * stride[0]] = 5.0;
+///
+/// assert_eq!(view[[1, 0]], 5.0);
+/// assert_eq!(arr[[2, 1]], 5.0);
+/// ```
 pub trait StridedRawAccessMut: StridedRawAccess {
     /// The mutable backing storage and the offset of the first element of the view in it, or
     /// `None` if the storage cannot be exposed as a slice.

@@ -3,7 +3,7 @@
 | | |
 | --- | --- |
 | Task | F2 (design, Section 9) |
-| Status | not started |
+| Status | in progress (F2a) |
 | Depends on | F1 |
 | Pull requests | two, into `fftw-0.11`: F2a (strided storage of arrays and views, `Array::storage()` and `storage_mut()`), F2b (layouts from arrays, execution on arrays, tests) |
 | Read first | design: Section 2.5, Section 3 (all items), Sections 4.1–4.8, Section 5, Sections 7.1–7.4 and 7.7, Section 9 (F2 row, Transition), Section 10, in particular DC11–DC19, Appendix A (drafts 0.8 and 0.9); `docs/fftw/tasks/F1-core.md`, including its "Open questions"; `docs/fftw/F0-findings.md`; `CLAUDE.md` |
@@ -506,3 +506,17 @@ Raised while writing this brief, and **settled by the maintainer before the task
    elements the offset may lie past the end of the slice and must not be used to index it;
    (b) clamp the offset to the slice length for empty views; (c) return `None` for them.
    *Decided: (a), DC19.*
+
+Raised during F2a:
+
+7. **A view offset that overflows `usize`.** An array without elements accepts any strides
+   (`StridedBaseArray::new` checks nothing when the shape has an extent 0), so a subview or
+   slice of it can have an offset `Σ origin[k] · stride[k]` that does not fit in `usize`, for
+   example the subview at `[0, 4]` of a `StridedSliceArray` of shape `[0, 5]` and strides
+   `[1, usize::MAX]`. Plain arithmetic would panic in debug builds and wrap in release builds.
+   F2a computes view offsets with checked arithmetic and returns `None` from `storage()` and
+   `storage_mut()` on overflow, which only a view without elements can reach; the rustdoc of
+   `StridedRawAccess` and the CHANGELOG say so, and a test in `subview.rs` covers it. DC19
+   leaves the offset of such views unspecified, and F2b rejects arrays with an extent 0
+   before it reads their storage, so the choice does not reach FFTW. *Confirmed by the
+   maintainer during F2a: DC20, design draft 0.10.*
