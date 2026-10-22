@@ -4,12 +4,13 @@ This directory holds everything needed to implement the new FFTW interface of RL
 
 | File | What it is |
 | --- | --- |
-| `rlst-fftw-design.md` | The design, draft 0.13. Authoritative for the new interface; its Section 10 records the settled decisions and design choices. |
+| `rlst-fftw-design.md` | The design, draft 0.14. Authoritative for the new interface; its Section 10 records the settled decisions and design choices. |
 | `tasks/F0-baseline.md` | Brief for task F0: integration branch, baseline, CI version reports, a macOS job. |
 | `tasks/F1-core.md` | Brief for task F1: the core of the new interface, with c2c plans on raw layouts and slices. |
 | `tasks/F2-layouts.md` | Brief for task F2: strided storage of RLST arrays and views, layouts from them, and execution on them. |
 | `tasks/F4-determinism.md` | Brief for task F4: concurrency tests, and the harness-free binary that tests determinism in fresh processes. |
 | `tasks/F3-split.md` | Brief for task F3: split complex storage with the part axis, split c2c plans, and their tests. |
+| `tasks/F5-real.md` | Brief for task F5: r2c, c2r and r2r plans with kinds per axis, split r2c and c2r, logical sizes and `Scale`, in three pull requests. |
 | `F0-findings.md` | Written by task F0: the baseline and the FFTW found on each CI runner. |
 
 Briefs for F2 to F8b are written when their task is next, from Section 9 of the design and
@@ -47,7 +48,7 @@ so that every later family is written against the separate-process determinism t
 | F2 | Layouts from RLST arrays and views | `tasks/F2-layouts.md` | done | [#8](https://github.com/tbetcke/rlst/pull/8) (F2a), [#9](https://github.com/tbetcke/rlst/pull/9) (F2b) |
 | F4 | Concurrency and determinism, harness-free test binary | `tasks/F4-determinism.md` | done | [#12](https://github.com/tbetcke/rlst/pull/12) |
 | F3 | Split c2c with the part axis | `tasks/F3-split.md` | done | [#15](https://github.com/tbetcke/rlst/pull/15) |
-| F5 | r2c, c2r, r2r, split r2c and c2r, `Scale` | to be written | not started | |
+| F5 | r2c, c2r, r2r, split r2c and c2r, `Scale` | `tasks/F5-real.md` | not started | |
 | F6 | Wisdom; `fftw_threads` | to be written | not started | |
 | F7 | Removal of the 0.10 module; Chebyshev port; documentation; licence warning; CHANGELOG | to be written | not started | |
 | F8a | CI on Linux and macOS, default-build check, docs | to be written | not started | |

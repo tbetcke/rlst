@@ -1,6 +1,6 @@
 # FFTW interfaces for RLST: design proposal
 
-Draft 0.13, 2026-10-22. A proposal for the RLST maintainers, not a plan until it is signed
+Draft 0.14, 2026-10-22. A proposal for the RLST maintainers, not a plan until it is signed
 off. It records the decisions taken on 2026-10-21 and 2026-10-22. It replaces RLST's FFTW interface
 completely: every transform family of FFTW 3.3's serial interface, plans that are
 independent of the arrays they run on, checked and sound execution, wisdom, threads,
@@ -18,7 +18,7 @@ for nd-fmm: Section 11 lists open points and options for nd-fmm's own review.
 In the RLST repository this document is `docs/fftw/rlst-fftw-design.md`; the task briefs
 are in `docs/fftw/tasks/` and the workflow in `docs/fftw/README.md`.
 
-What drafts 0.6 to 0.13 change, for the start of the implementation:
+What drafts 0.6 to 0.14 change, for the start of the implementation:
 
 - **Work plan** (Section 9): the removal of `fftw_source` and `fftw_mkl` moves from F7 to
   F1; the 0.10 module coexists with the new types until F7 and shares the new FFTW lock;
@@ -53,6 +53,14 @@ What drafts 0.6 to 0.13 change, for the start of the implementation:
   logical axes (DC26); execution finds the part axis by its extent and stride (Section 4.8,
   DC27); a layout of the other storage kind is an `InvalidLayout` (Section 4.15, DC28); the
   split layout functions take real arrays (DC29).
+- **Real-to-complex and real-to-real layouts** (draft 0.14, from the F5 brief): `Layout`
+  records the storage of each side, complex, real or split, from which its family follows
+  (Sections 4.2 and 4.3, DC30); the array layout functions read each side's storage from a
+  sealed element trait (DC31); in-place r2c and c2r take the complex array, with a contiguous
+  halved axis, and safe views of complex buffers as reals (DC32); split r2c and c2r have
+  layout functions of their own and no in-place plans (Sections 4.4 and 4.5, DC33);
+  `PlanCreationFailed` carries a hint (Section 4.15, DC34); `Plan::logical_size` and
+  `Plan::scale_factor` on every plan (Section 4.9, DC35).
 
 Every decision for the RLST maintainers and every design choice is settled (Section 10).
 This document makes no decisions for nd-fmm (Section 11). Earlier drafts' changes are
@@ -278,7 +286,8 @@ rlst::fftw
 ├── real         FftwReal: f32 and f64, sealed, mapping to the fftwf_ and fftw_ functions
 ├── kind         Direction, R2rKind (RLST's own enum), logical sizes
 ├── options      Rigor, wisdom-only, input policy, unaligned, time limit, threads
-├── layout       Dim, Layout: from RLST arrays and views, normalised
+├── element      FftElement (sealed): f32, f64, c32, c64; as_reals, as_reals_mut
+├── layout       Dim, Storage, Layout: from RLST arrays and views, normalised
 ├── align        PLAN_ALIGNMENT, AlignmentClass
 ├── plan         Plan<T, F, P>: families C2c, R2c, C2r, R2r, SplitC2c, SplitR2c, SplitC2r;
 │                policies Preserving, Destroying, InPlace
@@ -313,8 +322,13 @@ pub enum Rigor { Estimate, Measure, Patient, Exhaustive }
 /// because FFTW's `fftw_iodim64` uses `ptrdiff_t`.
 pub struct Dim { pub n: isize, pub is: isize, pub os: isize }
 
-/// Transform and batch dimensions in the order FFTW receives them, the placement,
-/// the shapes of both sides and, for split storage, the gap of each side.
+/// The storage of one side of a layout (DC30).
+pub enum Storage { Complex, Real, Split { gap: isize } }
+
+/// Transform and batch dimensions in the order FFTW receives them, the placement, and the
+/// storage of each side, from which the family follows (c2c, r2c, c2r, r2r and their split
+/// forms). For r2c and c2r the dimensions record the logical real extent n; the last
+/// transform dimension has extent n/2 + 1 on the complex side.
 pub struct Layout { /* … */ }
 
 /// A plan of family F (C2c, R2c, …) and input policy P (Preserving, Destroying, InPlace).
@@ -339,10 +353,13 @@ plan.execute(&box_in, &mut box_out)?;
 - `Layout::along_axis(&input, &output, axis)`: one-dimensional transforms along `axis`,
   batched over the other axes. `Layout::over_axes(&input, &output, &axes)`: transforms
   over `axes` in the order given, batched over the rest. `*_inplace` variants take one
-  array. The functions are generic over RLST arrays and views of any element type with
-  `StridedRawAccess + Shape<N> + Stride<N>`, with `N` the rank of both arrays, so the input
-  and output may differ in element type and shape (real and complex for r2c and c2r).
-  The split layout functions take real arrays only (Section 4.5, DC29).
+  array. The functions are generic over RLST arrays and views with
+  `StridedRawAccess + Shape<N> + Stride<N>`, with `N` the rank of both arrays, whose items
+  implement a sealed trait `FftElement<Real = T>` (`f32`, `f64`, `c32`, `c64`, one precision
+  `T` for both arrays): the function reads each side's storage, real or complex, from its
+  element type (DC31), so the input and output may differ in element type and shape (real
+  and complex for r2c and c2r, two real arrays for r2r). The split layout functions take
+  real arrays only (Section 4.5, DC29).
 - **Strided storage (DC11).** `StridedRawAccess::storage` returns a view's backing storage
   and the offset of its first element; with the view's strides, element `i` is
   `storage[offset + Σ i[k] · stride[k]]`, and the slice may hold elements of other views
@@ -369,8 +386,9 @@ plan.execute(&box_in, &mut box_out)?;
 - **Validation by family.** c2c needs complex arrays of equal shape. The layout functions
   check it when they build the layout, and return `InvalidLayout` naming the axis (DC14): a
   `Layout` records one extent per dimension, not the shapes of both sides, so the planner
-  cannot. F5 relaxes the check on the halved axis for r2c and c2r, and adds to `Layout` what
-  its planner then needs. r2c needs a real input and a complex output whose extent along the **last entry of
+  cannot. F5 relaxes the check on the halved axis for r2c and c2r, and `Layout` records the
+  storage of each side, which tells the families apart and gives the halved extent on the
+  complex side (DC30). r2c needs a real input and a complex output whose extent along the **last entry of
   `axes`** (for `along_axis`, the axis itself) is n/2 + 1; that axis is the halved one,
   whatever the memory order. c2r is the inverse; r2r needs real arrays of equal shape and
   one `R2rKind` per entry of `axes`, in the same order. Kinds therefore belong to RLST axes by construction, which removes the 0.10
@@ -383,15 +401,26 @@ plan.execute(&box_in, &mut box_out)?;
   recommends it.
 - **In-place r2c and c2r** use a complex array; the real side is the same buffer read with
   the real extent n along the halved axis and padded to 2(n/2 + 1) reals, as FFTW requires.
-  `Layout::r2c_inplace(&complex, &axes, n_last)` takes the logical real extent explicitly,
-  since it cannot be recovered from the complex shape.
+  `Layout::r2c_inplace(&complex, &axes, n_last)` and `Layout::c2r_inplace(&complex, &axes,
+  n_last)` take the logical real extent explicitly, since it cannot be recovered from the
+  complex shape, and n_last/2 + 1 must equal the complex extent along the halved axis
+  (DC32). The halved axis must be contiguous (complex stride 1), and on every other axis the
+  real stride is twice the complex stride; other strides return `InvalidLayout`, and a
+  stride that FFTW also accepts is added only by a later design change. Execution takes the
+  complex buffer. The safe functions `fftw::as_reals(&[Complex<T>]) -> &[T]` and
+  `as_reals_mut` view a complex slice as its reals (`Complex<T>` is `#[repr(C)]` with two
+  `T`s, Section 4.11), so that callers write the r2c input and read the c2r output through
+  slices and `SliceArray`s.
 - **Normalisation**, before planning and before every comparison at execution: batch
   dimensions of extent 1 are dropped, and adjacent batch dimensions that are contiguous in
   both input and output are merged. FFTW compresses its batch dimensions in the same way
   internally. When the batch axes are adjacent in memory, as for a transform along the
   first or the last axis of a contiguous 3-D array, one batch dimension remains.
 - **Raw layouts.** `Layout` can also be built from `Dim` lists directly (F1), with offsets
-  counted in elements from the start of each buffer. Strides must be non-negative in 0.11
+  counted in elements from the start of each buffer. `Layout::with_storage(dims, batch,
+  (input, output), placement)` builds raw layouts of every family from the storage of each
+  side (DC30); `Layout::new` and `Layout::new_split` are its shorthands for c2c and split
+  c2c, and the halved dimension of r2c and c2r is the last transform dimension. Strides must be non-negative in 0.11
   (RLST's views have no negative strides); an in-place layout needs equal input and output
   strides, as FFTW requires; and the output must address distinct elements. That last
   condition is checked by a sufficient rule: with the dimensions of extent above 1 sorted
@@ -427,7 +456,7 @@ a plan that may overwrite its input can only be executed with the input borrowed
 | `Planner::new().c2r(…)`, `split_c2r` | `Destroying`, as in FFTW |
 | `Planner::new().preserve_input().c2r(…)` | `Preserving`; one transform axis only |
 | `Planner::new().may_destroy_input().c2c(…)`, and for every other family | `Destroying` |
-| `Planner::new().c2c_inplace(…)`, and for every other family | `InPlace` |
+| `Planner::new().c2c_inplace(…)`, and for every other family except split r2c and c2r, which have no in-place plans in 0.11 (DC33) | `InPlace` |
 
 The in-place methods exist only on a planner without an input-policy request
 (`Planner<T, DefaultRequest>`), since the requests mean nothing in place (DC12); allowing
@@ -477,7 +506,17 @@ the layout, the comparison of strides at execution checks it.
   (input_gap, output_gap), placement)` builds raw split layouts for slices, with the rules
   of `Layout::new`, positive gaps, equal gaps in place, and the distinct-output rule with
   the part axis as a dimension of extent 2. F5's split r2c and c2r, which have a gap on one
-  side only, fit the per-side record without a breaking change.
+  side only, fit the per-side record without a breaking change: DC30 generalises it to the
+  storage of each side, `Storage::Split { gap }` on a split side, and `gaps()` keeps its
+  meaning, `Some` only when both sides are split.
+- **Split r2c and c2r (DC33).** `Layout::split_r2c_along_axis(&input, &output, part_out,
+  axis)`, `split_r2c_over_axes(&input, &output, part_out, &axes)`,
+  `split_c2r_along_axis(&input, part_in, &output, axis)` and `split_c2r_over_axes(&input,
+  part_in, &output, &axes)` take two real arrays (DC29), the split side with a part axis of
+  extent 2, and count its logical axes (DC26); the halved axis is the last entry of `axes`.
+  They have no in-place variants, and there are no in-place split r2c or c2r plans in 0.11:
+  FFTW's in-place forms would pass the real buffer as one plane of the split side, which no
+  user needs and which the checks of DC27 would have to cover.
 - **Axes (DC26).** `axis` and `axes` count **logical axes**: the array's axes with its part
   axis removed, numbered in order. One `axes` then means the same transform on an input
   and an output whose part axes are at different positions; errors name the logical axis.
@@ -583,10 +622,12 @@ only. The documentation of the layout functions and of execution states both poi
 
 ### 4.9 Scaling
 
-FFTW's transforms are unnormalised. `Plan::logical_size()` returns the product over the
-transform dimensions of each one's logical size: n for c2c; the logical real length for r2c
-and c2r; for r2r, the logical size of each kind (Section 3 item 11). `Plan::scale_factor(s)`
-returns 1, 1/N or 1/√N for `Scale::None`, `Scale::Inverse` and `Scale::InverseSqrt`, which
+FFTW's transforms are unnormalised. `Plan::logical_size() -> usize`, on every plan (DC35),
+returns the product over the transform dimensions of each one's logical size: n for c2c and
+split c2c; the logical real length for r2c and c2r and their split forms; for r2r, the
+logical size of each kind (Section 3 item 11). `Layout::logical_size` stays the product of
+the extents, which is not the logical size of r2r, and its documentation says so.
+`Plan::scale_factor(s) -> T`, on every plan, returns 1, 1/N or 1/√N for `Scale::None`, `Scale::Inverse` and `Scale::InverseSqrt`, which
 the caller applies with RLST's array arithmetic. A uniform factor does not make the DCT and
 DST kinds orthonormal, which needs different weights at the end points; orthonormal r2r
 variants are not provided, and the documentation says so. `Scale` avoids the names
@@ -679,10 +720,15 @@ precision. Section 5 states their role in determinism.
 `FftwError` variants, each carrying the values involved: `InvalidLayout`, `LayoutMismatch`,
 `AlignmentMismatch`, `Overlap`, `PlacementMismatch`, `InvalidKind` (for example REDFT00
 with n = 1), `PreserveInputUnsupported`, `ScratchTooLarge`, `VersionTooOld`, `PlanCreationFailed` (FFTW returned NULL; the flags and layout are
-attached, since FFTW gives no reason) and `WisdomImportFailed`. A layout of the other
-storage kind, an interleaved layout given to a split planner method or a split layout to an
-interleaved one, is an `InvalidLayout` naming the part axis, with a reason naming the
-family and the storage the layout describes (DC28).
+attached, since FFTW gives no reason, with a `hint: Option<&'static str>` shown in the
+message when RLST knows a remedy, such as `may_destroy_input()` for a preserving r2r plan
+with an HC2R kind, DC34) and `WisdomImportFailed`. A layout of the other storage kind, an
+interleaved layout given to a split planner method or a split layout to an interleaved one,
+is an `InvalidLayout` naming the part axis, with a reason naming the family and the storage
+the layout describes (DC28). Every planner method, those of c2c included, rejects a layout
+whose storages are not those of its family in the same way: naming the part axis when one
+storage is split and the family's is not, or the reverse, and naming the layout otherwise
+(DC30).
 
 ## 5. Thread safety and determinism: the rules users get
 
@@ -953,6 +999,12 @@ waits for is the complete one. When that release comes is Helmholtz decision D14
 | DC27 | Execution finds each side's part axis as an axis of extent 2 with that side's gap as stride, accepting any choice that fits; arrays of the same rank pair by index without their part axes (Section 4.8) | accepted (F3 brief) |
 | DC28 | A layout of the other storage kind given to a planner method is an `InvalidLayout` naming the part axis (Section 4.15) | accepted (F3 brief) |
 | DC29 | The split layout functions require real items on both arrays (Sections 4.3 and 4.5) | accepted (F3 brief) |
+| DC30 | `Layout` records the storage of each side (`Storage::Complex`, `Real`, `Split { gap }`), set by `Layout::with_storage`, from which the family follows; every planner method checks it, extending DC28 (Sections 4.2, 4.3 and 4.15) | accepted (F5 brief) |
+| DC31 | The array layout functions require items with a sealed `FftElement<Real = T>`, from which they read each side's storage (Section 4.3) | accepted (F5 brief) |
+| DC32 | In-place r2c and c2r take the complex array, with a contiguous halved axis and real strides twice the complex ones elsewhere; `as_reals` and `as_reals_mut` view complex slices as reals (Section 4.3) | accepted (F5 brief) |
+| DC33 | Split r2c and c2r have their own layout functions, with one part axis, and no in-place plans in 0.11 (Sections 4.4 and 4.5) | accepted (F5 brief) |
+| DC34 | `PlanCreationFailed` carries `hint: Option<&'static str>` (Section 4.15) | accepted (F5 brief) |
+| DC35 | `Plan::logical_size() -> usize` and `Plan::scale_factor(Scale) -> T` on every plan; `Layout::logical_size` stays the product of the extents (Section 4.9) | accepted (F5 brief) |
 
 ### 10.2 DF6: why `fftw_source` is dropped
 
@@ -1190,6 +1242,18 @@ review.
   extent and stride, and pairs arrays without their part axes (Section 4.8, DC27); a layout
   of the other storage kind is an `InvalidLayout` (Section 4.15, DC28); the split layout
   functions require real arrays (Sections 4.3 and 4.5, DC29).
+
+- **Draft 0.14** (2026-10-22), from the open questions of the F5 brief
+  (`docs/fftw/tasks/F5-real.md`), settled by the maintainer before the task started, each
+  with the proposed option: `Layout` records the storage of each side, complex, real or split,
+  set by `Layout::with_storage`, and every planner method checks it (Sections 4.2, 4.3 and
+  4.15, DC30); the array layout functions require a sealed `FftElement` on their items, from
+  which they read each side's storage (Section 4.3, DC31); in-place r2c and c2r take the
+  complex array, with a contiguous halved axis, and `as_reals` and `as_reals_mut` view
+  complex slices as reals (Section 4.3, DC32); split r2c and c2r have layout functions of
+  their own and no in-place plans, which corrects the table of Section 4.4 (Sections 4.4 and
+  4.5, DC33); `PlanCreationFailed` carries a hint (Section 4.15, DC34); `Plan::logical_size`
+  and `Plan::scale_factor` exist on every plan, with their types (Section 4.9, DC35).
 
 ## Appendix B. Migration from 0.10
 
