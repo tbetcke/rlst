@@ -1,18 +1,22 @@
-//! Transform layouts: dimensions, batch dimensions, placement and, for split storage, gaps.
+//! Transform layouts: dimensions, batch dimensions, placement and the storage of each side.
 
 use std::fmt;
 
+use num::Complex;
+
 use crate::{Array, BaseItem, Shape, Stride, StridedRawAccess};
 
+use super::element::{self, FftElement};
 use super::error::{FftwError, Side};
 use super::real::FftwReal;
 
 /// One dimension of a layout: its extent and its input and output strides.
 ///
-/// Strides are counted in elements of the input and output buffers (complex elements for
-/// complex-to-complex transforms on interleaved storage, reals for split storage), and are
-/// non-negative. The fields are `isize`, as FFTW's
-/// `fftw_iodim64` uses `ptrdiff_t`.
+/// Strides are counted in elements of each side, and are non-negative: complex elements on a
+/// side of interleaved complex storage, reals on a real side or a side of split storage (see
+/// [`Storage`]). For real-to-complex and complex-to-real layouts, the extent of the last
+/// transform dimension is the logical real extent `n`; the complex side has `n / 2 + 1`
+/// elements along it. The fields are `isize`, as FFTW's `fftw_iodim64` uses `ptrdiff_t`.
 ///
 /// ```
 /// use rlst::fftw::Dim;
@@ -25,9 +29,9 @@ use super::real::FftwReal;
 pub struct Dim {
     /// The extent.
     pub n: isize,
-    /// The input stride, in elements.
+    /// The input stride, in elements of the input side.
     pub is: isize,
-    /// The output stride, in elements.
+    /// The output stride, in elements of the output side.
     pub os: isize,
 }
 
@@ -55,16 +59,182 @@ impl fmt::Display for Placement {
     }
 }
 
+/// The storage of one side of a [`Layout`]: interleaved complex, real, or split complex.
+///
+/// The storages of the input and the output decide the family of a layout, and the units of
+/// its strides and spans on each side:
+///
+/// | Input | Output | Family | Halved side |
+/// | --- | --- | --- | --- |
+/// | `Complex` | `Complex` | complex-to-complex (c2c) | none |
+/// | `Split` | `Split` | split complex-to-complex | none |
+/// | `Real` | `Complex` | real-to-complex (r2c) | output |
+/// | `Complex` | `Real` | complex-to-real (c2r) | input |
+/// | `Real` | `Real` | real-to-real (r2r) | none |
+/// | `Real` | `Split` | split real-to-complex | output |
+/// | `Split` | `Real` | split complex-to-real | input |
+///
+/// A split side does not pair with an interleaved complex one. On the halved side of an r2c
+/// or c2r layout the last transform dimension has extent `n / 2 + 1`, with `n` the logical
+/// real extent of the layout's dimension.
+///
+/// ```
+/// use rlst::fftw::{Dim, Layout, Placement, Storage};
+///
+/// // A real-to-complex transform of length 8: 8 reals in, 5 complex values out.
+/// let layout = Layout::with_storage(
+///     &[Dim { n: 8, is: 1, os: 1 }],
+///     &[],
+///     (Storage::Real, Storage::Complex),
+///     Placement::OutOfPlace,
+/// )?;
+/// assert_eq!((layout.input_span(), layout.output_span()), (8, 5));
+/// assert_eq!(Storage::Split { gap: 15 }.to_string(), "split (gap 15)");
+/// # Ok::<(), rlst::fftw::FftwError>(())
+/// ```
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Storage {
+    /// Interleaved complex elements, [`c32`](crate::c32) or [`c64`](crate::c64); strides
+    /// count complex elements.
+    Complex,
+    /// Reals, `f32` or `f64`; strides count reals.
+    Real,
+    /// Split complex storage in a buffer of reals: the real part of an element at an offset
+    /// and its imaginary part `gap` reals further on; strides count reals.
+    Split {
+        /// The stride from an element's real part to its imaginary part, in reals.
+        gap: isize,
+    },
+}
+
+impl fmt::Display for Storage {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Storage::Complex => f.write_str("complex"),
+            Storage::Real => f.write_str("real"),
+            Storage::Split { gap } => write!(f, "split (gap {gap})"),
+        }
+    }
+}
+
+/// The family of a layout, from the storages of its sides (DC30).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LayoutFamily {
+    C2c,
+    SplitC2c,
+    R2c,
+    C2r,
+    R2r,
+    SplitR2c,
+    SplitC2r,
+}
+
+impl LayoutFamily {
+    /// The family of a layout with these storages, or `None` for a split side paired with an
+    /// interleaved complex one.
+    pub(crate) fn of(input: Storage, output: Storage) -> Option<Self> {
+        Some(match (input, output) {
+            (Storage::Complex, Storage::Complex) => LayoutFamily::C2c,
+            (Storage::Split { .. }, Storage::Split { .. }) => LayoutFamily::SplitC2c,
+            (Storage::Real, Storage::Complex) => LayoutFamily::R2c,
+            (Storage::Complex, Storage::Real) => LayoutFamily::C2r,
+            (Storage::Real, Storage::Real) => LayoutFamily::R2r,
+            (Storage::Real, Storage::Split { .. }) => LayoutFamily::SplitR2c,
+            (Storage::Split { .. }, Storage::Real) => LayoutFamily::SplitC2r,
+            _ => return None,
+        })
+    }
+
+    /// The name of the family, for messages.
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            LayoutFamily::C2c => "complex-to-complex",
+            LayoutFamily::SplitC2c => "split complex-to-complex",
+            LayoutFamily::R2c => "real-to-complex",
+            LayoutFamily::C2r => "complex-to-real",
+            LayoutFamily::R2r => "real-to-real",
+            LayoutFamily::SplitR2c => "split real-to-complex",
+            LayoutFamily::SplitC2r => "split complex-to-real",
+        }
+    }
+
+    /// The names of the storages of the family's input and output, for messages.
+    pub(crate) fn storage_names(self) -> (&'static str, &'static str) {
+        match self {
+            LayoutFamily::C2c => ("complex", "complex"),
+            LayoutFamily::SplitC2c => ("split", "split"),
+            LayoutFamily::R2c => ("real", "complex"),
+            LayoutFamily::C2r => ("complex", "real"),
+            LayoutFamily::R2r => ("real", "real"),
+            LayoutFamily::SplitR2c => ("real", "split"),
+            LayoutFamily::SplitC2r => ("split", "real"),
+        }
+    }
+
+    /// Whether the family's input and output are split.
+    pub(crate) fn split_sides(self) -> (bool, bool) {
+        match self {
+            LayoutFamily::SplitC2c => (true, true),
+            LayoutFamily::SplitR2c => (false, true),
+            LayoutFamily::SplitC2r => (true, false),
+            _ => (false, false),
+        }
+    }
+
+    /// The side whose last transform dimension is halved: the complex or split side of r2c
+    /// and c2r and their split forms.
+    pub(crate) fn halved(self) -> Option<Side> {
+        match self {
+            LayoutFamily::R2c | LayoutFamily::SplitR2c => Some(Side::Output),
+            LayoutFamily::C2r | LayoutFamily::SplitC2r => Some(Side::Input),
+            _ => None,
+        }
+    }
+}
+
+/// The extent `n / 2 + 1` of the halved dimension on the complex side, for the real extent
+/// `n`.
+pub(crate) fn halved_extent(n: isize) -> isize {
+    n / 2 + 1
+}
+
+/// The storage of an array given to a layout function: of its element type, or split with
+/// the stride of its part axis.
+#[derive(Clone, Copy, Debug)]
+enum ArrayStorage {
+    Complex,
+    Real,
+    Split { part_stride: usize },
+}
+
+impl ArrayStorage {
+    /// The storage of arrays of `E`.
+    fn of<E: FftElement>() -> Self {
+        if <E as element::sealed::Sealed>::COMPLEX {
+            ArrayStorage::Complex
+        } else {
+            ArrayStorage::Real
+        }
+    }
+
+    /// Whether the side holds complex values, interleaved or split.
+    fn is_complex(self) -> bool {
+        !matches!(self, ArrayStorage::Real)
+    }
+}
+
 /// The layout of a batch of transforms, in normalised form.
 ///
 /// A layout lists the transform dimensions, in the order given, and the batch dimensions over
-/// which the transform is repeated, with the placement, and for split complex storage the
-/// gap of each side (see [`Layout::new_split`]). Offsets are counted in elements from the start
-/// of each buffer. A layout is validated when it is made, and normalised: batch
-/// dimensions of extent 1 are dropped, the batch dimensions are sorted by input stride and
-/// then output stride, largest first, and adjacent batch dimensions that are contiguous on
-/// both sides are merged. Two layouts that describe the same transforms of the same elements
-/// are therefore equal, whatever the order of their batch dimensions.
+/// which the transform is repeated, with the placement and the [`Storage`] of each side, from
+/// which its family follows: complex-to-complex, real-to-complex, complex-to-real or
+/// real-to-real, on interleaved or split complex storage (see [`Layout::with_storage`]).
+/// Offsets are counted in elements of each side from the start of its buffer. A layout is
+/// validated when it is made, and normalised: batch dimensions of extent 1 are dropped, the
+/// batch dimensions are sorted by input stride and then output stride, largest first, and
+/// adjacent batch dimensions that are contiguous on both sides are merged. Two layouts that
+/// describe the same transforms of the same elements are therefore equal, whatever the order
+/// of their batch dimensions.
 ///
 /// ```
 /// use rlst::fftw::{Dim, Layout, Placement};
@@ -84,17 +254,27 @@ pub struct Layout {
     dims: Vec<Dim>,
     batch: Vec<Dim>,
     placement: Placement,
-    /// For split storage, the input and output gaps, in reals; `None` for interleaved storage.
-    gaps: Option<(isize, isize)>,
+    /// The storage of the input and of the output.
+    storage: (Storage, Storage),
     input_span: usize,
     output_span: usize,
 }
 
+/// One dimension of one side of a layout, for the distinct-output rule and the spans: its
+/// name in errors, its extent on that side and its stride on that side.
+struct SideDim<'a> {
+    name: &'a str,
+    n: isize,
+    stride: isize,
+}
+
 impl Layout {
-    /// Make a layout from transform dimensions, batch dimensions and a placement.
+    /// Make a complex-to-complex layout of interleaved complex storage from transform
+    /// dimensions, batch dimensions and a placement.
     ///
-    /// The checks, in this order, each returning [`FftwError::InvalidLayout`] with the
-    /// dimension and the reason:
+    /// The same as [`Layout::with_storage`] with the storages `(Storage::Complex,
+    /// Storage::Complex)`. Its checks, in this order, each returning
+    /// [`FftwError::InvalidLayout`] with the dimension and the reason:
     ///
     /// 1. there is at least one transform dimension;
     /// 2. every extent is at least 1;
@@ -125,14 +305,7 @@ impl Layout {
     /// # Ok::<(), FftwError>(())
     /// ```
     pub fn new(dims: &[Dim], batch: &[Dim], placement: Placement) -> Result<Self, FftwError> {
-        Self::with_names(
-            dims,
-            batch,
-            placement,
-            None,
-            |index| format!("transform dimension {index}"),
-            |index| format!("batch dimension {index}"),
-        )
+        Self::with_storage(dims, batch, (Storage::Complex, Storage::Complex), placement)
     }
 
     /// Make a layout of split complex storage from transform dimensions, batch dimensions, the
@@ -147,8 +320,10 @@ impl Layout {
     /// recorded beside the dimensions, never as a batch dimension, so normalisation never
     /// merges them into the batch.
     ///
-    /// The checks, in this order, each returning [`FftwError::InvalidLayout`] with the
-    /// dimension (`part axis` for the gaps) and the reason:
+    /// The same as [`Layout::with_storage`] with the storages `(Storage::Split { gap:
+    /// input_gap }, Storage::Split { gap: output_gap })`. Its checks, in this order, each
+    /// returning [`FftwError::InvalidLayout`] with the dimension (`part axis` for the gaps)
+    /// and the reason:
     ///
     /// 1. checks 1 to 4 of [`Layout::new`] on the dimensions: at least one transform
     ///    dimension, extents at least 1, non-negative strides, and in place equal strides;
@@ -197,23 +372,116 @@ impl Layout {
         (input_gap, output_gap): (isize, isize),
         placement: Placement,
     ) -> Result<Self, FftwError> {
+        Self::with_storage(
+            dims,
+            batch,
+            (
+                Storage::Split { gap: input_gap },
+                Storage::Split { gap: output_gap },
+            ),
+            placement,
+        )
+    }
+
+    /// Make a layout of any family from transform dimensions, batch dimensions, the storage of
+    /// the input and of the output, and a placement.
+    ///
+    /// The storages decide the family, as the table of [`Storage`] lists: complex-to-complex,
+    /// real-to-complex, complex-to-real and real-to-real, on interleaved or split complex
+    /// storage. Strides, spans and the offsets of a slice count elements of each side:
+    /// complex elements on a complex side, reals on a real or split side. For real-to-complex
+    /// and complex-to-real layouts, and their split forms, the dimensions record the logical
+    /// real extent `n`, as FFTW's guru interface takes it, and the last transform dimension
+    /// is the *halved* one: on the complex side it has extent `n / 2 + 1`. [`Layout::new`]
+    /// and [`Layout::new_split`] are this function for complex-to-complex layouts.
+    ///
+    /// The checks, in this order, each returning [`FftwError::InvalidLayout`] with the
+    /// dimension (`layout`, a dimension, or `part axis` for the gaps) and the reason:
+    ///
+    /// 1. the storages are a pair of the table of [`Storage`];
+    /// 2. there is at least one transform dimension, every extent is at least 1 and every
+    ///    stride is non-negative;
+    /// 3. in place, both sides are one buffer: for complex-to-complex, split
+    ///    complex-to-complex and real-to-real layouts the input and output strides are equal
+    ///    in every dimension; for real-to-complex and complex-to-real layouts the buffer is
+    ///    the complex side, padded as FFTW requires, so the halved dimension has stride 1 on
+    ///    both sides, the reals of each complex element holding two real elements, and on
+    ///    every other dimension the real stride is twice the complex stride (dimensions of
+    ///    extent 1 address one element and are not checked); split real-to-complex and
+    ///    complex-to-real layouts cannot be in place;
+    /// 4. the gap of a split side is positive, and in place the gaps are equal;
+    /// 5. the output elements are distinct, by the rule of [`Layout::new`] on the output side,
+    ///    with the extent `n / 2 + 1` of the halved dimension on a complex output and the part
+    ///    axis, of extent 2 and the gap as stride, on a split output; in place, the input
+    ///    side is written too, and the rule applies to it as well;
+    /// 6. the spans, which use the extent `n / 2 + 1` on the complex side and include the gap
+    ///    of a split side, fit in `isize`.
+    ///
+    /// ```
+    /// use rlst::fftw::{Dim, FftwError, Layout, Placement, Storage};
+    ///
+    /// // Three real-to-complex transforms of length 8: columns of a real [8, 3] array into
+    /// // the columns of a complex [5, 3] array.
+    /// let r2c = Layout::with_storage(
+    ///     &[Dim { n: 8, is: 1, os: 1 }],
+    ///     &[Dim { n: 3, is: 8, os: 5 }],
+    ///     (Storage::Real, Storage::Complex),
+    ///     Placement::OutOfPlace,
+    /// )?;
+    /// assert_eq!((r2c.input_span(), r2c.output_span()), (24, 15));
+    ///
+    /// // The same transforms in place: a complex [5, 3] array whose columns hold 10 reals,
+    /// // the 8 reals of each transform padded by 2.
+    /// let in_place = Layout::with_storage(
+    ///     &[Dim { n: 8, is: 1, os: 1 }],
+    ///     &[Dim { n: 3, is: 10, os: 5 }],
+    ///     (Storage::Real, Storage::Complex),
+    ///     Placement::InPlace,
+    /// )?;
+    /// assert_eq!(in_place.output_span(), 15);
+    ///
+    /// // Without the padding the complex outputs of the columns overlap.
+    /// let error = Layout::with_storage(
+    ///     &[Dim { n: 8, is: 1, os: 1 }],
+    ///     &[Dim { n: 3, is: 8, os: 4 }],
+    ///     (Storage::Real, Storage::Complex),
+    ///     Placement::InPlace,
+    /// );
+    /// assert!(matches!(error, Err(FftwError::InvalidLayout { .. })));
+    ///
+    /// // A split side does not pair with an interleaved complex one.
+    /// let error = Layout::with_storage(
+    ///     &[Dim { n: 8, is: 1, os: 1 }],
+    ///     &[],
+    ///     (Storage::Split { gap: 8 }, Storage::Complex),
+    ///     Placement::OutOfPlace,
+    /// );
+    /// assert!(matches!(error, Err(FftwError::InvalidLayout { .. })));
+    /// # Ok::<(), FftwError>(())
+    /// ```
+    pub fn with_storage(
+        dims: &[Dim],
+        batch: &[Dim],
+        storage: (Storage, Storage),
+        placement: Placement,
+    ) -> Result<Self, FftwError> {
         Self::with_names(
             dims,
             batch,
+            storage,
             placement,
-            Some((input_gap, output_gap)),
             |index| format!("transform dimension {index}"),
             |index| format!("batch dimension {index}"),
         )
     }
 
-    /// [`Layout::new`], or [`Layout::new_split`] with `gaps`, with the names its errors give
-    /// each transform and batch dimension.
+    /// [`Layout::with_storage`] with the names its errors give each transform and batch
+    /// dimension.
     fn with_names(
         dims: &[Dim],
         batch: &[Dim],
+        (input, output): (Storage, Storage),
         placement: Placement,
-        gaps: Option<(isize, isize)>,
         dim_name: impl Fn(usize) -> String,
         batch_name: impl Fn(usize) -> String,
     ) -> Result<Self, FftwError> {
@@ -222,6 +490,15 @@ impl Layout {
             reason,
         };
 
+        let Some(family) = LayoutFamily::of(input, output) else {
+            return Err(invalid(
+                "layout",
+                format!(
+                    "an input of {input} storage and an output of {output} storage describe no \
+                     transform; a split side pairs with a split or a real side"
+                ),
+            ));
+        };
         if dims.is_empty() {
             return Err(invalid(
                 "layout",
@@ -229,7 +506,7 @@ impl Layout {
             ));
         }
 
-        let mut named: Vec<(String, Dim)> = dims
+        let named: Vec<(String, Dim)> = dims
             .iter()
             .enumerate()
             .map(|(index, &dim)| (dim_name(index), dim))
@@ -259,103 +536,134 @@ impl Layout {
             }
         }
         if placement == Placement::InPlace {
-            for (name, dim) in &named {
-                if dim.is != dim.os {
+            match family {
+                LayoutFamily::SplitR2c | LayoutFamily::SplitC2r => {
                     return Err(invalid(
-                        name,
+                        "layout",
                         format!(
-                            "in place, the input stride {} and the output stride {} must be equal",
-                            dim.is, dim.os
+                            "a {} layout cannot be in place; RLST has no in-place split \
+                             real-to-complex or complex-to-real plans",
+                            family.name()
                         ),
                     ));
                 }
+                LayoutFamily::R2c | LayoutFamily::C2r => {
+                    check_padded_in_place(&named, dims.len() - 1, family == LayoutFamily::R2c)?;
+                }
+                _ => {
+                    for (name, dim) in &named {
+                        if dim.is != dim.os {
+                            return Err(invalid(
+                                name,
+                                format!(
+                                    "in place, the input stride {} and the output stride {} \
+                                     must be equal",
+                                    dim.is, dim.os
+                                ),
+                            ));
+                        }
+                    }
+                }
             }
         }
-        if let Some((input_gap, output_gap)) = gaps {
-            if input_gap < 1 || output_gap < 1 {
+        let gap = |storage: Storage| match storage {
+            Storage::Split { gap } => Some(gap),
+            _ => None,
+        };
+        for (side, gap) in [(Side::Input, gap(input)), (Side::Output, gap(output))] {
+            if let Some(gap) = gap
+                && gap < 1
+            {
                 return Err(invalid(
                     PART_AXIS,
-                    format!(
-                        "the gaps must be positive, found input gap {input_gap} and output gap \
-                         {output_gap}"
-                    ),
+                    format!("the gaps must be positive, found the {side} gap {gap}"),
                 ));
             }
-            if placement == Placement::InPlace && input_gap != output_gap {
-                return Err(invalid(
-                    PART_AXIS,
-                    format!(
-                        "in place, the input gap {input_gap} and the output gap {output_gap} \
-                         must be equal"
-                    ),
-                ));
-            }
-            // The part axis takes part in the distinct-output rule and the spans, never in
-            // the batch.
-            named.push((
-                PART_AXIS.to_string(),
-                Dim {
-                    n: 2,
-                    is: input_gap,
-                    os: output_gap,
-                },
-            ));
         }
-
-        // Distinct outputs, by the sufficient rule of design Section 4.3.
-        let mut by_output: Vec<&(String, Dim)> =
-            named.iter().filter(|(_, dim)| dim.n > 1).collect();
-        by_output.sort_by_key(|(_, dim)| dim.os);
-        if let Some((name, dim)) = by_output.first()
-            && dim.os == 0
+        if placement == Placement::InPlace
+            && let (Some(input_gap), Some(output_gap)) = (gap(input), gap(output))
+            && input_gap != output_gap
         {
             return Err(invalid(
-                name,
+                PART_AXIS,
                 format!(
-                    "the output stride is 0 with extent {}, so the outputs overlap",
-                    dim.n
+                    "in place, the input gap {input_gap} and the output gap {output_gap} must \
+                     be equal"
                 ),
             ));
         }
-        for pair in by_output.windows(2) {
-            let (inner_name, inner) = pair[0];
-            let (name, dim) = pair[1];
-            let Some(needed) = inner.n.checked_mul(inner.os) else {
-                return Err(invalid(
-                    inner_name,
-                    "the extent times the output stride overflows isize".to_string(),
-                ));
+
+        // The dimensions of each side: the transform dimensions with that side's extent, the
+        // batch dimensions, and for split storage the part axis, which takes part in the
+        // distinct-output rule and the spans but never in the batch.
+        let last = dims.len() - 1;
+        let side_dims = |side: Side| -> Vec<SideDim<'_>> {
+            let storage = match side {
+                Side::Input => input,
+                Side::Output => output,
             };
-            if dim.os < needed {
-                return Err(invalid(
+            let mut list: Vec<SideDim<'_>> = named
+                .iter()
+                .enumerate()
+                .map(|(index, (name, dim))| SideDim {
                     name,
-                    format!(
-                        "the output stride {} is below {needed}, the extent {} times the output \
-                         stride {} of {inner_name}, so the outputs may overlap",
-                        dim.os, inner.n, inner.os
-                    ),
-                ));
+                    n: if index == last && family.halved() == Some(side) {
+                        halved_extent(dim.n)
+                    } else {
+                        dim.n
+                    },
+                    stride: match side {
+                        Side::Input => dim.is,
+                        Side::Output => dim.os,
+                    },
+                })
+                .collect();
+            if let Some(gap) = gap(storage) {
+                list.push(SideDim {
+                    name: PART_AXIS,
+                    n: 2,
+                    stride: gap,
+                });
             }
+            list
+        };
+
+        check_distinct(&side_dims(Side::Output), Side::Output)?;
+        if placement == Placement::InPlace {
+            check_distinct(&side_dims(Side::Input), Side::Input)?;
         }
 
-        let span = |stride: fn(&Dim) -> isize| {
-            named
+        let span = |side: Side| {
+            side_dims(side)
                 .iter()
-                .try_fold(1_isize, |span, (_, dim)| {
-                    span.checked_add((dim.n - 1).checked_mul(stride(dim))?)
+                .try_fold(1_isize, |span, dim| {
+                    span.checked_add((dim.n - 1).checked_mul(dim.stride)?)
                 })
                 .and_then(|span| usize::try_from(span).ok())
         };
-        let input_span = span(|dim| dim.is)
+        let input_span = span(Side::Input)
             .ok_or_else(|| invalid("layout", "the input span overflows isize".to_string()))?;
-        let output_span = span(|dim| dim.os)
+        let output_span = span(Side::Output)
             .ok_or_else(|| invalid("layout", "the output span overflows isize".to_string()))?;
+
+        // In place, the real side of a real-to-complex or complex-to-real layout lies inside
+        // the complex side: along the halved dimension n reals fit in the 2 (n / 2 + 1) reals
+        // of the complex elements, and every other stride is the same distance on both sides.
+        // Execution checks the complex span only, and relies on this.
+        debug_assert!(
+            placement == Placement::OutOfPlace
+                || match family {
+                    LayoutFamily::R2c => input_span <= 2 * output_span,
+                    LayoutFamily::C2r => output_span <= 2 * input_span,
+                    _ => input_span == output_span,
+                }
+        );
 
         Ok(Self {
             dims: dims.to_vec(),
             batch: normalise_batch(batch),
             placement,
-            gaps,
+            storage: (input, output),
             input_span,
             output_span,
         })
@@ -406,9 +714,27 @@ impl Layout {
         self.placement
     }
 
-    /// The gaps `(input_gap, output_gap)` of a layout of split complex storage, in reals:
-    /// the stride from an element's real part to its imaginary part on each side. `None` for
-    /// interleaved storage.
+    /// The storage `(input, output)` of the two sides, from which the family of the layout
+    /// follows (see [`Storage`]).
+    ///
+    /// ```
+    /// use rlst::fftw::{Dim, Layout, Placement, Storage};
+    ///
+    /// let dims = [Dim { n: 8, is: 1, os: 1 }];
+    /// let c2c = Layout::new(&dims, &[], Placement::OutOfPlace)?;
+    /// assert_eq!(c2c.storage(), (Storage::Complex, Storage::Complex));
+    /// let split = Layout::new_split(&dims, &[], (8, 8), Placement::OutOfPlace)?;
+    /// assert_eq!(split.storage(), (Storage::Split { gap: 8 }, Storage::Split { gap: 8 }));
+    /// # Ok::<(), rlst::fftw::FftwError>(())
+    /// ```
+    pub fn storage(&self) -> (Storage, Storage) {
+        self.storage
+    }
+
+    /// The gaps `(input_gap, output_gap)` of a layout of split complex storage on both sides,
+    /// in reals: the stride from an element's real part to its imaginary part on each side.
+    /// `None` unless both sides are split; [`storage`](Layout::storage) gives the gap of a
+    /// split side beside a real one.
     ///
     /// ```
     /// use rlst::fftw::{Dim, Layout, Placement};
@@ -421,13 +747,19 @@ impl Layout {
     /// # Ok::<(), rlst::fftw::FftwError>(())
     /// ```
     pub fn gaps(&self) -> Option<(isize, isize)> {
-        self.gaps
+        match self.storage {
+            (Storage::Split { gap: input }, Storage::Split { gap: output }) => {
+                Some((input, output))
+            }
+            _ => None,
+        }
     }
 
     /// The number of input elements the layout spans: 1 plus the sum of (n − 1) · is over
-    /// all dimensions, plus the input gap for split storage.
+    /// all dimensions, with the extent n / 2 + 1 of the halved dimension on a complex input,
+    /// plus the input gap for split storage.
     ///
-    /// An input buffer must have at least this many elements.
+    /// An input buffer must have at least this many elements of the input side.
     ///
     /// ```
     /// use rlst::fftw::{Dim, Layout, Placement};
@@ -441,9 +773,10 @@ impl Layout {
     }
 
     /// The number of output elements the layout spans: 1 plus the sum of (n − 1) · os over
-    /// all dimensions, plus the output gap for split storage.
+    /// all dimensions, with the extent n / 2 + 1 of the halved dimension on a complex
+    /// output, plus the output gap for split storage.
     ///
-    /// An output buffer must have at least this many elements.
+    /// An output buffer must have at least this many elements of the output side.
     ///
     /// ```
     /// use rlst::fftw::{Dim, Layout, Placement};
@@ -456,9 +789,12 @@ impl Layout {
         self.output_span
     }
 
-    /// The logical size of one transform: the product of the transform extents.
+    /// The product of the extents n of the transform dimensions.
     ///
-    /// A backward transform after a forward one multiplies the data by this number.
+    /// This is the logical size of one complex-to-complex, real-to-complex or complex-to-real
+    /// transform, whose n are the logical real extents: a backward transform after a forward
+    /// one multiplies the data by it. The logical size of a real-to-real transform depends on
+    /// its kinds and is [`Plan::logical_size`](super::Plan::logical_size).
     ///
     /// ```
     /// use rlst::fftw::{Dim, Layout, Placement};
@@ -472,15 +808,32 @@ impl Layout {
     /// # Ok::<(), rlst::fftw::FftwError>(())
     /// ```
     pub fn logical_size(&self) -> usize {
-        // The outputs are distinct, so the product is at most the output span.
+        // The outputs are distinct, so the product is at most twice the output span.
         self.dims.iter().map(|dim| dim.n as usize).product()
     }
 
-    /// The span of `side`, in elements.
+    /// The family of the layout, from its storages.
+    pub(crate) fn family(&self) -> LayoutFamily {
+        LayoutFamily::of(self.storage.0, self.storage.1)
+            .expect("a layout's storages were validated when it was made")
+    }
+
+    /// The span of `side`, in elements of that side.
     pub(crate) fn span(&self, side: Side) -> usize {
         match side {
             Side::Input => self.input_span,
             Side::Output => self.output_span,
+        }
+    }
+
+    /// The extent of transform dimension `index` on `side`: n, or n / 2 + 1 for the halved
+    /// dimension on its side.
+    pub(crate) fn extent(&self, index: usize, side: Side) -> isize {
+        let n = self.dims[index].n;
+        if index + 1 == self.dims.len() && self.family().halved() == Some(side) {
+            halved_extent(n)
+        } else {
+            n
         }
     }
 
@@ -492,32 +845,40 @@ impl Layout {
                 .collect::<Vec<_>>()
                 .join(", ")
         };
-        let gaps = match self.gaps {
-            Some((input, output)) => format!(" and gaps (input {input}, output {output})"),
-            None => String::new(),
+        let storage = match self.storage {
+            (Storage::Complex, Storage::Complex) => String::new(),
+            (input, output) => format!(" and {input} input and {output} output storage"),
         };
         format!(
-            "the {} layout with transform dimensions [{}] and batch dimensions [{}]{gaps}",
+            "the {} {} layout with transform dimensions [{}] and batch dimensions [{}]{storage}",
             self.placement,
+            self.family().name(),
             list(&self.dims),
             list(&self.batch)
         )
     }
 
-    /// The gap of `side`, for split storage.
+    /// The gap of `side`, if that side is split.
     pub(crate) fn gap(&self, side: Side) -> Option<isize> {
-        self.gaps.map(|(input, output)| match side {
-            Side::Input => input,
-            Side::Output => output,
-        })
+        let storage = match side {
+            Side::Input => self.storage.0,
+            Side::Output => self.storage.1,
+        };
+        match storage {
+            Storage::Split { gap } => Some(gap),
+            _ => None,
+        }
     }
 
     /// One-dimensional transforms along `axis` of two arrays of rank `N`, batched over the
     /// other axes.
     ///
     /// The same as [`over_axes`](Layout::over_axes) with the one axis `axis`, whose checks,
-    /// errors and notes apply. The arrays can be any RLST arrays or views with strided
-    /// storage: column-major, row-major or strided, subviews, slices and nested views.
+    /// errors and notes apply: complex arrays give a complex-to-complex layout, a real input
+    /// and a complex output a real-to-complex layout with `axis` halved, a complex input and
+    /// a real output a complex-to-real one, two real arrays a real-to-real one. The arrays
+    /// can be any RLST arrays or views with strided storage: column-major, row-major or
+    /// strided, subviews, slices and nested views.
     ///
     /// ```
     /// use rlst::{c64, rlst_dynamic_array};
@@ -568,6 +929,31 @@ impl Layout {
     /// // The shapes differ, which the layout functions reject.
     /// assert!(layout.is_err());
     /// ```
+    ///
+    /// Both arrays have one precision, so a real `f32` input with a `c64` output does not
+    /// compile:
+    ///
+    /// ```compile_fail,E0271
+    /// use rlst::{c64, rlst_dynamic_array};
+    /// use rlst::fftw::Layout;
+    ///
+    /// let input = rlst_dynamic_array!(f32, [8, 3] | rlst::FFTW_ALIGNED);
+    /// let output = rlst_dynamic_array!(c64, [5, 3] | rlst::FFTW_ALIGNED);
+    /// let layout = Layout::along_axis(&input, &output, 0)?;
+    /// # Ok::<(), rlst::fftw::FftwError>(())
+    /// ```
+    ///
+    /// while an `f64` input does:
+    ///
+    /// ```
+    /// use rlst::{c64, rlst_dynamic_array};
+    /// use rlst::fftw::Layout;
+    ///
+    /// let input = rlst_dynamic_array!(f64, [8, 3] | rlst::FFTW_ALIGNED);
+    /// let output = rlst_dynamic_array!(c64, [5, 3] | rlst::FFTW_ALIGNED);
+    /// let layout = Layout::along_axis(&input, &output, 0)?;
+    /// # Ok::<(), rlst::fftw::FftwError>(())
+    /// ```
     pub fn along_axis<AIn, AOut, const N: usize>(
         input: &Array<AIn, N>,
         output: &Array<AOut, N>,
@@ -576,6 +962,8 @@ impl Layout {
     where
         AIn: StridedRawAccess + Shape<N> + Stride<N>,
         AOut: StridedRawAccess + Shape<N> + Stride<N>,
+        AIn::Item: FftElement,
+        AOut::Item: FftElement<Real = <AIn::Item as FftElement>::Real>,
     {
         Self::over_axes(input, output, &[axis])
     }
@@ -587,8 +975,17 @@ impl Layout {
     /// and the strides of both arrays; the batch dimensions are the other axes. FFTW receives
     /// the dimensions in this order with their own strides, whatever the memory order of the
     /// arrays, so `&[0, 1]` and `&[1, 0]` are different layouts, and plans, of the same
-    /// transform. The layout is then made by [`Layout::new`], whose validation and
+    /// transform. The layout is then made by [`Layout::with_storage`], whose validation and
     /// normalisation apply.
+    ///
+    /// The element types of the arrays, which implement [`FftElement`] with one precision,
+    /// give the [`Storage`] of each side and so the family: two complex arrays give a
+    /// complex-to-complex layout, two real arrays a real-to-real one, a real input and a
+    /// complex output a real-to-complex one, and a complex input and a real output a
+    /// complex-to-real one. Real-to-complex and complex-to-real transforms halve the axis
+    /// given last in `axes`, whatever the memory order (DC2): along it the complex array has
+    /// `n / 2 + 1` elements for the real array's `n`, and the layout's dimension records `n`.
+    /// Strides count elements of each array, reals or complex values.
     ///
     /// The checks, in this order, each returning [`FftwError::InvalidLayout`] that names
     /// `axes` or the axis concerned (`axis 1`):
@@ -596,25 +993,28 @@ impl Layout {
     /// 1. `axes` is not empty;
     /// 2. every entry of `axes` is below `N`;
     /// 3. no entry is repeated;
-    /// 4. the input and output extents are equal on every axis, as a complex-to-complex
-    ///    transform needs;
+    /// 4. the input and output extents are equal on every axis, except along the halved axis
+    ///    of a real-to-complex or complex-to-real layout, where the complex extent is
+    ///    `n / 2 + 1` for the real extent `n`; an error names the axis, the extent expected
+    ///    and the extent found;
     /// 5. every extent is at least 1: an array with an extent 0 has nothing to transform;
     /// 6. every extent and stride fits in `isize`;
     ///
-    /// and those of [`Layout::new`], with the dimensions named by their axes. In particular,
-    /// an output whose strides fail the sufficient distinct-output rule of [`Layout::new`],
-    /// such as shape `[2, 2]` with strides `[2, 3]`, is rejected, although its elements are
-    /// distinct; it is accepted as an input.
+    /// and those of [`Layout::with_storage`], with the dimensions named by their axes. In
+    /// particular, an output whose strides fail the sufficient distinct-output rule of
+    /// [`Layout::new`], such as shape `[2, 2]` with strides `[2, 3]`, is rejected, although its
+    /// elements are distinct; it is accepted as an input.
     ///
     /// Building a layout reads only shapes and strides. A layout carries no offsets: the
     /// offsets of an array count from its first element, so a plan runs on any arrays and
     /// views of this memory layout, wherever they start.
     ///
-    /// The scratch of [`Planner::c2c`](super::Planner::c2c) covers the span from the first
-    /// element to the last one the layout addresses. For a view of a large array, such as a
-    /// column of a row-major matrix, that can be nearly the whole array: raise
-    /// [`max_scratch`](super::Planner::max_scratch) or plan on the arrays themselves with
-    /// [`c2c_on`](super::Planner::c2c_on).
+    /// The scratch of [`Planner::c2c`](super::Planner::c2c) and the other planner methods
+    /// without `_on` covers the span from the first element to the last one the layout
+    /// addresses. For a view of a large array, such as a column of a row-major matrix, that
+    /// can be nearly the whole array: raise [`max_scratch`](super::Planner::max_scratch) or
+    /// plan on the arrays themselves with [`c2c_on`](super::Planner::c2c_on) and the other
+    /// `*_on` methods.
     ///
     /// A plan describes memory, not logical axes. Execution checks each array against its
     /// side of the layout and, when both are arrays of the same rank, pairs their axes by
@@ -635,6 +1035,26 @@ impl Layout {
     /// assert_eq!(layout.logical_size(), 20);
     /// # Ok::<(), rlst::fftw::FftwError>(())
     /// ```
+    ///
+    /// A real-to-complex layout over both axes of a real `[4, 6]` array: axis 1, given last,
+    /// is halved, so the complex array is `[4, 4]`.
+    ///
+    /// ```
+    /// use rlst::{c64, rlst_dynamic_array};
+    /// use rlst::fftw::{Dim, FftwError, Layout, Storage};
+    ///
+    /// let real = rlst_dynamic_array!(f64, [4, 6] | rlst::FFTW_ALIGNED);
+    /// let complex = rlst_dynamic_array!(c64, [4, 4] | rlst::FFTW_ALIGNED);
+    /// let layout = Layout::over_axes(&real, &complex, &[0, 1])?;
+    /// assert_eq!(layout.storage(), (Storage::Real, Storage::Complex));
+    /// assert_eq!(layout.dims(), &[Dim { n: 4, is: 1, os: 1 }, Dim { n: 6, is: 4, os: 4 }]);
+    /// assert_eq!(layout.logical_size(), 24);
+    ///
+    /// // With axis 0 last, axis 0 is halved, and the complex array would be [3, 6].
+    /// let error = Layout::over_axes(&real, &complex, &[1, 0]).unwrap_err();
+    /// assert!(matches!(error, FftwError::InvalidLayout { dimension, .. } if dimension == "axis 0"));
+    /// # Ok::<(), FftwError>(())
+    /// ```
     pub fn over_axes<AIn, AOut, const N: usize>(
         input: &Array<AIn, N>,
         output: &Array<AOut, N>,
@@ -643,13 +1063,22 @@ impl Layout {
     where
         AIn: StridedRawAccess + Shape<N> + Stride<N>,
         AOut: StridedRawAccess + Shape<N> + Stride<N>,
+        AIn::Item: FftElement,
+        AOut::Item: FftElement<Real = <AIn::Item as FftElement>::Real>,
     {
         Self::from_arrays(
-            (&input.shape(), &input.stride()),
-            (&output.shape(), &output.stride()),
+            (
+                &input.shape(),
+                &input.stride(),
+                ArrayStorage::of::<AIn::Item>(),
+            ),
+            (
+                &output.shape(),
+                &output.stride(),
+                ArrayStorage::of::<AOut::Item>(),
+            ),
             axes,
             Placement::OutOfPlace,
-            None,
         )
     }
 
@@ -676,6 +1105,7 @@ impl Layout {
     ) -> Result<Self, FftwError>
     where
         A: StridedRawAccess + Shape<N> + Stride<N>,
+        A::Item: FftElement,
     {
         Self::over_axes_inplace(data, &[axis])
     }
@@ -685,7 +1115,10 @@ impl Layout {
     ///
     /// As [`over_axes`](Layout::over_axes) with `data` as both input and output, whose checks,
     /// errors and notes apply; the input and output strides of every dimension are the
-    /// array's strides, and the placement is [`Placement::InPlace`].
+    /// array's strides, and the placement is [`Placement::InPlace`]. A complex array gives a
+    /// complex-to-complex layout and a real array a real-to-real one. In-place
+    /// real-to-complex and complex-to-real layouts, whose two sides differ in shape, are made
+    /// by [`r2c_inplace`](Layout::r2c_inplace) and [`c2r_inplace`](Layout::c2r_inplace).
     ///
     /// ```
     /// use rlst::{c64, rlst_dynamic_array};
@@ -704,73 +1137,257 @@ impl Layout {
     ) -> Result<Self, FftwError>
     where
         A: StridedRawAccess + Shape<N> + Stride<N>,
+        A::Item: FftElement,
     {
         let (shape, stride) = (data.shape(), data.stride());
+        let storage = ArrayStorage::of::<A::Item>();
         Self::from_arrays(
-            (&shape, &stride),
-            (&shape, &stride),
+            (&shape, &stride, storage),
+            (&shape, &stride, storage),
             axes,
             Placement::InPlace,
-            None,
         )
     }
 
-    /// The layout of transforms over `axes` of arrays with the given shapes and strides, with
-    /// the checks of [`over_axes`](Layout::over_axes). For split storage, the shapes and
-    /// strides are those of the logical axes, without the part axes, and `part_strides` are
-    /// the strides of the input's and the output's part axis, which become the gaps.
+    /// In-place real-to-complex transforms over `axes`, in the order given, of the complex
+    /// array `complex` of rank `N`, batched over the other axes, with the logical real extent
+    /// `n_last` along the halved axis, the last entry of `axes` (DC2, DC32).
+    ///
+    /// The input is the same memory as the output, read as reals, as FFTW's in-place layout
+    /// requires: along the halved axis the `2 (n_last / 2 + 1)` reals of the complex elements
+    /// hold the `n_last` real elements, padded at the end, and on every other axis the real
+    /// stride is twice the complex stride. [`as_reals`](super::as_reals) and
+    /// [`as_reals_mut`](super::as_reals_mut) view the complex storage as reals, to write the
+    /// input. The real extent cannot be recovered from the complex shape, so `n_last` is
+    /// given; along the other axes both sides have the complex array's extents. The layout's
+    /// dimensions record the real extent `n_last` on the halved axis.
+    ///
+    /// The checks, in this order, each returning [`FftwError::InvalidLayout`] that names
+    /// `axes` or the axis concerned: checks 1 to 3 of [`over_axes`](Layout::over_axes) on
+    /// `axes`; `n_last / 2 + 1` equals the array's extent along the halved axis; the halved
+    /// axis is contiguous, with stride 1, unless its extent is 1; the strides of the real side
+    /// fit in `usize`; and the checks of [`Layout::with_storage`] for an in-place
+    /// real-to-complex layout.
+    ///
+    /// ```
+    /// use rlst::{c64, rlst_dynamic_array, SliceArrayMut};
+    /// use rlst::fftw::{Dim, Layout, Planner, Storage, as_reals, as_reals_mut};
+    ///
+    /// // Three transforms of length 8, one per column, in a complex [5, 3] array.
+    /// let mut data = rlst_dynamic_array!(c64, [5, 3] | rlst::FFTW_ALIGNED);
+    /// let layout = Layout::r2c_inplace(&data, &[0], 8)?;
+    /// assert_eq!(layout.storage(), (Storage::Real, Storage::Complex));
+    /// assert_eq!(layout.dims(), &[Dim { n: 8, is: 1, os: 1 }]);
+    /// assert_eq!(layout.batch(), &[Dim { n: 3, is: 10, os: 5 }]);
+    ///
+    /// // The input of column j: the reals 10 j to 10 j + 7, here all ones.
+    /// let mut reals = SliceArrayMut::from_shape(as_reals_mut(data.data_mut().unwrap()), [10, 3]);
+    /// for j in 0..3 {
+    ///     for i in 0..8 {
+    ///         reals[[i, j]] = 1.0;
+    ///     }
+    /// }
+    /// let plan = Planner::<f64>::new().r2c_inplace(&layout)?;
+    /// plan.execute(&mut data)?;
+    /// // The transform of a constant is its sum at frequency 0, and 0 elsewhere.
+    /// assert_eq!(data[[0, 2]], c64::new(8.0, 0.0));
+    /// assert!((1..5).all(|k| data[[k, 2]].norm() < 1e-12));
+    /// # let _ = as_reals(data.data().unwrap());
+    /// # Ok::<(), rlst::fftw::FftwError>(())
+    /// ```
+    pub fn r2c_inplace<T, A, const N: usize>(
+        complex: &Array<A, N>,
+        axes: &[usize],
+        n_last: usize,
+    ) -> Result<Self, FftwError>
+    where
+        T: FftwReal,
+        A: BaseItem<Item = Complex<T>> + StridedRawAccess + Shape<N> + Stride<N>,
+    {
+        Self::padded_in_place(&complex.shape(), &complex.stride(), axes, n_last, true)
+    }
+
+    /// In-place complex-to-real transforms over `axes`, in the order given, of the complex
+    /// array `complex` of rank `N`, batched over the other axes, with the logical real extent
+    /// `n_last` along the halved axis, the last entry of `axes` (DC2, DC32).
+    ///
+    /// The inverse of [`r2c_inplace`](Layout::r2c_inplace), whose memory layout, checks and
+    /// notes apply: the input is the complex array, and the output its memory read as reals,
+    /// the `n_last` real elements of each transform along the halved axis followed by padding.
+    /// [`as_reals`](super::as_reals) reads the output.
+    ///
+    /// ```
+    /// use rlst::{c64, rlst_dynamic_array, SliceArray};
+    /// use rlst::fftw::{Dim, Layout, Planner, Storage, as_reals};
+    ///
+    /// // A transform of length 6 in a complex [4] array: the spectrum of a constant 1.
+    /// let mut data = rlst_dynamic_array!(c64, [4] | rlst::FFTW_ALIGNED);
+    /// data[[0]] = c64::new(6.0, 0.0);
+    /// let layout = Layout::c2r_inplace(&data, &[0], 6)?;
+    /// assert_eq!(layout.storage(), (Storage::Complex, Storage::Real));
+    /// assert_eq!(layout.dims(), &[Dim { n: 6, is: 1, os: 1 }]);
+    ///
+    /// let plan = Planner::<f64>::new().c2r_inplace(&layout)?;
+    /// plan.execute(&mut data)?;
+    /// // The 6 reals are 6 times the constant; reals 6 and 7 are padding.
+    /// let reals = SliceArray::from_shape(as_reals(data.data().unwrap()), [8]);
+    /// assert!((0..6).all(|i| (reals[[i]] - 6.0).abs() < 1e-12));
+    /// # Ok::<(), rlst::fftw::FftwError>(())
+    /// ```
+    pub fn c2r_inplace<T, A, const N: usize>(
+        complex: &Array<A, N>,
+        axes: &[usize],
+        n_last: usize,
+    ) -> Result<Self, FftwError>
+    where
+        T: FftwReal,
+        A: BaseItem<Item = Complex<T>> + StridedRawAccess + Shape<N> + Stride<N>,
+    {
+        Self::padded_in_place(&complex.shape(), &complex.stride(), axes, n_last, false)
+    }
+
+    /// The in-place real-to-complex (`r2c`) or complex-to-real layout of a complex array of
+    /// `shape` and `stride`, with the checks of [`r2c_inplace`](Layout::r2c_inplace).
+    fn padded_in_place(
+        shape: &[usize],
+        stride: &[usize],
+        axes: &[usize],
+        n_last: usize,
+        r2c: bool,
+    ) -> Result<Self, FftwError> {
+        let invalid =
+            |dimension: String, reason: String| FftwError::InvalidLayout { dimension, reason };
+        let rank = shape.len();
+        let name = |axis: usize| format!("axis {axis}");
+        check_axes(axes, rank, name, &format!("the rank {rank}"))?;
+        let halved = *axes.last().expect("`check_axes` rejects empty axes");
+        let expected = n_last / 2 + 1;
+        if shape[halved] != expected {
+            return Err(invalid(
+                name(halved),
+                format!(
+                    "the real extent n_last = {n_last} gives the complex extent n_last / 2 + 1 = \
+                     {expected} along the halved axis, the last entry of `axes`, but the \
+                     array's extent along it is {}",
+                    shape[halved]
+                ),
+            ));
+        }
+        // The real side: the same memory, with n_last reals along the halved axis, which has
+        // the same stride, and twice the complex strides elsewhere.
+        let mut real_shape = shape.to_vec();
+        real_shape[halved] = n_last;
+        let mut real_stride = Vec::with_capacity(rank);
+        for (axis, &complex_stride) in stride.iter().enumerate() {
+            if axis == halved {
+                real_stride.push(complex_stride);
+            } else {
+                real_stride.push(complex_stride.checked_mul(2).ok_or_else(|| {
+                    invalid(
+                        name(axis),
+                        format!(
+                            "the real stride, twice the complex stride {complex_stride}, does \
+                             not fit in usize"
+                        ),
+                    )
+                })?);
+            }
+        }
+        let complex = (shape, stride, ArrayStorage::Complex);
+        let real = (&real_shape[..], &real_stride[..], ArrayStorage::Real);
+        let (input, output) = if r2c {
+            (real, complex)
+        } else {
+            (complex, real)
+        };
+        Self::from_arrays(input, output, axes, Placement::InPlace)
+    }
+
+    /// The layout of transforms over `axes` of arrays with the given shapes, strides and
+    /// storages, with the checks of [`over_axes`](Layout::over_axes). For split storage, the
+    /// shapes and strides are those of the logical axes, without the part axes, and the
+    /// storage records the stride of the part axis, which becomes the gap.
     fn from_arrays(
-        (input_shape, input_stride): (&[usize], &[usize]),
-        (output_shape, output_stride): (&[usize], &[usize]),
+        (input_shape, input_stride, input_storage): (&[usize], &[usize], ArrayStorage),
+        (output_shape, output_stride, output_storage): (&[usize], &[usize], ArrayStorage),
         axes: &[usize],
         placement: Placement,
-        part_strides: Option<(usize, usize)>,
     ) -> Result<Self, FftwError> {
         let invalid =
             |dimension: String, reason: String| FftwError::InvalidLayout { dimension, reason };
         let rank = input_shape.len();
         // The split functions count logical axes (DC26), and their errors say so.
-        let (name, out_of_range): (fn(usize) -> String, String) = match part_strides {
-            None => (|axis| format!("axis {axis}"), format!("the rank {rank}")),
-            Some(_) => (
+        let split = matches!(input_storage, ArrayStorage::Split { .. })
+            || matches!(output_storage, ArrayStorage::Split { .. });
+        let (name, out_of_range): (fn(usize) -> String, String) = if split {
+            (
                 |axis| format!("logical axis {axis}"),
                 format!("{rank}, the rank of the arrays without their part axes"),
-            ),
+            )
+        } else {
+            (|axis| format!("axis {axis}"), format!("the rank {rank}"))
         };
 
-        if axes.is_empty() {
-            return Err(invalid(
-                "axes".to_string(),
-                "no axis is given, and a transform needs at least one".to_string(),
-            ));
-        }
-        if let Some(&axis) = axes.iter().find(|&&axis| axis >= rank) {
-            return Err(invalid(
-                "axes".to_string(),
-                format!("the {} is not below {out_of_range}", name(axis)),
-            ));
-        }
-        for (position, &axis) in axes.iter().enumerate() {
-            if axes[..position].contains(&axis) {
-                return Err(invalid(
-                    name(axis),
-                    format!("the axis is listed more than once in {axes:?}"),
-                ));
-            }
-        }
+        check_axes(axes, rank, name, &out_of_range)?;
+
+        // The halved axis of real-to-complex and complex-to-real layouts is the last entry of
+        // `axes` (DC2), on the complex side.
+        let halved = match (input_storage.is_complex(), output_storage.is_complex()) {
+            (false, true) => Some(Side::Output),
+            (true, false) => Some(Side::Input),
+            _ => None,
+        };
+        let halved_axis = halved.and(axes.last().copied());
+        let family = match (input_storage, output_storage) {
+            (ArrayStorage::Complex, ArrayStorage::Complex) => "complex-to-complex",
+            (ArrayStorage::Real, ArrayStorage::Real) => "real-to-real",
+            (ArrayStorage::Split { .. }, ArrayStorage::Split { .. }) => "split complex-to-complex",
+            (ArrayStorage::Real, _) => "real-to-complex",
+            _ => "complex-to-real",
+        };
         for axis in 0..rank {
-            if input_shape[axis] != output_shape[axis] {
+            let (input_extent, output_extent) = (input_shape[axis], output_shape[axis]);
+            if let Some(side) = halved
+                && halved_axis == Some(axis)
+            {
+                let (real, complex) = match side {
+                    Side::Output => (input_extent, output_extent),
+                    Side::Input => (output_extent, input_extent),
+                };
+                let expected = real / 2 + 1;
+                if complex != expected {
+                    return Err(invalid(
+                        name(axis),
+                        format!(
+                            "the {side} extent along the halved axis, the last entry of `axes`, \
+                             must be {expected}, n / 2 + 1 for the real extent n = {real} of \
+                             the {} array, but is {complex}",
+                            match side {
+                                Side::Input => Side::Output,
+                                Side::Output => Side::Input,
+                            }
+                        ),
+                    ));
+                }
+            } else if input_extent != output_extent {
+                let except = if halved.is_some() {
+                    " except along the halved axis"
+                } else {
+                    ""
+                };
                 return Err(invalid(
                     name(axis),
                     format!(
-                        "the input extent {} differs from the output extent {}, and a \
-                         complex-to-complex transform needs arrays of equal shape",
-                        input_shape[axis], output_shape[axis]
+                        "the input extent {input_extent} differs from the output extent \
+                         {output_extent}, and a {family} transform needs arrays of equal \
+                         shape{except}"
                     ),
                 ));
             }
         }
-        if let Some(axis) = (0..rank).find(|&axis| input_shape[axis] == 0) {
+        if let Some(axis) =
+            (0..rank).find(|&axis| input_shape[axis] == 0 || output_shape[axis] == 0)
+        {
             return Err(invalid(
                 name(axis),
                 "the extent is 0, so there is nothing to transform".to_string(),
@@ -786,19 +1403,30 @@ impl Layout {
         };
         let mut dim_of = Vec::with_capacity(rank);
         for axis in 0..rank {
+            // The real extent on the halved axis, the common extent elsewhere.
+            let extent = match halved {
+                Some(Side::Input) if halved_axis == Some(axis) => output_shape[axis],
+                _ => input_shape[axis],
+            };
             dim_of.push(Dim {
-                n: convert(name(axis), "extent", input_shape[axis])?,
+                n: convert(name(axis), "extent", extent)?,
                 is: convert(name(axis), "input stride", input_stride[axis])?,
                 os: convert(name(axis), "output stride", output_stride[axis])?,
             });
         }
-        let gaps = match part_strides {
-            Some((input, output)) => Some((
-                convert(PART_AXIS.to_string(), "input gap", input)?,
-                convert(PART_AXIS.to_string(), "output gap", output)?,
-            )),
-            None => None,
+        let storage = |storage: ArrayStorage, what: &str| -> Result<Storage, FftwError> {
+            Ok(match storage {
+                ArrayStorage::Complex => Storage::Complex,
+                ArrayStorage::Real => Storage::Real,
+                ArrayStorage::Split { part_stride } => Storage::Split {
+                    gap: convert(PART_AXIS.to_string(), what, part_stride)?,
+                },
+            })
         };
+        let storage = (
+            storage(input_storage, "input gap")?,
+            storage(output_storage, "output gap")?,
+        );
 
         let batch_axes: Vec<usize> = (0..rank).filter(|axis| !axes.contains(axis)).collect();
         let dims: Vec<Dim> = axes.iter().map(|&axis| dim_of[axis]).collect();
@@ -806,8 +1434,8 @@ impl Layout {
         Self::with_names(
             &dims,
             &batch,
+            storage,
             placement,
-            gaps,
             |index| name(axes[index]),
             |index| name(batch_axes[index]),
         )
@@ -1057,18 +1685,30 @@ impl Layout {
         }
         let (input, output) = (&logical[0], &logical[logical.len() - 1]);
         Self::from_arrays(
-            (&input.0, &input.1),
-            (&output.0, &output.1),
+            (
+                &input.0,
+                &input.1,
+                ArrayStorage::Split {
+                    part_stride: input.2,
+                },
+            ),
+            (
+                &output.0,
+                &output.1,
+                ArrayStorage::Split {
+                    part_stride: output.2,
+                },
+            ),
             axes,
             placement,
-            Some((input.2, output.2)),
         )
     }
 
     /// Whether an array of `shape` and `stride` fits `side` of the layout (design Section
-    /// 4.8 item 2, DC15): each transform dimension is matched by an axis of the same extent
-    /// and, above extent 1, the same stride, and the other axes, normalised on this side
-    /// alone, equal the layout's batch on this side, normalised in the same way.
+    /// 4.8 item 2, DC15): each transform dimension is matched by an axis of its extent on
+    /// this side (`n / 2 + 1` for the halved dimension on the complex side) and, above extent
+    /// 1, the same stride, and the other axes, normalised on this side alone, equal the
+    /// layout's batch on this side, normalised in the same way.
     ///
     /// For split storage (DC27) the part axis is found first: an axis of extent 2 whose
     /// stride is this side's gap. The array fits if, for some such axis, the other axes fit
@@ -1089,33 +1729,39 @@ impl Layout {
     /// The check of [`fits_array_side`](Layout::fits_array_side) on axes without a part
     /// axis.
     fn fits_logical_side(&self, side: Side, shape: &[usize], stride: &[usize]) -> bool {
-        let on_side = |dim: &Dim| {
-            let stride = match side {
-                Side::Input => dim.is,
-                Side::Output => dim.os,
-            };
-            Dim {
-                n: dim.n,
-                is: stride,
-                os: stride,
-            }
+        let on_side = |dim: &Dim| match side {
+            Side::Input => dim.is,
+            Side::Output => dim.os,
         };
-        let Some(dims) = array_dims(shape, stride, stride) else {
+        let Some(axes) = array_dims(shape, stride, stride) else {
             return false;
         };
+        let extent_one = |index: usize| self.extent(index, side) == 1;
         let Some(used) =
-            match_transform_dims(&self.dims, &dims, |dim, axis| on_side(dim).is == axis.is)
+            match_transform_dims(self.dims.len(), extent_one, axes.len(), |index, axis| {
+                axes[axis].n == self.extent(index, side)
+                    && (extent_one(index) || axes[axis].is == on_side(&self.dims[index]))
+            })
         else {
             return false;
         };
-        let rest: Vec<Dim> = unused(&dims, &used);
-        let batch: Vec<Dim> = self.batch.iter().map(on_side).collect();
+        let rest: Vec<Dim> = unused(&axes, &used);
+        let batch: Vec<Dim> = self
+            .batch
+            .iter()
+            .map(|dim| Dim {
+                n: dim.n,
+                is: on_side(dim),
+                os: on_side(dim),
+            })
+            .collect();
         normalise_batch(&rest) == normalise_batch(&batch)
     }
 
     /// Whether an input and an output array of the same rank fit the layout with their axes
-    /// paired by index (DC15): equal shapes, each transform dimension matched by one axis
-    /// with its extent and, above extent 1, both strides, and the other axes, normalised
+    /// paired by index (DC15): each transform dimension matched by one axis with its extent on
+    /// each side (`n / 2 + 1` for the halved dimension on the complex side) and, above extent
+    /// 1, both strides, the other axes of equal extent on both sides, and, normalised
     /// together, equal to the layout's batch.
     ///
     /// For split storage (DC27) each side's part axis, found as in
@@ -1126,21 +1772,25 @@ impl Layout {
         (input_shape, input_stride): (&[usize], &[usize]),
         (output_shape, output_stride): (&[usize], &[usize]),
     ) -> bool {
-        let Some((input_gap, output_gap)) = self.gaps else {
-            return self
-                .fits_logical_pair((input_shape, input_stride), (output_shape, output_stride));
+        let without_part = |side: Side, shape: &[usize], stride: &[usize]| -> Vec<_> {
+            match self.gap(side) {
+                None => vec![(shape.to_vec(), stride.to_vec())],
+                Some(gap) => part_axes(shape, stride, gap)
+                    .map(|part| remove_axis(shape, stride, part))
+                    .collect(),
+            }
         };
-        part_axes(input_shape, input_stride, input_gap).any(|input_part| {
-            let (input_shape, input_stride) = remove_axis(input_shape, input_stride, input_part);
-            part_axes(output_shape, output_stride, output_gap).any(|output_part| {
-                let (output_shape, output_stride) =
-                    remove_axis(output_shape, output_stride, output_part);
-                self.fits_logical_pair(
-                    (&input_shape, &input_stride),
-                    (&output_shape, &output_stride),
-                )
+        let outputs = without_part(Side::Output, output_shape, output_stride);
+        without_part(Side::Input, input_shape, input_stride)
+            .iter()
+            .any(|(input_shape, input_stride)| {
+                outputs.iter().any(|(output_shape, output_stride)| {
+                    self.fits_logical_pair(
+                        (input_shape, input_stride),
+                        (output_shape, output_stride),
+                    )
+                })
             })
-        })
     }
 
     /// The check of [`fits_array_pair`](Layout::fits_array_pair) on axes without part axes.
@@ -1149,48 +1799,183 @@ impl Layout {
         (input_shape, input_stride): (&[usize], &[usize]),
         (output_shape, output_stride): (&[usize], &[usize]),
     ) -> bool {
-        if input_shape != output_shape {
+        if input_shape.len() != output_shape.len() {
             return false;
         }
-        let Some(dims) = array_dims(input_shape, input_stride, output_stride) else {
+        let Some(axes) = array_dims(input_shape, input_stride, output_stride) else {
             return false;
         };
-        let Some(used) = match_transform_dims(&self.dims, &dims, |dim, axis| {
-            dim.is == axis.is && dim.os == axis.os
-        }) else {
+        let Some(output_extents) = output_shape
+            .iter()
+            .map(|&n| isize::try_from(n).ok())
+            .collect::<Option<Vec<isize>>>()
+        else {
             return false;
         };
-        normalise_batch(&unused(&dims, &used)) == self.batch
+        let extent_one = |index: usize| {
+            self.extent(index, Side::Input) == 1 && self.extent(index, Side::Output) == 1
+        };
+        let Some(used) =
+            match_transform_dims(self.dims.len(), extent_one, axes.len(), |index, axis| {
+                let dim = &self.dims[index];
+                axes[axis].n == self.extent(index, Side::Input)
+                    && output_extents[axis] == self.extent(index, Side::Output)
+                    && (extent_one(index) || (axes[axis].is == dim.is && axes[axis].os == dim.os))
+            })
+        else {
+            return false;
+        };
+        let equal_extents =
+            (0..axes.len()).all(|axis| used[axis] || axes[axis].n == output_extents[axis]);
+        equal_extents && normalise_batch(&unused(&axes, &used)) == self.batch
     }
 
     /// The dimensions on `side`, for error messages.
     pub(crate) fn describe_side(&self, side: Side) -> String {
-        let list = |dims: &[Dim]| {
-            dims.iter()
-                .map(|dim| {
-                    let stride = match side {
-                        Side::Input => dim.is,
-                        Side::Output => dim.os,
-                    };
-                    format!("(n {}, stride {stride})", dim.n)
-                })
-                .collect::<Vec<_>>()
-                .join(", ")
+        let stride = |dim: &Dim| match side {
+            Side::Input => dim.is,
+            Side::Output => dim.os,
         };
+        let dims = self
+            .dims
+            .iter()
+            .enumerate()
+            .map(|(index, dim)| format!("(n {}, stride {})", self.extent(index, side), stride(dim)))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let batch = self
+            .batch
+            .iter()
+            .map(|dim| format!("(n {}, stride {})", dim.n, stride(dim)))
+            .collect::<Vec<_>>()
+            .join(", ");
         let part = match self.gap(side) {
             Some(gap) => format!(" and a part axis (n 2, stride {gap})"),
             None => String::new(),
         };
-        format!(
-            "transform dimensions [{}] and batch dimensions [{}]{part}",
-            list(&self.dims),
-            list(&self.batch)
-        )
+        format!("transform dimensions [{dims}] and batch dimensions [{batch}]{part}")
     }
 }
 
 /// The name of the part axis of split storage in errors.
 const PART_AXIS: &str = "part axis";
+
+/// Checks 1 to 3 of [`Layout::over_axes`]: `axes` is not empty, its entries are below `rank`
+/// (`out_of_range` describes the bound) and none is repeated. `name` names an axis.
+fn check_axes(
+    axes: &[usize],
+    rank: usize,
+    name: impl Fn(usize) -> String,
+    out_of_range: &str,
+) -> Result<(), FftwError> {
+    let invalid =
+        |dimension: String, reason: String| FftwError::InvalidLayout { dimension, reason };
+    if axes.is_empty() {
+        return Err(invalid(
+            "axes".to_string(),
+            "no axis is given, and a transform needs at least one".to_string(),
+        ));
+    }
+    if let Some(&axis) = axes.iter().find(|&&axis| axis >= rank) {
+        return Err(invalid(
+            "axes".to_string(),
+            format!("the {} is not below {out_of_range}", name(axis)),
+        ));
+    }
+    for (position, &axis) in axes.iter().enumerate() {
+        if axes[..position].contains(&axis) {
+            return Err(invalid(
+                name(axis),
+                format!("the axis is listed more than once in {axes:?}"),
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// The in-place rule of real-to-complex (`r2c`) and complex-to-real layouts (DC32), on the
+/// named dimensions, transform dimensions first, whose transform dimension `last` is halved:
+/// the halved dimension has stride 1 on both sides, and every other dimension a real stride
+/// twice its complex stride. Dimensions of extent 1 address one element and are not checked.
+fn check_padded_in_place(named: &[(String, Dim)], last: usize, r2c: bool) -> Result<(), FftwError> {
+    for (index, (name, dim)) in named.iter().enumerate() {
+        if dim.n == 1 {
+            continue;
+        }
+        let (real, complex) = if r2c {
+            (dim.is, dim.os)
+        } else {
+            (dim.os, dim.is)
+        };
+        let reason = if index == last {
+            (real != 1 || complex != 1).then(|| {
+                format!(
+                    "in place, the halved dimension, the last transform dimension, must be \
+                     contiguous, as the reals of each complex element hold two real elements: \
+                     both strides must be 1, but the real stride is {real} and the complex \
+                     stride {complex}"
+                )
+            })
+        } else {
+            (complex.checked_mul(2) != Some(real)).then(|| {
+                format!(
+                    "in place, the real side is the complex buffer read as reals, so the real \
+                     stride must be twice the complex stride {complex}, but it is {real}"
+                )
+            })
+        };
+        if let Some(reason) = reason {
+            return Err(FftwError::InvalidLayout {
+                dimension: name.clone(),
+                reason,
+            });
+        }
+    }
+    Ok(())
+}
+
+/// The distinct-output rule of design Section 4.3 on the dimensions of one side: with the
+/// dimensions of extent above 1 sorted by stride, every stride is positive and at least the
+/// extent times the stride of the next smaller one.
+fn check_distinct(dims: &[SideDim<'_>], side: Side) -> Result<(), FftwError> {
+    let invalid = |dimension: &str, reason: String| FftwError::InvalidLayout {
+        dimension: dimension.to_string(),
+        reason,
+    };
+    let mut sorted: Vec<&SideDim<'_>> = dims.iter().filter(|dim| dim.n > 1).collect();
+    sorted.sort_by_key(|dim| dim.stride);
+    if let Some(dim) = sorted.first()
+        && dim.stride == 0
+    {
+        return Err(invalid(
+            dim.name,
+            format!(
+                "the {side} stride is 0 with extent {}, so the {side}s overlap",
+                dim.n
+            ),
+        ));
+    }
+    for pair in sorted.windows(2) {
+        let (inner, dim) = (pair[0], pair[1]);
+        let Some(needed) = inner.n.checked_mul(inner.stride) else {
+            return Err(invalid(
+                inner.name,
+                format!("the extent times the {side} stride overflows isize"),
+            ));
+        };
+        if dim.stride < needed {
+            return Err(invalid(
+                dim.name,
+                format!(
+                    "the {side} stride {} is below {needed}, the extent {} times the {side} \
+                     stride {} of {}, so the {side}s may overlap",
+                    dim.stride, inner.n, inner.stride, inner.name
+                ),
+            ));
+        }
+    }
+    Ok(())
+}
 
 /// The axes of extent 2 whose stride is `gap`: the candidates for a split array's part axis.
 fn part_axes<'a>(
@@ -1235,23 +2020,20 @@ fn array_dims(
         .collect()
 }
 
-/// Match each transform dimension with a distinct axis of the same extent for which
-/// `strides_match` holds, or, for a dimension of extent 1, with any distinct axis of extent 1,
-/// whose stride addresses no other element. Returns the axes used, or `None` if a dimension
-/// has no match. Dimensions above extent 1 are matched first.
+/// Match each of the `count` transform dimensions with a distinct one of `axes` axes for
+/// which `fits(dimension, axis)` holds. Dimensions for which `extent_one` holds address one
+/// element, and are matched after the others, so that they take axes of extent 1 that no
+/// other dimension needs. Returns the axes used, or `None` if a dimension has no match.
 fn match_transform_dims(
-    transform: &[Dim],
-    axes: &[Dim],
-    strides_match: impl Fn(&Dim, &Dim) -> bool,
+    count: usize,
+    extent_one: impl Fn(usize) -> bool,
+    axes: usize,
+    fits: impl Fn(usize, usize) -> bool,
 ) -> Option<Vec<bool>> {
-    let mut used = vec![false; axes.len()];
-    for extent_one in [false, true] {
-        for dim in transform.iter().filter(|dim| (dim.n == 1) == extent_one) {
-            let axis = (0..axes.len()).find(|&axis| {
-                !used[axis]
-                    && axes[axis].n == dim.n
-                    && (extent_one || strides_match(dim, &axes[axis]))
-            })?;
+    let mut used = vec![false; axes];
+    for one in [false, true] {
+        for index in (0..count).filter(|&index| extent_one(index) == one) {
+            let axis = (0..axes).find(|&axis| !used[axis] && fits(index, axis))?;
             used[axis] = true;
         }
     }
@@ -1293,10 +2075,10 @@ fn normalise_batch(batch: &[Dim]) -> Vec<Dim> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Dim, Layout, Placement};
+    use super::{Dim, Layout, Placement, Storage};
     use crate::dense::array::StridedSliceArray;
     use crate::fftw::{FftwError, Side};
-    use crate::{DynArray, StridedDynArray, c64};
+    use crate::{DynArray, StridedDynArray, c32, c64};
 
     fn split(dims: &[Dim], batch: &[Dim], gaps: (isize, isize), placement: Placement) -> Layout {
         Layout::new_split(dims, batch, gaps, placement).unwrap()
@@ -1901,5 +2683,378 @@ mod tests {
         let (in_shape, in_stride) = (input.shape().to_vec(), input.stride().to_vec());
         let (out_shape, out_stride) = (output.shape().to_vec(), output.stride().to_vec());
         assert!(layout.fits_array_pair((&in_shape, &in_stride), (&out_shape, &out_stride)));
+    }
+
+    // The storage of each side, and real-to-complex and complex-to-real layouts (task F5a).
+
+    fn with_storage(
+        dims: &[Dim],
+        batch: &[Dim],
+        storage: (Storage, Storage),
+        placement: Placement,
+    ) -> Layout {
+        Layout::with_storage(dims, batch, storage, placement).unwrap()
+    }
+
+    fn storage_invalid(
+        dims: &[Dim],
+        batch: &[Dim],
+        storage: (Storage, Storage),
+        placement: Placement,
+    ) -> (String, String) {
+        array_invalid(Layout::with_storage(dims, batch, storage, placement))
+    }
+
+    const R2C: (Storage, Storage) = (Storage::Real, Storage::Complex);
+    const C2R: (Storage, Storage) = (Storage::Complex, Storage::Real);
+    const R2R: (Storage, Storage) = (Storage::Real, Storage::Real);
+
+    #[test]
+    fn test_real_layouts_of_the_brief() {
+        let out = Placement::OutOfPlace;
+
+        // Real [8, 3] into complex [5, 3] over axis 0.
+        let real = DynArray::<f64, 2>::from_shape([8, 3]);
+        let complex = DynArray::<c64, 2>::from_shape([5, 3]);
+        let layout = Layout::over_axes(&real, &complex, &[0]).unwrap();
+        assert_eq!(
+            layout,
+            with_storage(&[dim(8, 1, 1)], &[dim(3, 8, 5)], R2C, out)
+        );
+        assert_eq!(layout.storage(), R2C);
+        assert_eq!((layout.input_span(), layout.output_span()), (24, 15));
+
+        // The inverse, complex [5, 3] into real [8, 3].
+        assert_eq!(
+            Layout::along_axis(&complex, &real, 0).unwrap(),
+            with_storage(&[dim(8, 1, 1)], &[dim(3, 5, 8)], C2R, out)
+        );
+
+        // Along axis 1 of real [6, 9] into complex [6, 5]: axis 1 is halved.
+        let real = DynArray::<f64, 2>::from_shape([6, 9]);
+        let complex = DynArray::<c64, 2>::from_shape([6, 5]);
+        assert_eq!(
+            Layout::along_axis(&real, &complex, 1).unwrap(),
+            with_storage(&[dim(9, 6, 6)], &[dim(6, 1, 1)], R2C, out)
+        );
+
+        // Over both axes of real [4, 6] into complex [4, 4]: axis 1, listed last, is halved.
+        let real = DynArray::<f32, 2>::from_shape([4, 6]);
+        let complex = DynArray::<c32, 2>::from_shape([4, 4]);
+        let layout = Layout::over_axes(&real, &complex, &[0, 1]).unwrap();
+        assert_eq!(
+            layout,
+            with_storage(&[dim(4, 1, 1), dim(6, 4, 4)], &[], R2C, out)
+        );
+        assert_eq!(layout.logical_size(), 24);
+
+        // In place, a complex [5, 3] array with n_last 8: columns of 10 reals.
+        let complex = DynArray::<c64, 2>::from_shape([5, 3]);
+        let layout = Layout::r2c_inplace(&complex, &[0], 8).unwrap();
+        assert_eq!(
+            layout,
+            with_storage(&[dim(8, 1, 1)], &[dim(3, 10, 5)], R2C, Placement::InPlace)
+        );
+        assert_eq!((layout.input_span(), layout.output_span()), (28, 15));
+        assert_eq!(
+            Layout::c2r_inplace(&complex, &[0], 8).unwrap(),
+            with_storage(&[dim(8, 1, 1)], &[dim(3, 5, 10)], C2R, Placement::InPlace)
+        );
+
+        // Two real arrays: a real-to-real layout.
+        let real = DynArray::<f64, 2>::from_shape([8, 3]);
+        let layout = Layout::along_axis(&real, &real, 0).unwrap();
+        assert_eq!(
+            layout,
+            with_storage(&[dim(8, 1, 1)], &[dim(3, 8, 8)], R2R, out)
+        );
+        assert_eq!(Layout::along_axis_inplace(&real, 0).unwrap().storage(), R2R);
+
+        // The split real-to-complex layout of the brief, from raw dimensions (its array
+        // function follows in task F5c): real [8, 3] into split [5, 3, 2] with strides
+        // [1, 5, 15].
+        let layout = with_storage(
+            &[dim(8, 1, 1)],
+            &[dim(3, 8, 5)],
+            (Storage::Real, Storage::Split { gap: 15 }),
+            out,
+        );
+        assert_eq!((layout.input_span(), layout.output_span()), (24, 30));
+        assert_eq!(layout.gaps(), None);
+    }
+
+    #[test]
+    fn test_storages_tell_the_families_apart() {
+        let dims = [dim(8, 1, 1)];
+        let out = Placement::OutOfPlace;
+        let c2c = Layout::new(&dims, &[], out).unwrap();
+        let r2c = with_storage(&dims, &[], R2C, out);
+        let c2r = with_storage(&dims, &[], C2R, out);
+        let r2r = with_storage(&dims, &[], R2R, out);
+        assert_eq!(c2c.storage(), (Storage::Complex, Storage::Complex));
+        for (a, b) in [(&c2c, &r2c), (&r2c, &c2r), (&c2r, &r2r), (&r2r, &c2c)] {
+            assert_ne!(a, b);
+        }
+        // The halved extent is on the complex side only: 5 = 8 / 2 + 1, and 5 for n = 9.
+        assert_eq!((r2c.input_span(), r2c.output_span()), (8, 5));
+        assert_eq!((c2r.input_span(), c2r.output_span()), (5, 8));
+        assert_eq!((r2r.input_span(), r2r.output_span()), (8, 8));
+        let odd = with_storage(&[dim(9, 1, 1)], &[], R2C, out);
+        assert_eq!(odd.output_span(), 5);
+        assert_eq!(odd.logical_size(), 9);
+        // n = 1 and n = 2: one complex element and two.
+        assert_eq!(
+            with_storage(&[dim(1, 1, 1)], &[], R2C, out).output_span(),
+            1
+        );
+        assert_eq!(with_storage(&[dim(2, 1, 1)], &[], C2R, out).input_span(), 2);
+        // Only the last transform dimension is halved.
+        let layout = with_storage(&[dim(4, 6, 5), dim(6, 1, 1)], &[], R2C, out);
+        assert_eq!(layout.output_span(), 1 + 3 * 5 + 3);
+        assert_eq!(layout.input_span(), 1 + 3 * 6 + 5);
+
+        // A split side does not pair with an interleaved complex one.
+        for storage in [
+            (Storage::Split { gap: 8 }, Storage::Complex),
+            (Storage::Complex, Storage::Split { gap: 8 }),
+        ] {
+            let (dimension, reason) = storage_invalid(&dims, &[], storage, out);
+            assert_eq!(dimension, "layout");
+            assert!(reason.contains("describe no transform"), "{reason}");
+        }
+        // `gaps` only when both sides are split.
+        let split_r2c = with_storage(&dims, &[], (Storage::Real, Storage::Split { gap: 5 }), out);
+        assert_eq!(split_r2c.gaps(), None);
+        assert_eq!(split_r2c.output_span(), 10);
+        assert!(split_r2c.describe().contains("split real-to-complex"));
+        assert!(
+            r2c.describe()
+                .contains("real input and complex output storage")
+        );
+        assert!(!c2c.describe().contains("storage"));
+    }
+
+    #[test]
+    fn test_with_storage_rules_in_place() {
+        let in_place = Placement::InPlace;
+        // The padded layout: the halved dimension contiguous, real strides twice the complex
+        // ones elsewhere, on transform and batch dimensions.
+        let layout = with_storage(
+            &[dim(3, 20, 10), dim(8, 1, 1)],
+            &[dim(2, 60, 30)],
+            R2C,
+            in_place,
+        );
+        assert_eq!(layout.output_span(), 1 + 2 * 10 + 4 + 30);
+        with_storage(&[dim(3, 10, 20), dim(8, 1, 1)], &[], C2R, in_place);
+
+        // The halved dimension must be contiguous on both sides.
+        let (dimension, reason) = storage_invalid(&[dim(8, 2, 1)], &[], R2C, in_place);
+        assert_eq!(dimension, "transform dimension 0");
+        assert!(reason.contains("contiguous"), "{reason}");
+        let (dimension, _) = storage_invalid(&[dim(8, 2, 2)], &[], C2R, in_place);
+        assert_eq!(dimension, "transform dimension 0");
+        // Elsewhere the real stride is twice the complex stride.
+        let (dimension, reason) = storage_invalid(&[dim(8, 1, 1)], &[dim(3, 10, 6)], R2C, in_place);
+        assert_eq!(dimension, "batch dimension 0");
+        assert!(reason.contains("twice the complex stride 6"), "{reason}");
+        let (dimension, _) = storage_invalid(&[dim(3, 10, 10), dim(8, 1, 1)], &[], C2R, in_place);
+        assert_eq!(dimension, "transform dimension 0");
+        // Dimensions of extent 1 are not checked, the halved one with n = 1 included.
+        with_storage(&[dim(1, 7, 3)], &[dim(4, 2, 1)], R2C, in_place);
+        with_storage(&[dim(8, 1, 1)], &[dim(1, 3, 3)], R2C, in_place);
+
+        // The complex outputs must be distinct: complex stride 4 is below n / 2 + 1 = 5.
+        let (dimension, reason) = storage_invalid(&[dim(8, 1, 1)], &[dim(3, 8, 4)], R2C, in_place);
+        assert_eq!(dimension, "batch dimension 0");
+        assert!(reason.contains("output stride 4 is below 5"), "{reason}");
+        // In place the input is written too: a complex-to-real layout whose real outputs are
+        // distinct but whose complex inputs overlap.
+        let (dimension, reason) = storage_invalid(&[dim(8, 1, 1)], &[dim(3, 4, 8)], C2R, in_place);
+        assert_eq!(dimension, "batch dimension 0");
+        assert!(reason.contains("input stride 4 is below 5"), "{reason}");
+        // Out of place the same input is accepted, as inputs may repeat elements.
+        with_storage(&[dim(8, 1, 1)], &[dim(3, 4, 8)], C2R, Placement::OutOfPlace);
+
+        // Real-to-real in place needs equal strides, as complex-to-complex does.
+        let (dimension, _) = storage_invalid(&[dim(8, 1, 2)], &[], R2R, in_place);
+        assert_eq!(dimension, "transform dimension 0");
+        with_storage(&[dim(8, 2, 2)], &[], R2R, in_place);
+
+        // Split real-to-complex and complex-to-real layouts are never in place.
+        for storage in [
+            (Storage::Real, Storage::Split { gap: 5 }),
+            (Storage::Split { gap: 5 }, Storage::Real),
+        ] {
+            let (dimension, reason) = storage_invalid(&[dim(8, 1, 1)], &[], storage, in_place);
+            assert_eq!(dimension, "layout");
+            assert!(reason.contains("cannot be in place"), "{reason}");
+        }
+    }
+
+    #[test]
+    fn test_with_storage_rules_out_of_place() {
+        let out = Placement::OutOfPlace;
+        // The halved extent in the distinct-output rule: a complex output stride of 5 is
+        // enough for n = 8 and n = 9, not for n = 10.
+        with_storage(&[dim(8, 1, 1)], &[dim(3, 8, 5)], R2C, out);
+        with_storage(&[dim(9, 1, 1)], &[dim(3, 9, 5)], R2C, out);
+        let (dimension, _) = storage_invalid(&[dim(10, 1, 1)], &[dim(3, 10, 5)], R2C, out);
+        assert_eq!(dimension, "batch dimension 0");
+        // On a real output the full extent counts.
+        let (dimension, _) = storage_invalid(&[dim(8, 1, 1)], &[dim(3, 5, 5)], C2R, out);
+        assert_eq!(dimension, "batch dimension 0");
+
+        // A split output's part axis takes part in the rule: a gap of 4 is below the 5
+        // complex elements.
+        let (dimension, _) = storage_invalid(
+            &[dim(8, 1, 1)],
+            &[],
+            (Storage::Real, Storage::Split { gap: 4 }),
+            out,
+        );
+        assert_eq!(dimension, "part axis");
+        // A positive gap.
+        let (dimension, reason) = storage_invalid(
+            &[dim(8, 1, 1)],
+            &[],
+            (Storage::Split { gap: 0 }, Storage::Real),
+            out,
+        );
+        assert_eq!(dimension, "part axis");
+        assert!(reason.contains("input gap 0"), "{reason}");
+
+        // The rules of `Layout::new` apply to every family.
+        let (dimension, _) = storage_invalid(&[], &[], R2C, out);
+        assert_eq!(dimension, "layout");
+        let (dimension, _) = storage_invalid(&[dim(0, 1, 1)], &[], C2R, out);
+        assert_eq!(dimension, "transform dimension 0");
+        let (dimension, _) = storage_invalid(&[dim(4, -1, 1)], &[], R2R, out);
+        assert_eq!(dimension, "transform dimension 0");
+        let (dimension, reason) = storage_invalid(&[dim(4, isize::MAX / 2, 1)], &[], R2C, out);
+        assert_eq!(dimension, "layout");
+        assert!(reason.contains("input span"), "{reason}");
+    }
+
+    #[test]
+    fn test_real_array_layout_errors() {
+        let real = DynArray::<f64, 2>::from_shape([8, 3]);
+
+        // A wrong extent on the halved axis names it, the extent expected and the one found.
+        let wrong = DynArray::<c64, 2>::from_shape([4, 3]);
+        let (dimension, reason) = array_invalid(Layout::along_axis(&real, &wrong, 0));
+        assert_eq!(dimension, "axis 0");
+        assert!(reason.contains("must be 5"), "{reason}");
+        assert!(reason.contains("but is 4"), "{reason}");
+        let (dimension, reason) = array_invalid(Layout::along_axis(&wrong, &real, 0));
+        assert_eq!(dimension, "axis 0");
+        assert!(
+            reason.contains("input extent along the halved axis"),
+            "{reason}"
+        );
+
+        // The other axes need equal extents.
+        let wrong = DynArray::<c64, 2>::from_shape([5, 4]);
+        let (dimension, reason) = array_invalid(Layout::along_axis(&real, &wrong, 0));
+        assert_eq!(dimension, "axis 1");
+        assert!(reason.contains("input extent 3"), "{reason}");
+        assert!(reason.contains("real-to-complex"), "{reason}");
+
+        // The halved axis is the last entry of `axes`, whatever the memory order (DC2).
+        let real = DynArray::<f64, 2>::from_shape([4, 6]);
+        let complex = DynArray::<c64, 2>::from_shape([4, 4]);
+        let (dimension, reason) = array_invalid(Layout::over_axes(&real, &complex, &[1, 0]));
+        assert_eq!(dimension, "axis 0");
+        assert!(reason.contains("must be 3"), "{reason}");
+        let complex = DynArray::<c64, 2>::from_shape([3, 6]);
+        assert!(Layout::over_axes(&real, &complex, &[1, 0]).is_ok());
+
+        // An extent 0 on the real side.
+        let empty = DynArray::<f64, 2>::from_shape([0, 3]);
+        let one = DynArray::<c64, 2>::from_shape([1, 3]);
+        let (dimension, reason) = array_invalid(Layout::along_axis(&empty, &one, 0));
+        assert_eq!(dimension, "axis 0");
+        assert!(reason.contains("extent is 0"), "{reason}");
+
+        // The checks of `axes` come first.
+        let (dimension, _) = array_invalid(Layout::over_axes(&real, &complex, &[]));
+        assert_eq!(dimension, "axes");
+    }
+
+    #[test]
+    fn test_padded_in_place_errors() {
+        let complex = DynArray::<c64, 2>::from_shape([5, 3]);
+        // n_last must give the complex extent.
+        for n_last in [7, 10] {
+            let (dimension, reason) = array_invalid(Layout::r2c_inplace(&complex, &[0], n_last));
+            assert_eq!(dimension, "axis 0");
+            assert!(reason.contains(&format!("n_last = {n_last}")), "{reason}");
+        }
+        assert!(Layout::r2c_inplace(&complex, &[0], 9).is_ok());
+        let (dimension, _) = array_invalid(Layout::c2r_inplace(&complex, &[0], 4));
+        assert_eq!(dimension, "axis 0");
+
+        // The halved axis must be contiguous: along axis 0 of a row-major array.
+        let row_major = StridedDynArray::<c64, 2>::row_major([5, 3]);
+        let (dimension, reason) = array_invalid(Layout::r2c_inplace(&row_major, &[0], 8));
+        assert_eq!(dimension, "axis 0");
+        assert!(reason.contains("contiguous"), "{reason}");
+        // Along axis 1 of the same array, which is contiguous: real stride 6 on axis 0.
+        let layout = Layout::c2r_inplace(&row_major, &[1], 4).unwrap();
+        assert_eq!(layout.dims(), &[dim(4, 1, 1)]);
+        assert_eq!(layout.batch(), &[dim(5, 3, 6)]);
+
+        // The checks of `axes` come first.
+        let (dimension, _) = array_invalid(Layout::r2c_inplace(&complex, &[], 8));
+        assert_eq!(dimension, "axes");
+        let (dimension, _) = array_invalid(Layout::r2c_inplace(&complex, &[0, 0], 8));
+        assert_eq!(dimension, "axis 0");
+        let (dimension, _) = array_invalid(Layout::r2c_inplace(&complex, &[2], 8));
+        assert_eq!(dimension, "axes");
+
+        // A real stride twice a complex stride that does not fit in `usize`.
+        let values = [c64::new(0.0, 0.0); 2];
+        let huge = StridedSliceArray::from_shape_and_stride(&values, [2, 1], [1, usize::MAX]);
+        let (dimension, reason) = array_invalid(Layout::r2c_inplace(&huge, &[0], 2));
+        assert_eq!(dimension, "axis 1");
+        assert!(reason.contains("does not fit"), "{reason}");
+    }
+
+    #[test]
+    fn test_real_array_sides() {
+        let input = DynArray::<f64, 3>::from_shape([8, 2, 3]);
+        let output = StridedDynArray::<c64, 3>::from_shape_and_stride([5, 2, 3], [1, 15, 5]);
+        let layout = Layout::along_axis(&input, &output, 0).unwrap();
+        let geometry = |shape: [usize; 3], stride: [usize; 3]| (shape.to_vec(), stride.to_vec());
+        let (in_shape, in_stride) = geometry(input.shape(), input.stride());
+        let (out_shape, out_stride) = geometry(output.shape(), output.stride());
+        assert!(layout.fits_array_side(Side::Input, &in_shape, &in_stride));
+        assert!(layout.fits_array_side(Side::Output, &out_shape, &out_stride));
+        assert!(layout.fits_array_pair((&in_shape, &in_stride), (&out_shape, &out_stride)));
+        // The halved extent is on the output side only.
+        assert!(!layout.fits_array_side(Side::Output, &[8, 2, 3], &[1, 15, 5]));
+        assert!(!layout.fits_array_side(Side::Input, &[5, 2, 3], &[1, 5, 10]));
+        // Each side fits arrays of shape [n, 3, 2], whose axes do not pair as the layout's.
+        let (other_in, other_out) = (
+            (vec![8, 3, 2], vec![1, 8, 24]),
+            (vec![5, 3, 2], vec![1, 5, 15]),
+        );
+        assert!(layout.fits_array_side(Side::Input, &other_in.0, &other_in.1));
+        assert!(layout.fits_array_side(Side::Output, &other_out.0, &other_out.1));
+        assert!(!layout.fits_array_pair((&other_in.0, &other_in.1), (&other_out.0, &other_out.1)));
+        // Pairing needs equal extents off the halved axis.
+        assert!(!layout.fits_array_pair((&in_shape, &in_stride), (&[5, 3, 2], &[1, 5, 15])));
+
+        // n = 1: one real and one complex element per transform, matched as extent 1.
+        let input = DynArray::<f64, 2>::from_shape([1, 4]);
+        let output = DynArray::<c64, 2>::from_shape([1, 4]);
+        let layout = Layout::along_axis(&input, &output, 0).unwrap();
+        assert!(layout.fits_array_pair((&[1, 4], &[1, 1]), (&[1, 4], &[1, 1])));
+
+        // In place, the buffer is the complex side.
+        let data = DynArray::<c64, 2>::from_shape([5, 3]);
+        let layout = Layout::r2c_inplace(&data, &[0], 8).unwrap();
+        assert!(layout.fits_array_side(Side::Output, &[5, 3], &[1, 5]));
+        assert!(layout.fits_array_side(Side::Input, &[8, 3], &[1, 10]));
     }
 }

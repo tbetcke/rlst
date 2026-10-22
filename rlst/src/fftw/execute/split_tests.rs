@@ -1221,7 +1221,10 @@ fn test_split_plans_are_send_and_sync_and_described() {
     assert_eq!(plan.fingerprint(), again.fingerprint());
     let debug = format!("{plan:?}");
     assert!(debug.contains("SplitC2c"), "{debug}");
-    assert!(debug.contains("gaps: Some((16, 16))"), "{debug}");
+    assert!(
+        debug.contains("storage: (Split { gap: 16 }, Split { gap: 16 })"),
+        "{debug}"
+    );
     assert_eq!(plan.layout(), &layout);
     // Plans are destroyed under the lock when dropped, from any thread.
     std::thread::spawn(move || drop(again)).join().unwrap();

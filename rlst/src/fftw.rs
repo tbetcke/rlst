@@ -132,14 +132,24 @@
 //! RLST 0.11 replaces the interface above. Until it is complete, the new types live in this
 //! module beside the 0.10 ones, which keep their names and share the new FFTW lock; the 0.10
 //! types are removed when the new interface is complete. So far the new interface has
-//! complex-to-complex plans, on interleaved and on split complex storage, on slices and on
-//! RLST arrays and views:
+//! complex-to-complex plans, on interleaved and on split complex storage, and real-to-complex
+//! and complex-to-real plans, on slices and on RLST arrays and views:
 //!
-//! - [`Layout`], made from [`Dim`]s and a [`Placement`]: transform and batch dimensions with
-//!   strides, validated and normalised;
+//! - [`Layout`], made from [`Dim`]s, the [`Storage`] of each side (complex, real or split)
+//!   and a [`Placement`]: transform and batch dimensions with strides, validated and
+//!   normalised, whose storages give the family ([`Layout::with_storage`]);
 //! - layouts from RLST arrays and views of any memory order, subviews, slices and nested views
 //!   included: [`Layout::along_axis`], [`Layout::over_axes`] and their in-place variants,
-//!   which pass FFTW the dimensions in the order of the axes given, with their own strides;
+//!   which pass FFTW the dimensions in the order of the axes given, with their own strides,
+//!   and read each side's storage from the [`FftElement`] type of its array;
+//! - real-to-complex and complex-to-real transforms, [`R2c`] and [`C2r`]: a real array and a
+//!   complex one whose extent along the halved axis, the last of the axes given, is `n / 2 +
+//!   1` for the real extent `n`, made by [`Planner::r2c`], [`Planner::c2r`] and their
+//!   companions. In place, the complex array holds the real side in its reals, padded
+//!   ([`Layout::r2c_inplace`], [`Layout::c2r_inplace`]), which [`as_reals`] and
+//!   [`as_reals_mut`] give access to. As in FFTW, **a complex-to-real plan destroys its input
+//!   unless [`Planner::preserve_input`] is given**, which it supports over one transform
+//!   dimension only;
 //! - [`Planner`], a builder with [`Rigor`], wisdom-only, unaligned, time-limit, alignment-class
 //!   and scratch options, whose input-policy requests ([`DefaultRequest`],
 //!   [`PreserveRequest`], [`DestroyRequest`]) decide a plan's policy;
@@ -148,10 +158,11 @@
 //!   array with a *part axis* of extent 2, and [`Layout::split_along_axis`],
 //!   [`Layout::split_over_axes`], their in-place variants and [`Layout::new_split`] make
 //!   layouts with gaps, which count reals, for [`Planner::split_c2c`] and its companions;
-//! - [`Plan`], of precision [`FftwReal`], family [`C2c`] or [`SplitC2c`] and policy
-//!   [`Preserving`], [`Destroying`] or [`InPlace`], which runs on any buffers that fit its
-//!   layout and [`AlignmentClass`]es, from any thread, with [`Plan::description`] and
-//!   [`Plan::fingerprint`];
+//! - [`Plan`], of precision [`FftwReal`], family [`C2c`], [`SplitC2c`], [`R2c`] or [`C2r`] and
+//!   policy [`Preserving`], [`Destroying`] or [`InPlace`], which runs on any buffers that fit
+//!   its layout and [`AlignmentClass`]es, from any thread, with [`Plan::description`],
+//!   [`Plan::fingerprint`], [`Plan::logical_size`] and [`Plan::scale_factor`] for a
+//!   [`Scale`];
 //! - [`FftBuffer`] and [`FftBufferMut`], implemented for slices and for RLST arrays and views
 //!   through [`StridedRawAccess`](crate::StridedRawAccess), checked at execution by shape,
 //!   strides and storage;
@@ -161,8 +172,8 @@
 //! Plans are made through FFTW's 64-bit guru interface, on scratch buffers unless a `*_on`
 //! method is used, so planning never touches user data. Execution checks the buffers against
 //! the plan before calling FFTW and takes no lock. Split plans can use fewer of FFTW's SIMD
-//! stages than interleaved ones (see [`SplitC2c`]). The real-to-complex and real-to-real
-//! families, wisdom and threads follow.
+//! stages than interleaved ones (see [`SplitC2c`]). Every planner method rejects a layout of
+//! another family. The real-to-real and split real families, wisdom and threads follow.
 //!
 //! ```
 //! use rlst::{c64, rlst_dynamic_array};
@@ -204,6 +215,7 @@ mod backend;
 mod buffer;
 #[cfg(test)]
 mod concurrency_tests;
+mod element;
 mod error;
 mod execute;
 mod fingerprint;
@@ -214,6 +226,7 @@ mod options;
 mod plan;
 mod planner;
 mod real;
+mod scale;
 #[cfg(test)]
 mod test_support;
 mod version;
@@ -223,13 +236,15 @@ use lock::with_fftw;
 pub use align::{AlignmentClass, PLAN_ALIGNMENT};
 pub use backend::{Backend, backend, version};
 pub use buffer::{FftBuffer, FftBufferMut};
+pub use element::{FftElement, as_reals, as_reals_mut};
 pub use error::{FftwError, Side};
 pub use kind::Direction;
-pub use layout::{Dim, Layout, Placement};
+pub use layout::{Dim, Layout, Placement, Storage};
 pub use options::{DefaultRequest, DestroyRequest, PreserveRequest, Rigor};
-pub use plan::{C2c, Destroying, Family, InPlace, Plan, Policy, Preserving, SplitC2c};
+pub use plan::{C2c, C2r, Destroying, Family, InPlace, Plan, Policy, Preserving, R2c, SplitC2c};
 pub use planner::{DEFAULT_MAX_SCRATCH, Planner};
 pub use real::FftwReal;
+pub use scale::Scale;
 
 use std::{
     ffi::c_void,

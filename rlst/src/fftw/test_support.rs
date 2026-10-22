@@ -559,3 +559,104 @@ where
     }
     values
 }
+
+// References and helpers for real-to-complex and complex-to-real transforms (task F5a).
+
+/// `len` reals uniform in [−1, 1], from ChaCha8 seeded with `seed`.
+pub(crate) fn random_reals<T: TestReal>(seed: u64, len: usize) -> Vec<T> {
+    let mut rng = ChaCha8Rng::seed_from_u64(seed);
+    (0..len)
+        .map(|_| T::round_from(rng.random_range(-1.0..=1.0)))
+        .collect()
+}
+
+/// `shape` with the extent `n / 2 + 1` along `halved`: the complex shape of a real shape.
+pub(crate) fn halved_shape<const N: usize>(shape: [usize; N], halved: usize) -> [usize; N] {
+    let mut complex = shape;
+    complex[halved] = shape[halved] / 2 + 1;
+    complex
+}
+
+/// The r2c reference (design Section 7.1): the logical c2c reference of the reals `values`
+/// of `shape`, given in column-major order, forward over `axes`, cut to `n / 2 + 1` along the
+/// halved axis, the last entry of `axes`. It reads values by multi-index and builds no
+/// `Layout`.
+pub(crate) fn reference_r2c<T: TestReal, const N: usize>(
+    shape: [usize; N],
+    values: &[T],
+    axes: &[usize],
+) -> DynArray<Complex<f64>, N> {
+    let complex: Vec<Complex<T>> = values
+        .iter()
+        .map(|&value| Complex::new(value, T::round_from(0.0)))
+        .collect();
+    let full = logical_reference(shape, &complex, axes, Direction::Forward);
+    let cut_shape = halved_shape(shape, *axes.last().unwrap());
+    let mut cut = DynArray::<Complex<f64>, N>::from_shape(cut_shape);
+    for index in multi_indices(cut_shape) {
+        cut[index] = full[index];
+    }
+    cut
+}
+
+/// The c2r reference (design Section 7.1): the real part of the logical c2c backward
+/// reference over `axes` of the Hermitian extension of `half`, the non-redundant half of a
+/// spectrum whose real shape is `shape`, halved along the last entry of `axes`. The extension
+/// keeps `half` where it is given and sets X[k] = conj(X[−k]) beyond it, the negation modulo
+/// the extent along every axis of `axes`; this is the transform FFTW's c2r computes from the
+/// half alone.
+pub(crate) fn reference_c2r<const N: usize>(
+    shape: [usize; N],
+    half: &DynArray<Complex<f64>, N>,
+    axes: &[usize],
+) -> DynArray<f64, N> {
+    let halved = *axes.last().unwrap();
+    let given = shape[halved] / 2 + 1;
+    let extension: Vec<Complex<f64>> = multi_indices(shape)
+        .map(|index| {
+            if index[halved] < given {
+                half[index]
+            } else {
+                let mut mirror = index;
+                for &axis in axes {
+                    mirror[axis] = (shape[axis] - index[axis]) % shape[axis];
+                }
+                half[mirror].conj()
+            }
+        })
+        .collect();
+    let full = logical_reference::<f64, N>(shape, &extension, axes, Direction::Backward);
+    let mut real = DynArray::<f64, N>::from_shape(shape);
+    for index in multi_indices(shape) {
+        real[index] = full[index].re;
+    }
+    real
+}
+
+/// The offsets, in reals of the storage of the complex view `complex`, of the real side of
+/// an in-place r2c or c2r layout made from it with the real extent `real_shape[halved]`, one
+/// per real multi-index in column-major order of `real_shape`: along the halved axis the
+/// complex stride, elsewhere twice the complex stride, from twice the view's offset.
+pub(crate) fn in_place_real_offsets<A, const N: usize>(
+    complex: &Array<A, N>,
+    halved: usize,
+    real_shape: [usize; N],
+) -> Vec<usize>
+where
+    A: StridedRawAccess + Stride<N>,
+{
+    let (_, offset) = complex.storage().unwrap();
+    let stride = complex.stride();
+    multi_indices(real_shape)
+        .map(|index| {
+            (0..N).fold(2 * offset, |position, axis| {
+                let real_stride = if axis == halved {
+                    stride[axis]
+                } else {
+                    2 * stride[axis]
+                };
+                position + index[axis] * real_stride
+            })
+        })
+        .collect()
+}

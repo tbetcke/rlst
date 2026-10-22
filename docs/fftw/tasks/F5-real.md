@@ -3,7 +3,7 @@
 | | |
 | --- | --- |
 | Task | F5 (design, Section 9) |
-| Status | not started |
+| Status | in progress: F5a |
 | Depends on | F1, F2, F3, F4 |
 | Pull requests | three, into `fftw-0.11`, in this order: F5a (the storage of each side in `Layout`, the element types of the layout functions, r2c and c2r out of place and in place, `Plan::logical_size`, `Scale`), F5b (r2r with `R2rKind` and kinds per axis), F5c (split r2c and c2r) |
 | Read first | design: Section 2.2 item 9, Section 3 items 1, 5, 7, 8 and 11, Sections 4.1–4.9 and 4.15, Section 5, Sections 7.1–7.6, Section 9 (F5 row), Section 10, in particular DC1, DC2, DC3, DC5, DC12, DC14–DC16, DC21, DC25–DC29, Appendix A (drafts 0.8 to 0.13), Appendix B; `docs/fftw/tasks/F1-core.md`, `F2-layouts.md`, `F3-split.md` and `F4-determinism.md`, including their "Open questions"; `docs/fftw/F0-findings.md`; `CLAUDE.md` |
@@ -458,3 +458,35 @@ work items follow these answers.
    `Layout::logical_size` kept as the product of the extents and documented as not being the
    r2r logical size; (b) `scale_factor` returning `f64`; (c) on r2c, c2r and r2r plans only.
    *Decided: (a), DC35.*
+
+Raised during F5a. None needs a design change; they are recorded for review and for F5b, F5c
+and F7.
+
+7. **In-place strides that FFTW also accepts (open question 3).** FFTW 3.3.11 (Homebrew,
+   without SIMD) plans with `FFTW_ESTIMATE`, in place, every r2c and c2r guru64 layout
+   tried outside the rule of DC32: a batch whose real stride is not twice its complex stride
+   (12 against 5), the halved dimension with real and complex strides 2 and 2, 2 and 1, 1
+   and 2, or 6 and 3, and a batch of stride 1 under a halved dimension of stride 3. Several
+   of these put the real side outside the complex span (real stride 2 with complex stride 1
+   along a halved dimension of 8 spans 15 reals of a complex span of 10), so FFTW's planner
+   checks no memory, and its acceptance is no evidence that a layout is valid. The rule of
+   DC32 stays; a wider rule would be a design change, and would have to keep the real side
+   inside the complex span and both sides distinct.
+8. **In place, the distinct-element rule applies to both sides.** Rule 3 of work item 1
+   checks the output side. In place the input is overwritten too: for c2c, split c2c and
+   r2r the two sides have equal strides, but a c2r layout can have distinct real outputs
+   and overlapping complex inputs (`(8, 1, 1)` with the batch `(3, 4, 8)`: the last complex
+   element of each transform is the first of the next). `Layout::with_storage` applies the
+   rule to the input side as well in place; for r2c the rule on the complex output implies
+   it for the real input. Design Section 4.3 could say "in place, on both sides".
+9. **`FftElement` and generic code.** DC31 names `f32`, `f64`, `c32` and `c64`. The trait is
+   implemented for `f32`, `f64` and `Complex<T>` for every `T: FftwReal`, which are `c32`
+   and `c64`, and `FftElement<Real = Self>` is a supertrait of the sealed `FftwReal`, so code
+   generic over the precision, such as F2's tests, builds layouts from arrays of `T` and of
+   `Complex<T>`. The bound is on the arrays' items (`AIn::Item: FftElement`), so the layout
+   functions gained no type parameter.
+10. **`PreserveInputUnsupported` counts every transform dimension**, those of extent 1
+    included, as work item 3 says: a preserving c2r over both axes of an `[n, 1]` array is
+    rejected, although FFTW might plan it as one-dimensional; it can be planned along axis 0.
+11. **`Layout`'s `Debug` output** shows `storage` where it showed `gaps`; one F3 test that
+    asserted the debug text was updated.

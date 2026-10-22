@@ -74,6 +74,35 @@ axis. Split plans can use fewer of FFTW's SIMD stages than interleaved ones, so 
 interleaved storage can be faster; they agree with interleaved plans to round-off, not bit for
 bit.
 
+Real-to-complex and complex-to-real plans. A `Layout` records the storage of each side,
+`Storage::Complex`, `Storage::Real` or `Storage::Split { gap }`, from which its family follows:
+`Layout::with_storage` builds raw layouts of every family, `Layout::storage` returns the
+storages, and `Layout::new` and `Layout::new_split` are its shorthands for complex-to-complex
+layouts (`Layout::gaps` keeps its meaning). For real-to-complex and complex-to-real layouts the
+dimensions record the logical real extent `n`, and the last transform dimension, the halved
+one, has `n / 2 + 1` elements on the complex side, which the spans and every check use.
+`Layout::along_axis`, `Layout::over_axes` and their in-place variants now require items that
+implement the new sealed trait `FftElement` (`f32`, `f64`, `c32`, `c64`, one precision for both
+arrays), from which they read each side's storage: a real input and a complex output give a
+real-to-complex layout, a complex input and a real output a complex-to-real one, two real
+arrays a real-to-real one, and two complex arrays a complex-to-complex one as before. The
+halved axis is the last entry of `axes`, whatever the memory order, and a complex extent other
+than `n / 2 + 1` along it is an `InvalidLayout` naming the axis. In place, `Layout::r2c_inplace`
+and `Layout::c2r_inplace` take the complex array and the logical real extent of the halved
+axis, which must be contiguous; the real side is the complex storage read as reals, which the
+new functions `as_reals` and `as_reals_mut` give access to. `Planner::r2c`, `r2c_on`,
+`r2c_inplace` and `r2c_inplace_on` make `Plan<T, R2c, P>` plans, and `Planner::c2r` and its
+companions `Plan<T, C2r, P>` plans, with the three input policies, on scratch or on the
+caller's buffers, executing on real and complex slices, arrays and views with the checks of
+the other families. As in FFTW, a complex-to-real plan destroys its input by default: the
+default plan is `Destroying` and executes with `&mut input`; `preserve_input()` makes a
+`Preserving` one over one transform dimension, and returns `PreserveInputUnsupported` over
+more. Every planner method, those of complex-to-complex and split plans included, rejects a
+layout of another family before FFTW is called, with `InvalidLayout` naming the part axis when
+split storage is involved on one side only and the layout otherwise. `Plan::logical_size` and
+`Plan::scale_factor` with the new `Scale` (`None`, `Inverse`, `InverseSqrt`) give the factors 1,
+1/N and 1/√N of the unnormalised transforms, on every plan.
+
 ### New traits `StridedRawAccess` and `StridedRawAccessMut`
 
 `rlst::StridedRawAccess::storage` and `StridedRawAccessMut::storage_mut` return the backing
