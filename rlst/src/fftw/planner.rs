@@ -44,7 +44,10 @@ pub const DEFAULT_MAX_SCRATCH: usize = 1 << 30;
 /// Planning methods without `_on` plan on scratch buffers that the planner allocates for the
 /// layout's span, at the requested alignment classes, and frees after planning, so planning
 /// never touches user data, whatever the rigor. The scratch is bounded by
-/// [`max_scratch`](Planner::max_scratch). The `*_on` methods plan on the caller's buffers.
+/// [`max_scratch`](Planner::max_scratch). For a layout made from a view, the span runs from
+/// the view's first element to the last one it addresses, which for a column of a row-major
+/// matrix is nearly the whole matrix. The `*_on` methods plan on the caller's buffers, slices
+/// or RLST arrays and views.
 ///
 /// Every planning call runs under RLST's FFTW lock, which serialises all of RLST's FFTW calls
 /// other than execution.
@@ -348,8 +351,9 @@ impl<T: FftwReal, S> Planner<T, S> {
             AlignmentClass::of_ptr(input),
             AlignmentClass::of_ptr(output),
         );
-        // SAFETY: the caller derived `input` and `output` from buffers that it checked against
-        // the input and output spans of `layout`, and that it borrows mutably for the call.
+        // SAFETY: `input` and `output` are the pointers that `check_side_mut` returned after
+        // checking the caller's buffers against the input and output spans of `layout`, and
+        // the caller borrows the buffers mutably for the call.
         unsafe { self.plan_c2c(layout, direction, input, output, classes) }
     }
 
@@ -502,8 +506,10 @@ impl<T: FftwReal, S: PolicyFor<C2c>> Planner<T, S> {
 
     /// An out-of-place complex-to-complex plan for `layout`, planned on the caller's buffers.
     ///
-    /// The layout's spans must fit the buffers ([`FftwError::LayoutMismatch`]), and the plan
-    /// is made for the buffers' alignment classes. No scratch is allocated.
+    /// The buffers are slices or RLST arrays and views, checked against the layout as at
+    /// execution ([`FftwError::LayoutMismatch`]), and the plan is made for the buffers'
+    /// alignment classes. No scratch is allocated, so this plans layouts whose span exceeds
+    /// [`max_scratch`](Planner::max_scratch), such as a column of a large row-major array.
     ///
     /// With [`Rigor::Estimate`] or wisdom-only planning FFTW leaves the buffers untouched.
     /// **With [`Rigor::Measure`] and stronger, FFTW overwrites both buffers.**
@@ -522,6 +528,18 @@ impl<T: FftwReal, S: PolicyFor<C2c>> Planner<T, S> {
     ///     Direction::Forward,
     /// )?;
     /// plan.execute(input.data().unwrap(), output.data_mut().unwrap())?;
+    ///
+    /// // On a column of row-major arrays, whose span is nearly the whole array.
+    /// let mut input = rlst::StridedDynArray::<c64, 2>::row_major([4, 1000]);
+    /// let mut output = rlst::StridedDynArray::<c64, 2>::row_major([4, 1000]);
+    /// let layout = Layout::along_axis(&input.r().col(7), &output.r().col(7), 0)?;
+    /// let plan = Planner::<f64>::new().max_scratch(1024).c2c_on(
+    ///     &mut input.r_mut().col(7),
+    ///     &mut output.r_mut().col(7),
+    ///     &layout,
+    ///     Direction::Forward,
+    /// )?;
+    /// plan.execute(&input.r().col(7), &mut output.r_mut().col(7))?;
     /// # Ok::<(), rlst::fftw::FftwError>(())
     /// ```
     pub fn c2c_on<I, O>(
@@ -536,10 +554,8 @@ impl<T: FftwReal, S: PolicyFor<C2c>> Planner<T, S> {
         O: FftBufferMut<Complex<T>> + ?Sized,
     {
         check_placement::<S::Policy>(layout)?;
-        input.check_side(layout, Side::Input)?;
-        output.check_side(layout, Side::Output)?;
-        let input = input.as_mut_ptr();
-        let output = output.as_mut_ptr();
+        let input = input.check_side_mut(layout, Side::Input)?;
+        let output = output.check_side_mut(layout, Side::Output)?;
         self.c2c_on_buffers(layout, direction, input, output)
     }
 }
@@ -570,8 +586,9 @@ impl<T: FftwReal> Planner<T, DefaultRequest> {
 
     /// An in-place complex-to-complex plan for `layout`, planned on the caller's buffer.
     ///
-    /// The layout's span must fit the buffer ([`FftwError::LayoutMismatch`]), and the plan
-    /// is made for the buffer's alignment class. No scratch is allocated.
+    /// The buffer is a slice or an RLST array or view, checked against the layout as at
+    /// execution ([`FftwError::LayoutMismatch`]), and the plan is made for the buffer's
+    /// alignment class. No scratch is allocated.
     ///
     /// With [`Rigor::Estimate`] or wisdom-only planning FFTW leaves the buffer untouched.
     /// **With [`Rigor::Measure`] and stronger, FFTW overwrites it.**
@@ -585,6 +602,16 @@ impl<T: FftwReal> Planner<T, DefaultRequest> {
     /// let plan =
     ///     Planner::<f64>::new().c2c_inplace_on(data.data_mut().unwrap(), &layout, Direction::Forward)?;
     /// plan.execute(data.data_mut().unwrap())?;
+    ///
+    /// // On a subview of an aligned array; the plan is made for the subview's class.
+    /// let mut array = rlst_dynamic_array!(c64, [8, 4] | rlst::FFTW_ALIGNED);
+    /// let layout = Layout::along_axis_inplace(&array.r().into_subview([0, 1], [8, 2]), 0)?;
+    /// let plan = Planner::<f64>::new().c2c_inplace_on(
+    ///     &mut array.r_mut().into_subview([0, 1], [8, 2]),
+    ///     &layout,
+    ///     Direction::Forward,
+    /// )?;
+    /// plan.execute(&mut array.r_mut().into_subview([0, 1], [8, 2]))?;
     /// # Ok::<(), rlst::fftw::FftwError>(())
     /// ```
     pub fn c2c_inplace_on<D>(
@@ -597,9 +624,9 @@ impl<T: FftwReal> Planner<T, DefaultRequest> {
         D: FftBufferMut<Complex<T>> + ?Sized,
     {
         check_placement::<InPlace>(layout)?;
-        data.check_side(layout, Side::Input)?;
         data.check_side(layout, Side::Output)?;
-        let data = data.as_mut_ptr();
+        // In place the input and output spans are equal, so one check covers both sides.
+        let data = data.check_side_mut(layout, Side::Input)?;
         self.c2c_on_buffers(layout, direction, data, data)
     }
 }

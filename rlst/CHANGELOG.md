@@ -39,6 +39,19 @@ provides complex-to-complex plans on slices (`Layout`, `Planner`, `Plan` and the
 in `rlst::fftw`); the 0.10 types stay beside them, unchanged, until the new interface is
 complete.
 
+Plans also run on RLST arrays and views. `Layout::along_axis`, `Layout::over_axes` and their
+in-place variants build layouts from arrays of any memory order, column-major, row-major and
+strided, and from subviews, slices, multislices and nested views; they pass FFTW the
+dimensions in the order of the axes given, each with its own strides, so no shape is reversed
+for column-major arrays, and they reject unequal shapes, repeated or out-of-range axes and
+extents of 0 with `InvalidLayout` naming the axis. Arrays and views are `FftBuffer`s and, when
+mutable, `FftBufferMut`s: execution checks an array's shape and strides against its side of
+the plan, pairs the axes of an input and an output array of the same rank, and checks that
+the array's storage holds the layout's span from its first element on, before FFTW is
+called. FFTW touches only the elements a layout addresses, never the elements of other views
+between them. A plan describes memory, not logical axes: it runs on any arrays of the same
+memory layout and alignment class.
+
 ### New traits `StridedRawAccess` and `StridedRawAccessMut`
 
 `rlst::StridedRawAccess::storage` and `StridedRawAccessMut::storage_mut` return the backing

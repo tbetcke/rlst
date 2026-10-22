@@ -11,13 +11,19 @@ use super::align::PLAN_ALIGNMENT;
 use super::kind::Direction;
 use super::layout::{Dim, Layout, Placement};
 use super::real::FftwReal;
+use crate::dense::array::AlignedDynArray;
+use crate::dense::layout::{convert_1d_nd_from_shape, convert_nd_raw};
+use crate::{
+    Array, BaseItem, DynArray, FFTW_ALIGNED, Shape, Stride, StridedRawAccess,
+    UnsafeRandomAccessByRef, UnsafeRandomAccessMut,
+};
 
 /// The constant c of the c2c tolerance c · ε · (1 + log₂ N), fixed once for the family and
 /// not tuned per size (design Section 7.1).
 pub(crate) const C2C_TOLERANCE_FACTOR: f64 = 4.0;
 
 /// The fixed seed of the test inputs.
-pub(crate) const SEED: u64 = 0x5eed_0f_ff7e;
+pub(crate) const SEED: u64 = 0x5e_ed0f_ff7e;
 
 /// A precision under test.
 pub(crate) trait TestReal: FftwReal {
@@ -134,7 +140,7 @@ impl Neumaier {
 
 /// An O(n²) DFT of `line` in place, with twiddles from the reduced index `(j · k) mod n`
 /// and compensated summation of real and imaginary parts.
-fn dft(line: &mut [Complex<f64>], direction: Direction) {
+pub(crate) fn dft(line: &mut [Complex<f64>], direction: Direction) {
     let n = line.len();
     let sign = match direction {
         Direction::Forward => -1.0,
@@ -301,5 +307,147 @@ pub(crate) fn layouts_for(n: usize) -> &'static [LayoutKind] {
         &[LayoutKind::Contiguous]
     } else {
         &LayoutKind::ALL
+    }
+}
+
+// Helpers for the tests on RLST arrays and views (task F2).
+
+/// The multi-indices of `shape`, in column-major order.
+pub(crate) fn multi_indices<const N: usize>(shape: [usize; N]) -> impl Iterator<Item = [usize; N]> {
+    (0..shape.iter().product()).map(move |index| convert_1d_nd_from_shape(index, shape))
+}
+
+/// The sentinel of the array tests: finite, compared by its bits, and far above every value a
+/// transform in the tests produces, whose parts are bounded by the logical size times √2.
+pub(crate) fn sentinel<T: TestReal>() -> Complex<T> {
+    Complex::new(T::round_from(1234.5), T::round_from(-678.25))
+}
+
+/// A column-major parent of `shape` at `FFTW_ALIGNED`, filled with the sentinel.
+pub(crate) fn sentinel_parent<T: TestReal, const N: usize>(
+    shape: [usize; N],
+) -> AlignedDynArray<Complex<T>, N, FFTW_ALIGNED> {
+    let mut parent = AlignedDynArray::<Complex<T>, N, FFTW_ALIGNED>::from_shape(shape);
+    parent.fill_with_value(sentinel::<T>());
+    parent
+}
+
+/// Write random values from `seed` into the elements of `view` by multi-index, and return
+/// them in column-major order of the view.
+pub(crate) fn fill_view<T, A, const N: usize>(view: &mut Array<A, N>, seed: u64) -> Vec<Complex<T>>
+where
+    T: TestReal,
+    A: BaseItem<Item = Complex<T>> + UnsafeRandomAccessMut<N> + Shape<N>,
+{
+    let values = random_values::<T>(seed, view.shape().iter().product());
+    for (index, &value) in multi_indices(view.shape()).zip(&values) {
+        *view.get_mut(index).unwrap() = value;
+    }
+    values
+}
+
+/// The bits of every element of the storage of `view`, the elements of other views included.
+pub(crate) fn storage_bits<T, A, const N: usize>(view: &Array<A, N>) -> Vec<(u64, u64)>
+where
+    T: TestReal,
+    A: BaseItem<Item = Complex<T>> + StridedRawAccess,
+{
+    let (storage, _) = view.storage().unwrap();
+    storage
+        .iter()
+        .map(|value| (value.re.to_f64().to_bits(), value.im.to_f64().to_bits()))
+        .collect()
+}
+
+/// Assert that every element of the storage of `view` outside the view is still the
+/// sentinel, bit for bit. The view's elements are found from its storage offset and strides.
+pub(crate) fn assert_gaps_unchanged<T, A, const N: usize>(
+    view: &Array<A, N>,
+    context: &dyn std::fmt::Display,
+) where
+    T: TestReal,
+    A: BaseItem<Item = Complex<T>> + StridedRawAccess + Shape<N> + Stride<N>,
+{
+    let (storage, offset) = view.storage().unwrap();
+    let stride = view.stride();
+    let mut own = vec![false; storage.len()];
+    for index in multi_indices(view.shape()) {
+        own[offset + convert_nd_raw(index, stride)] = true;
+    }
+    let sentinel = sentinel::<T>();
+    let bits = |value: Complex<T>| (value.re.to_f64().to_bits(), value.im.to_f64().to_bits());
+    for (position, (&value, &own)) in storage.iter().zip(&own).enumerate() {
+        assert!(
+            own || bits(value) == bits(sentinel),
+            "{} {context}: storage element {position}, outside the view, changed to {value:?}",
+            T::NAME
+        );
+    }
+}
+
+/// The logical reference (design Section 7.1, F2 brief work item 7): the values of a view of
+/// `shape`, given in column-major order of the view, widened to f64 and transformed by the
+/// DFT along each axis of `axes`. It reads values by multi-index and builds no `Layout`.
+pub(crate) fn logical_reference<T: TestReal, const N: usize>(
+    shape: [usize; N],
+    values: &[Complex<T>],
+    axes: &[usize],
+    direction: Direction,
+) -> DynArray<Complex<f64>, N> {
+    let mut reference = DynArray::<Complex<f64>, N>::from_shape(shape);
+    for (index, value) in multi_indices(shape).zip(widen(values)) {
+        reference[index] = value;
+    }
+    for &axis in axes {
+        let mut line = vec![Complex::new(0.0, 0.0); shape[axis]];
+        for start in multi_indices(shape).filter(|index| index[axis] == 0) {
+            let at = |j: usize| {
+                let mut index = start;
+                index[axis] = j;
+                index
+            };
+            for (j, value) in line.iter_mut().enumerate() {
+                *value = reference[at(j)];
+            }
+            dft(&mut line, direction);
+            for (j, value) in line.iter().enumerate() {
+                reference[at(j)] = *value;
+            }
+        }
+    }
+    reference
+}
+
+/// Assert that `view` equals `expected` by multi-index, to the c2c tolerance of transforms
+/// over `axes`, in the relative L2 norm of each transform: the elements that share their
+/// indices off `axes`.
+pub(crate) fn assert_matches_reference<T, A, const N: usize>(
+    view: &Array<A, N>,
+    expected: &DynArray<Complex<f64>, N>,
+    axes: &[usize],
+    context: &dyn std::fmt::Display,
+) where
+    T: TestReal,
+    A: BaseItem<Item = Complex<T>> + UnsafeRandomAccessByRef<N> + Shape<N>,
+{
+    let shape = view.shape();
+    let logical_size: usize = axes.iter().map(|&axis| shape[axis]).product();
+    let tolerance = c2c_tolerance::<T>(logical_size);
+    let mut transforms = std::collections::BTreeMap::<Vec<usize>, (Vec<_>, Vec<_>)>::new();
+    for index in multi_indices(shape) {
+        let batch: Vec<usize> = (0..N)
+            .map(|axis| if axes.contains(&axis) { 0 } else { index[axis] })
+            .collect();
+        let (actual, wanted) = transforms.entry(batch).or_default();
+        actual.extend(widen(&[*view.get(index).unwrap()]));
+        wanted.push(expected[index]);
+    }
+    for (batch, (actual, wanted)) in transforms {
+        let error = relative_error(&actual, &wanted);
+        assert!(
+            error <= tolerance,
+            "{} {context}, transform at {batch:?}: relative error {error:e} above {tolerance:e}",
+            T::NAME
+        );
     }
 }
