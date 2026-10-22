@@ -90,6 +90,11 @@ name = "mpi_empty_ranks"
 harness = false
 required-features = ["mpi"]
 
+[[test]]
+name = "fftw_determinism"
+harness = false
+required-features = ["fftw"]
+
 [[example]]
 name = "array_tools"
 required-features = ["mpi"]
