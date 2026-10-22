@@ -53,12 +53,21 @@ impl AlignmentClass {
 
     /// The class of a buffer: of its first element.
     ///
+    /// For an array or view, the first element is the view's own, so a view at an offset has
+    /// the class of that element, not of its parent's storage.
+    ///
     /// ```
     /// use rlst::{c64, rlst_dynamic_array};
     /// use rlst::fftw::AlignmentClass;
     ///
     /// let buffer = rlst_dynamic_array!(c64, [4] | rlst::FFTW_ALIGNED);
     /// assert_eq!(AlignmentClass::of(buffer.data().unwrap()).offset(), 0);
+    ///
+    /// // An aligned array, and a subview whose first element is one complex double further on.
+    /// let array = rlst_dynamic_array!(c64, [4, 3] | rlst::FFTW_ALIGNED);
+    /// assert_eq!(AlignmentClass::of(&array), AlignmentClass::default());
+    /// let view = array.r().into_subview([1, 0], [2, 3]);
+    /// assert_eq!(AlignmentClass::of(&view).offset(), 16);
     /// ```
     pub fn of<E, B: FftBuffer<E> + ?Sized>(buffer: &B) -> Self {
         Self::of_ptr(buffer.as_ptr())

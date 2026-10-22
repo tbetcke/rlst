@@ -120,6 +120,23 @@ impl Layout {
     /// # Ok::<(), FftwError>(())
     /// ```
     pub fn new(dims: &[Dim], batch: &[Dim], placement: Placement) -> Result<Self, FftwError> {
+        Self::with_names(
+            dims,
+            batch,
+            placement,
+            |index| format!("transform dimension {index}"),
+            |index| format!("batch dimension {index}"),
+        )
+    }
+
+    /// [`Layout::new`], with the names its errors give each transform and batch dimension.
+    fn with_names(
+        dims: &[Dim],
+        batch: &[Dim],
+        placement: Placement,
+        dim_name: impl Fn(usize) -> String,
+        batch_name: impl Fn(usize) -> String,
+    ) -> Result<Self, FftwError> {
         let invalid = |dimension: &str, reason: String| FftwError::InvalidLayout {
             dimension: dimension.to_string(),
             reason,
@@ -135,12 +152,12 @@ impl Layout {
         let named: Vec<(String, Dim)> = dims
             .iter()
             .enumerate()
-            .map(|(index, &dim)| (format!("transform dimension {index}"), dim))
+            .map(|(index, &dim)| (dim_name(index), dim))
             .chain(
                 batch
                     .iter()
                     .enumerate()
-                    .map(|(index, &dim)| (format!("batch dimension {index}"), dim)),
+                    .map(|(index, &dim)| (batch_name(index), dim)),
             )
             .collect();
 
@@ -357,19 +374,58 @@ impl Layout {
     /// One-dimensional transforms along `axis` of two arrays of rank `N`, batched over the
     /// other axes.
     ///
-    /// The input and output may differ in element type and shape; the planner checks them
-    /// against the transform family. Implemented in task F2, which also implements
-    /// [`StridedRawAccess`] for RLST's arrays and views and makes this example run.
+    /// The same as [`over_axes`](Layout::over_axes) with the one axis `axis`, whose checks,
+    /// errors and notes apply. The arrays can be any RLST arrays or views with strided
+    /// storage: column-major, row-major or strided, subviews, slices and nested views.
     ///
-    /// ```ignore
+    /// ```
+    /// use rlst::{c64, rlst_dynamic_array};
+    /// use rlst::fftw::{Dim, Direction, Layout, Planner};
+    ///
+    /// let mut input = rlst_dynamic_array!(c64, [8, 3] | rlst::FFTW_ALIGNED);
+    /// let mut output = rlst_dynamic_array!(c64, [8, 3] | rlst::FFTW_ALIGNED);
+    /// input.fill_from_seed_equally_distributed(0);
+    ///
+    /// // Three transforms of length 8, one per column.
+    /// let layout = Layout::along_axis(&input, &output, 0)?;
+    /// assert_eq!(layout.dims(), &[Dim { n: 8, is: 1, os: 1 }]);
+    /// assert_eq!(layout.batch(), &[Dim { n: 3, is: 8, os: 8 }]);
+    ///
+    /// let plan = Planner::<f64>::new().c2c(&layout, Direction::Forward)?;
+    /// plan.execute(&input, &mut output)?;
+    ///
+    /// // The first entry of each column's transform is the sum of the column.
+    /// for j in 0..3 {
+    ///     let sum: c64 = (0..8).map(|i| input[[i, j]]).sum();
+    ///     assert!((output[[0, j]] - sum).norm() < 1e-12);
+    /// }
+    /// # Ok::<(), rlst::fftw::FftwError>(())
+    /// ```
+    ///
+    /// Arrays without a [`Stride`], such as the lazy view of `transpose()`, are not accepted,
+    /// so this does not compile:
+    ///
+    /// ```compile_fail,E0277
     /// use rlst::{c64, rlst_dynamic_array};
     /// use rlst::fftw::Layout;
     ///
     /// let input = rlst_dynamic_array!(c64, [8, 3] | rlst::FFTW_ALIGNED);
-    /// let output = rlst_dynamic_array!(c64, [8, 3] | rlst::FFTW_ALIGNED);
-    /// // Three transforms of length 8, one per column.
-    /// let layout = Layout::along_axis(&input, &output, 0)?;
+    /// let output = rlst_dynamic_array!(c64, [3, 8] | rlst::FFTW_ALIGNED);
+    /// let layout = Layout::along_axis(&input.r().transpose(), &output, 0)?;
     /// # Ok::<(), rlst::fftw::FftwError>(())
+    /// ```
+    ///
+    /// while the same code on an array with strides does:
+    ///
+    /// ```
+    /// use rlst::{c64, rlst_dynamic_array};
+    /// use rlst::fftw::Layout;
+    ///
+    /// let input = rlst_dynamic_array!(c64, [8, 3] | rlst::FFTW_ALIGNED);
+    /// let output = rlst_dynamic_array!(c64, [3, 8] | rlst::FFTW_ALIGNED);
+    /// let layout = Layout::along_axis(&input.r(), &output, 0);
+    /// // The shapes differ, which the layout functions reject.
+    /// assert!(layout.is_err());
     /// ```
     pub fn along_axis<AIn, AOut, const N: usize>(
         input: &Array<AIn, N>,
@@ -380,25 +436,62 @@ impl Layout {
         AIn: StridedRawAccess + Shape<N> + Stride<N>,
         AOut: StridedRawAccess + Shape<N> + Stride<N>,
     {
-        let _ = (input, output, axis);
-        todo!()
+        Self::over_axes(input, output, &[axis])
     }
 
     /// Transforms over `axes`, in the order given, of two arrays of rank `N`, batched over the
     /// other axes.
     ///
-    /// The input and output may differ in element type and shape; the planner checks them
-    /// against the transform family. Implemented in task F2, which also implements
-    /// [`StridedRawAccess`] for RLST's arrays and views and makes this example run.
+    /// The transform dimensions are the axes of `axes`, in that order, each with its extent
+    /// and the strides of both arrays; the batch dimensions are the other axes. FFTW receives
+    /// the dimensions in this order with their own strides, whatever the memory order of the
+    /// arrays, so `&[0, 1]` and `&[1, 0]` are different layouts, and plans, of the same
+    /// transform. The layout is then made by [`Layout::new`], whose validation and
+    /// normalisation apply.
     ///
-    /// ```ignore
+    /// The checks, in this order, each returning [`FftwError::InvalidLayout`] that names
+    /// `axes` or the axis concerned (`axis 1`):
+    ///
+    /// 1. `axes` is not empty;
+    /// 2. every entry of `axes` is below `N`;
+    /// 3. no entry is repeated;
+    /// 4. the input and output extents are equal on every axis, as a complex-to-complex
+    ///    transform needs;
+    /// 5. every extent is at least 1: an array with an extent 0 has nothing to transform;
+    /// 6. every extent and stride fits in `isize`;
+    ///
+    /// and those of [`Layout::new`], with the dimensions named by their axes. In particular,
+    /// an output whose strides fail the sufficient distinct-output rule of [`Layout::new`],
+    /// such as shape `[2, 2]` with strides `[2, 3]`, is rejected, although its elements are
+    /// distinct; it is accepted as an input.
+    ///
+    /// Building a layout reads only shapes and strides. A layout carries no offsets: the
+    /// offsets of an array count from its first element, so a plan runs on any arrays and
+    /// views of this memory layout, wherever they start.
+    ///
+    /// The scratch of [`Planner::c2c`](super::Planner::c2c) covers the span from the first
+    /// element to the last one the layout addresses. For a view of a large array, such as a
+    /// column of a row-major matrix, that can be nearly the whole array: raise
+    /// [`max_scratch`](super::Planner::max_scratch) or plan on the arrays themselves with
+    /// [`c2c_on`](super::Planner::c2c_on).
+    ///
+    /// A plan describes memory, not logical axes. Execution checks each array against its
+    /// side of the layout and, when both are arrays of the same rank, pairs their axes by
+    /// index, but no check can tell apart two arrays with the same memory layout: a plan
+    /// along axis 0 of a square column-major array transforms along axis 1 of a square
+    /// row-major one.
+    ///
+    /// ```
     /// use rlst::{c64, rlst_dynamic_array};
-    /// use rlst::fftw::Layout;
+    /// use rlst::fftw::{Dim, Layout};
     ///
-    /// let input = rlst_dynamic_array!(c64, [8, 6, 3] | rlst::FFTW_ALIGNED);
-    /// let output = rlst_dynamic_array!(c64, [8, 6, 3] | rlst::FFTW_ALIGNED);
-    /// // Three two-dimensional 8 x 6 transforms.
+    /// let input = rlst_dynamic_array!(c64, [4, 5, 6] | rlst::FFTW_ALIGNED);
+    /// let output = rlst_dynamic_array!(c64, [4, 5, 6] | rlst::FFTW_ALIGNED);
+    /// // Six two-dimensional 4 x 5 transforms, one per index of the last axis.
     /// let layout = Layout::over_axes(&input, &output, &[0, 1])?;
+    /// assert_eq!(layout.dims(), &[Dim { n: 4, is: 1, os: 1 }, Dim { n: 5, is: 4, os: 4 }]);
+    /// assert_eq!(layout.batch(), &[Dim { n: 6, is: 20, os: 20 }]);
+    /// assert_eq!(layout.logical_size(), 20);
     /// # Ok::<(), rlst::fftw::FftwError>(())
     /// ```
     pub fn over_axes<AIn, AOut, const N: usize>(
@@ -410,20 +503,29 @@ impl Layout {
         AIn: StridedRawAccess + Shape<N> + Stride<N>,
         AOut: StridedRawAccess + Shape<N> + Stride<N>,
     {
-        let _ = (input, output, axes);
-        todo!()
+        Self::from_arrays(
+            (input.shape(), input.stride()),
+            (output.shape(), output.stride()),
+            axes,
+            Placement::OutOfPlace,
+        )
     }
 
     /// In-place one-dimensional transforms along `axis` of an array of rank `N`, batched over
-    /// the other axes. Implemented in task F2, which also implements [`StridedRawAccess`] for
-    /// RLST's arrays and views and makes this example run.
+    /// the other axes.
     ///
-    /// ```ignore
+    /// The same as [`over_axes_inplace`](Layout::over_axes_inplace) with the one axis `axis`.
+    ///
+    /// ```
     /// use rlst::{c64, rlst_dynamic_array};
-    /// use rlst::fftw::Layout;
+    /// use rlst::fftw::{Dim, Layout, Placement};
     ///
     /// let data = rlst_dynamic_array!(c64, [8, 3] | rlst::FFTW_ALIGNED);
+    /// // Three in-place transforms of length 8, one per column.
     /// let layout = Layout::along_axis_inplace(&data, 0)?;
+    /// assert_eq!(layout.placement(), Placement::InPlace);
+    /// assert_eq!(layout.dims(), &[Dim { n: 8, is: 1, os: 1 }]);
+    /// assert_eq!(layout.batch(), &[Dim { n: 3, is: 8, os: 8 }]);
     /// # Ok::<(), rlst::fftw::FftwError>(())
     /// ```
     pub fn along_axis_inplace<A, const N: usize>(
@@ -433,20 +535,25 @@ impl Layout {
     where
         A: StridedRawAccess + Shape<N> + Stride<N>,
     {
-        let _ = (data, axis);
-        todo!()
+        Self::over_axes_inplace(data, &[axis])
     }
 
     /// In-place transforms over `axes`, in the order given, of an array of rank `N`, batched
-    /// over the other axes. Implemented in task F2, which also implements
-    /// [`StridedRawAccess`] for RLST's arrays and views and makes this example run.
+    /// over the other axes.
     ///
-    /// ```ignore
+    /// As [`over_axes`](Layout::over_axes) with `data` as both input and output, whose checks,
+    /// errors and notes apply; the input and output strides of every dimension are the
+    /// array's strides, and the placement is [`Placement::InPlace`].
+    ///
+    /// ```
     /// use rlst::{c64, rlst_dynamic_array};
-    /// use rlst::fftw::Layout;
+    /// use rlst::fftw::{Dim, Layout};
     ///
-    /// let data = rlst_dynamic_array!(c64, [8, 6, 3] | rlst::FFTW_ALIGNED);
-    /// let layout = Layout::over_axes_inplace(&data, &[0, 1])?;
+    /// let data = rlst_dynamic_array!(c64, [4, 5, 6] | rlst::FFTW_ALIGNED);
+    /// // Four in-place two-dimensional 6 x 5 transforms over the last two axes.
+    /// let layout = Layout::over_axes_inplace(&data, &[2, 1])?;
+    /// assert_eq!(layout.dims(), &[Dim { n: 6, is: 20, os: 20 }, Dim { n: 5, is: 4, os: 4 }]);
+    /// assert_eq!(layout.batch(), &[Dim { n: 4, is: 1, os: 1 }]);
     /// # Ok::<(), rlst::fftw::FftwError>(())
     /// ```
     pub fn over_axes_inplace<A, const N: usize>(
@@ -456,9 +563,213 @@ impl Layout {
     where
         A: StridedRawAccess + Shape<N> + Stride<N>,
     {
-        let _ = (data, axes);
-        todo!()
+        let geometry = (data.shape(), data.stride());
+        Self::from_arrays(geometry, geometry, axes, Placement::InPlace)
     }
+
+    /// The layout of transforms over `axes` of arrays with the given shapes and strides, with
+    /// the checks of [`over_axes`](Layout::over_axes).
+    fn from_arrays<const N: usize>(
+        (input_shape, input_stride): ([usize; N], [usize; N]),
+        (output_shape, output_stride): ([usize; N], [usize; N]),
+        axes: &[usize],
+        placement: Placement,
+    ) -> Result<Self, FftwError> {
+        let invalid =
+            |dimension: String, reason: String| FftwError::InvalidLayout { dimension, reason };
+        let name = |axis: usize| format!("axis {axis}");
+
+        if axes.is_empty() {
+            return Err(invalid(
+                "axes".to_string(),
+                "no axis is given, and a transform needs at least one".to_string(),
+            ));
+        }
+        if let Some(&axis) = axes.iter().find(|&&axis| axis >= N) {
+            return Err(invalid(
+                "axes".to_string(),
+                format!("the axis {axis} is not below the rank {N}"),
+            ));
+        }
+        for (position, &axis) in axes.iter().enumerate() {
+            if axes[..position].contains(&axis) {
+                return Err(invalid(
+                    name(axis),
+                    format!("the axis is listed more than once in {axes:?}"),
+                ));
+            }
+        }
+        for axis in 0..N {
+            if input_shape[axis] != output_shape[axis] {
+                return Err(invalid(
+                    name(axis),
+                    format!(
+                        "the input extent {} differs from the output extent {}, and a \
+                         complex-to-complex transform needs arrays of equal shape",
+                        input_shape[axis], output_shape[axis]
+                    ),
+                ));
+            }
+        }
+        if let Some(axis) = (0..N).find(|&axis| input_shape[axis] == 0) {
+            return Err(invalid(
+                name(axis),
+                "the extent is 0, so there is nothing to transform".to_string(),
+            ));
+        }
+        let mut dim_of = Vec::with_capacity(N);
+        for axis in 0..N {
+            let convert = |what: &str, value: usize| {
+                isize::try_from(value).map_err(|_| {
+                    invalid(
+                        name(axis),
+                        format!("the {what} {value} does not fit in isize"),
+                    )
+                })
+            };
+            dim_of.push(Dim {
+                n: convert("extent", input_shape[axis])?,
+                is: convert("input stride", input_stride[axis])?,
+                os: convert("output stride", output_stride[axis])?,
+            });
+        }
+
+        let batch_axes: Vec<usize> = (0..N).filter(|axis| !axes.contains(axis)).collect();
+        let dims: Vec<Dim> = axes.iter().map(|&axis| dim_of[axis]).collect();
+        let batch: Vec<Dim> = batch_axes.iter().map(|&axis| dim_of[axis]).collect();
+        Self::with_names(
+            &dims,
+            &batch,
+            placement,
+            |index| name(axes[index]),
+            |index| name(batch_axes[index]),
+        )
+    }
+
+    /// Whether an array of `shape` and `stride` fits `side` of the layout (design Section
+    /// 4.8 item 2, DC15): each transform dimension is matched by an axis of the same extent
+    /// and, above extent 1, the same stride, and the other axes, normalised on this side
+    /// alone, equal the layout's batch on this side, normalised in the same way.
+    pub(crate) fn fits_array_side(&self, side: Side, shape: &[usize], stride: &[usize]) -> bool {
+        let on_side = |dim: &Dim| {
+            let stride = match side {
+                Side::Input => dim.is,
+                Side::Output => dim.os,
+            };
+            Dim {
+                n: dim.n,
+                is: stride,
+                os: stride,
+            }
+        };
+        let Some(dims) = array_dims(shape, stride, stride) else {
+            return false;
+        };
+        let Some(used) =
+            match_transform_dims(&self.dims, &dims, |dim, axis| on_side(dim).is == axis.is)
+        else {
+            return false;
+        };
+        let rest: Vec<Dim> = unused(&dims, &used);
+        let batch: Vec<Dim> = self.batch.iter().map(on_side).collect();
+        normalise_batch(&rest) == normalise_batch(&batch)
+    }
+
+    /// Whether an input and an output array of the same rank fit the layout with their axes
+    /// paired by index (DC15): equal shapes, each transform dimension matched by one axis
+    /// with its extent and, above extent 1, both strides, and the other axes, normalised
+    /// together, equal to the layout's batch.
+    pub(crate) fn fits_array_pair(
+        &self,
+        (input_shape, input_stride): (&[usize], &[usize]),
+        (output_shape, output_stride): (&[usize], &[usize]),
+    ) -> bool {
+        if input_shape != output_shape {
+            return false;
+        }
+        let Some(dims) = array_dims(input_shape, input_stride, output_stride) else {
+            return false;
+        };
+        let Some(used) = match_transform_dims(&self.dims, &dims, |dim, axis| {
+            dim.is == axis.is && dim.os == axis.os
+        }) else {
+            return false;
+        };
+        normalise_batch(&unused(&dims, &used)) == self.batch
+    }
+
+    /// The dimensions on `side`, for error messages.
+    pub(crate) fn describe_side(&self, side: Side) -> String {
+        let list = |dims: &[Dim]| {
+            dims.iter()
+                .map(|dim| {
+                    let stride = match side {
+                        Side::Input => dim.is,
+                        Side::Output => dim.os,
+                    };
+                    format!("(n {}, stride {stride})", dim.n)
+                })
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        format!(
+            "transform dimensions [{}] and batch dimensions [{}]",
+            list(&self.dims),
+            list(&self.batch)
+        )
+    }
+}
+
+/// The axes of an array as dimensions with the given input and output strides, or `None` if
+/// an extent or a stride does not fit in `isize`.
+fn array_dims(
+    shape: &[usize],
+    input_stride: &[usize],
+    output_stride: &[usize],
+) -> Option<Vec<Dim>> {
+    shape
+        .iter()
+        .zip(input_stride.iter().zip(output_stride))
+        .map(|(&n, (&is, &os))| {
+            Some(Dim {
+                n: isize::try_from(n).ok()?,
+                is: isize::try_from(is).ok()?,
+                os: isize::try_from(os).ok()?,
+            })
+        })
+        .collect()
+}
+
+/// Match each transform dimension with a distinct axis of the same extent for which
+/// `strides_match` holds, or, for a dimension of extent 1, with any distinct axis of extent 1,
+/// whose stride addresses no other element. Returns the axes used, or `None` if a dimension
+/// has no match. Dimensions above extent 1 are matched first.
+fn match_transform_dims(
+    transform: &[Dim],
+    axes: &[Dim],
+    strides_match: impl Fn(&Dim, &Dim) -> bool,
+) -> Option<Vec<bool>> {
+    let mut used = vec![false; axes.len()];
+    for extent_one in [false, true] {
+        for dim in transform.iter().filter(|dim| (dim.n == 1) == extent_one) {
+            let axis = (0..axes.len()).find(|&axis| {
+                !used[axis]
+                    && axes[axis].n == dim.n
+                    && (extent_one || strides_match(dim, &axes[axis]))
+            })?;
+            used[axis] = true;
+        }
+    }
+    Some(used)
+}
+
+/// The axes not used by the transform dimensions.
+fn unused(axes: &[Dim], used: &[bool]) -> Vec<Dim> {
+    axes.iter()
+        .zip(used)
+        .filter(|&(_, &used)| !used)
+        .map(|(&dim, _)| dim)
+        .collect()
 }
 
 /// Normalise batch dimensions (design Section 4.3): drop those of extent 1, sort by input
@@ -488,7 +799,9 @@ fn normalise_batch(batch: &[Dim]) -> Vec<Dim> {
 #[cfg(test)]
 mod tests {
     use super::{Dim, Layout, Placement};
-    use crate::fftw::FftwError;
+    use crate::dense::array::StridedSliceArray;
+    use crate::fftw::{FftwError, Side};
+    use crate::{DynArray, StridedDynArray, c64};
 
     fn dim(n: isize, is: isize, os: isize) -> Dim {
         Dim { n, is, os }
@@ -633,5 +946,221 @@ mod tests {
         let (dimension, reason) = invalid(&[dim(4, isize::MAX / 2, 1)], &[], Placement::OutOfPlace);
         assert_eq!(dimension, "layout");
         assert!(reason.contains("input span"), "{reason}");
+    }
+
+    // Layouts from arrays (task F2).
+
+    fn array_invalid(result: Result<Layout, FftwError>) -> (String, String) {
+        match result {
+            Err(FftwError::InvalidLayout { dimension, reason }) => (dimension, reason),
+            other => panic!("expected InvalidLayout, found {other:?}"),
+        }
+    }
+
+    fn expected(dims: &[Dim], batch: &[Dim], placement: Placement) -> Layout {
+        Layout::new(dims, batch, placement).unwrap()
+    }
+
+    #[test]
+    fn test_array_layouts_of_the_brief() {
+        let out = Placement::OutOfPlace;
+        let a = DynArray::<c64, 2>::from_shape([8, 3]);
+        assert_eq!(
+            Layout::along_axis(&a, &a, 0).unwrap(),
+            expected(&[dim(8, 1, 1)], &[dim(3, 8, 8)], out)
+        );
+        assert_eq!(
+            Layout::along_axis(&a, &a, 1).unwrap(),
+            expected(&[dim(3, 8, 8)], &[dim(8, 1, 1)], out)
+        );
+
+        let a = DynArray::<c64, 3>::from_shape([4, 5, 6]);
+        let along = |axis| Layout::along_axis(&a, &a, axis).unwrap();
+        assert_eq!(along(0), expected(&[dim(4, 1, 1)], &[dim(30, 4, 4)], out));
+        assert_eq!(along(0).batch(), &[dim(30, 4, 4)]);
+        assert_eq!(
+            along(1),
+            expected(&[dim(5, 4, 4)], &[dim(6, 20, 20), dim(4, 1, 1)], out)
+        );
+        assert_eq!(along(1).batch().len(), 2);
+        assert_eq!(along(2), expected(&[dim(6, 20, 20)], &[dim(20, 1, 1)], out));
+        assert_eq!(along(2).batch(), &[dim(20, 1, 1)]);
+
+        let row_major = StridedDynArray::<c64, 3>::row_major([4, 5, 6]);
+        let layout = Layout::along_axis(&row_major, &row_major, 2).unwrap();
+        assert_eq!(layout, expected(&[dim(6, 1, 1)], &[dim(20, 6, 6)], out));
+        assert_eq!(layout.batch(), &[dim(20, 6, 6)]);
+
+        let layout = Layout::over_axes(&a, &a, &[0, 1]).unwrap();
+        assert_eq!(
+            layout,
+            expected(&[dim(4, 1, 1), dim(5, 4, 4)], &[dim(6, 20, 20)], out)
+        );
+        let swapped = Layout::over_axes(&a, &a, &[1, 0]).unwrap();
+        assert_eq!(
+            swapped,
+            expected(&[dim(5, 4, 4), dim(4, 1, 1)], &[dim(6, 20, 20)], out)
+        );
+        // The same transform, but another layout and another plan.
+        assert_ne!(layout, swapped);
+
+        let parent = DynArray::<c64, 2>::from_shape([10, 10]);
+        let view = parent.r().into_subview([2, 3], [4, 5]);
+        assert_eq!(
+            Layout::along_axis(&view, &view, 0).unwrap(),
+            expected(&[dim(4, 1, 1)], &[dim(5, 10, 10)], out)
+        );
+    }
+
+    #[test]
+    fn test_along_axis_is_over_one_axis() {
+        let a = DynArray::<c64, 3>::from_shape([4, 5, 6]);
+        let b = StridedDynArray::<c64, 3>::row_major([4, 5, 6]);
+        for axis in 0..3 {
+            assert_eq!(
+                Layout::along_axis(&a, &b, axis).unwrap(),
+                Layout::over_axes(&a, &b, &[axis]).unwrap()
+            );
+            assert_eq!(
+                Layout::along_axis_inplace(&b, axis).unwrap(),
+                Layout::over_axes_inplace(&b, &[axis]).unwrap()
+            );
+        }
+        // Input and output strides differ for arrays of different memory order.
+        assert_eq!(
+            Layout::along_axis(&a, &b, 2).unwrap().dims(),
+            &[dim(6, 20, 1)]
+        );
+    }
+
+    #[test]
+    fn test_in_place_array_layouts() {
+        let a = DynArray::<c64, 3>::from_shape([4, 5, 6]);
+        let layout = Layout::along_axis_inplace(&a, 1).unwrap();
+        assert_eq!(
+            layout,
+            expected(
+                &[dim(5, 4, 4)],
+                &[dim(6, 20, 20), dim(4, 1, 1)],
+                Placement::InPlace
+            )
+        );
+        let layout = Layout::over_axes_inplace(&a, &[2, 0]).unwrap();
+        assert_eq!(
+            layout,
+            expected(
+                &[dim(6, 20, 20), dim(4, 1, 1)],
+                &[dim(5, 4, 4)],
+                Placement::InPlace
+            )
+        );
+        let row_major = StridedDynArray::<c64, 2>::row_major([3, 7]);
+        assert_eq!(
+            Layout::along_axis_inplace(&row_major, 1).unwrap(),
+            expected(&[dim(7, 1, 1)], &[dim(3, 7, 7)], Placement::InPlace)
+        );
+    }
+
+    #[test]
+    fn test_extent_one_axis_is_dropped_from_the_batch() {
+        let column = DynArray::<c64, 2>::from_shape([12, 1]);
+        let vector = DynArray::<c64, 1>::from_shape([12]);
+        let layout = Layout::along_axis(&column, &column, 0).unwrap();
+        assert_eq!(layout, Layout::along_axis(&vector, &vector, 0).unwrap());
+        assert!(layout.batch().is_empty());
+        // Along the axis of extent 1, the transform dimension is kept.
+        let layout = Layout::along_axis(&column, &column, 1).unwrap();
+        assert_eq!(layout.dims(), &[dim(1, 12, 12)]);
+    }
+
+    #[test]
+    fn test_array_layout_errors() {
+        let a = DynArray::<c64, 2>::from_shape([8, 3]);
+        let (dimension, _) = array_invalid(Layout::over_axes(&a, &a, &[]));
+        assert_eq!(dimension, "axes");
+        let (dimension, reason) = array_invalid(Layout::over_axes(&a, &a, &[0, 2]));
+        assert_eq!(dimension, "axes");
+        assert!(
+            reason.contains("axis 2 is not below the rank 2"),
+            "{reason}"
+        );
+        let (dimension, _) = array_invalid(Layout::over_axes(&a, &a, &[1, 1]));
+        assert_eq!(dimension, "axis 1");
+        let (dimension, _) = array_invalid(Layout::over_axes_inplace(&a, &[0, 0]));
+        assert_eq!(dimension, "axis 0");
+
+        let b = DynArray::<c64, 2>::from_shape([8, 4]);
+        let (dimension, reason) = array_invalid(Layout::along_axis(&a, &b, 0));
+        assert_eq!(dimension, "axis 1");
+        assert!(reason.contains("input extent 3"), "{reason}");
+
+        // An array with an extent 0, on a transform axis and on a batch axis.
+        let empty = DynArray::<c64, 2>::from_shape([8, 0]);
+        let (dimension, reason) = array_invalid(Layout::along_axis(&empty, &empty, 0));
+        assert_eq!(dimension, "axis 1");
+        assert!(reason.contains("extent is 0"), "{reason}");
+        let (dimension, _) = array_invalid(Layout::along_axis_inplace(&empty, 1));
+        assert_eq!(dimension, "axis 1");
+
+        // A stride that does not fit in `isize`, on an axis of extent 1.
+        let values = [c64::new(0.0, 0.0); 2];
+        let huge = StridedSliceArray::from_shape_and_stride(&values, [2, 1], [1, usize::MAX]);
+        let small = DynArray::<c64, 2>::from_shape([2, 1]);
+        let (dimension, reason) = array_invalid(Layout::along_axis(&huge, &small, 0));
+        assert_eq!(dimension, "axis 1");
+        assert!(reason.contains("input stride"), "{reason}");
+
+        // The checks of `Layout::new` name the axis.
+        let (dimension, _) = array_invalid(Layout::along_axis_inplace(
+            &StridedDynArray::<c64, 2>::from_shape_and_stride([2, 2], [2, 3]),
+            0,
+        ));
+        assert!(dimension.starts_with("axis "), "{dimension}");
+    }
+
+    #[test]
+    fn test_strides_failing_the_distinct_output_rule() {
+        // Offsets 0, 2, 3 and 5: distinct, but 3 is below 2 x 2 (DC16).
+        let odd = StridedDynArray::<c64, 2>::from_shape_and_stride([2, 2], [2, 3]);
+        let plain = DynArray::<c64, 2>::from_shape([2, 2]);
+        let (dimension, _) = array_invalid(Layout::along_axis(&plain, &odd, 0));
+        assert_eq!(dimension, "axis 1");
+        array_invalid(Layout::along_axis_inplace(&odd, 0));
+        array_invalid(Layout::along_axis_inplace(&odd, 1));
+        // As input it is accepted.
+        let layout = Layout::along_axis(&odd, &plain, 0).unwrap();
+        assert_eq!(layout.dims(), &[dim(2, 2, 1)]);
+    }
+
+    #[test]
+    fn test_array_sides() {
+        // A layout fits the arrays it was made from, side by side and paired.
+        let input = DynArray::<c64, 3>::from_shape([4, 2, 3]);
+        let output = StridedDynArray::<c64, 3>::from_shape_and_stride([4, 2, 3], [1, 12, 4]);
+        let layout = Layout::along_axis(&input, &output, 0).unwrap();
+        let geometry = |shape: [usize; 3], stride: [usize; 3]| (shape.to_vec(), stride.to_vec());
+        let (in_shape, in_stride) = geometry(input.shape(), input.stride());
+        let (out_shape, out_stride) = geometry(output.shape(), output.stride());
+        assert!(layout.fits_array_side(Side::Input, &in_shape, &in_stride));
+        assert!(layout.fits_array_side(Side::Output, &out_shape, &out_stride));
+        assert!(layout.fits_array_pair((&in_shape, &in_stride), (&out_shape, &out_stride)));
+        // On one side, the batch axes are normalised alone: the output's batch (2, 12) and
+        // (3, 4) is the input's (2, 4) and (3, 8) after merging, a batch of 6 with stride 4.
+        assert!(layout.fits_array_side(Side::Input, &out_shape, &out_stride));
+        // A row-major array does not fit.
+        assert!(!layout.fits_array_side(Side::Input, &[4, 2, 3], &[6, 3, 1]));
+
+        // Column-major arrays of shape [4, 3, 2] fit each side, but their axes do not pair
+        // as the layout's (DC15).
+        let (other_shape, other_stride) = (vec![4, 3, 2], vec![1, 4, 12]);
+        assert!(layout.fits_array_side(Side::Input, &other_shape, &other_stride));
+        assert!(layout.fits_array_side(Side::Output, &other_shape, &other_stride));
+        assert!(
+            !layout.fits_array_pair((&other_shape, &other_stride), (&other_shape, &other_stride))
+        );
+
+        // A wrong extent or stride on the transform axis.
+        assert!(!layout.fits_array_side(Side::Input, &[5, 2, 3], &[1, 5, 10]));
+        assert!(!layout.fits_array_side(Side::Input, &[4, 2, 3], &[2, 8, 16]));
     }
 }

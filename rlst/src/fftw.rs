@@ -132,10 +132,13 @@
 //! RLST 0.11 replaces the interface above. Until it is complete, the new types live in this
 //! module beside the 0.10 ones, which keep their names and share the new FFTW lock; the 0.10
 //! types are removed when the new interface is complete. So far the new interface has
-//! complex-to-complex plans on slices:
+//! complex-to-complex plans on slices and on RLST arrays and views:
 //!
 //! - [`Layout`], made from [`Dim`]s and a [`Placement`]: transform and batch dimensions with
 //!   strides, validated and normalised;
+//! - layouts from RLST arrays and views of any memory order, subviews, slices and nested views
+//!   included: [`Layout::along_axis`], [`Layout::over_axes`] and their in-place variants,
+//!   which pass FFTW the dimensions in the order of the axes given, with their own strides;
 //! - [`Planner`], a builder with [`Rigor`], wisdom-only, unaligned, time-limit, alignment-class
 //!   and scratch options, whose input-policy requests ([`DefaultRequest`],
 //!   [`PreserveRequest`], [`DestroyRequest`]) decide a plan's policy;
@@ -143,14 +146,16 @@
 //!   [`Destroying`] or [`InPlace`], which runs on any buffers that fit its layout and
 //!   [`AlignmentClass`]es, from any thread, with [`Plan::description`] and
 //!   [`Plan::fingerprint`];
-//! - [`FftBuffer`] and [`FftBufferMut`], implemented for slices;
+//! - [`FftBuffer`] and [`FftBufferMut`], implemented for slices and for RLST arrays and views
+//!   through [`StridedRawAccess`](crate::StridedRawAccess), checked at execution by shape,
+//!   strides and storage;
 //! - [`FftwError`] and [`Side`]; [`Direction`]; [`PLAN_ALIGNMENT`]; [`Backend`],
 //!   [`backend`] and [`version`].
 //!
 //! Plans are made through FFTW's 64-bit guru interface, on scratch buffers unless a `*_on`
 //! method is used, so planning never touches user data. Execution checks the buffers against
-//! the plan before calling FFTW and takes no lock. Layouts from RLST arrays, split storage,
-//! the real-to-complex and real-to-real families, wisdom and threads follow.
+//! the plan before calling FFTW and takes no lock. Split storage, the real-to-complex and
+//! real-to-real families, wisdom and threads follow.
 //!
 //! ```
 //! use rlst::{c64, rlst_dynamic_array};
