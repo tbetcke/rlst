@@ -7,18 +7,22 @@ use std::ptr::NonNull;
 
 use super::align::AlignmentClass;
 use super::kind::Direction;
-use super::layout::{Layout, Placement};
+use super::layout::{Layout, LayoutFamily, Placement};
 use super::lock::with_fftw;
 use super::options::Rigor;
 use super::real::FftwReal;
+use super::scale::Scale;
 
 pub(crate) mod sealed {
     use std::ffi::c_uint;
 
-    use crate::fftw::layout::Placement;
+    use crate::fftw::layout::{LayoutFamily, Placement};
 
-    /// Seals [`Family`](super::Family).
-    pub trait Family {}
+    /// Seals [`Family`](super::Family) and names the layouts of the family.
+    pub trait Family {
+        /// The family of the layouts that plans of this family are made for.
+        const KIND: LayoutFamily;
+    }
 
     /// Seals [`Policy`](super::Policy) and carries what the policy means for FFTW.
     pub trait Policy {
@@ -29,17 +33,20 @@ pub(crate) mod sealed {
     }
 }
 
-/// The transform family of a [`Plan`]: [`C2c`] or [`SplitC2c`] (r2c, c2r, r2r and the other
-/// split families follow).
+/// The transform family of a [`Plan`]: [`C2c`], [`SplitC2c`], [`R2c`] or [`C2r`] (r2r and the
+/// split real families follow).
 ///
-/// The trait is sealed.
+/// A family needs layouts of its [`Storage`](super::Storage) on each side, and every planner
+/// method rejects a layout of another family. The trait is sealed.
 ///
 /// ```
-/// use rlst::fftw::{C2c, Family, SplitC2c};
+/// use rlst::fftw::{C2c, C2r, Family, R2c, SplitC2c};
 ///
 /// fn family<F: Family>() {}
 /// family::<C2c>();
 /// family::<SplitC2c>();
+/// family::<R2c>();
+/// family::<C2r>();
 /// ```
 pub trait Family: sealed::Family {}
 
@@ -173,11 +180,141 @@ pub enum Destroying {}
 #[derive(Clone, Copy, Debug)]
 pub enum InPlace {}
 
-impl sealed::Family for C2c {}
+/// Real-to-complex transforms: real input, interleaved complex output, always forward (FFTW's
+/// sign −1).
+///
+/// The output holds the non-redundant half of the spectrum of the real input: along the
+/// halved axis, the last transform dimension, `n / 2 + 1` complex values for the `n` reals,
+/// from which Hermitian symmetry gives the rest. Plans of this family are made for layouts of
+/// real input and complex output ([`Layout::over_axes`] of a real and a complex array,
+/// [`Layout::r2c_inplace`], [`Layout::with_storage`]) by
+/// [`Planner::r2c`](super::Planner::r2c) and its companions, and execute with a real input
+/// and a complex output. A type-level marker; it is never constructed.
+///
+/// ```
+/// use rlst::{c64, rlst_dynamic_array};
+/// use rlst::fftw::{Layout, Planner};
+///
+/// let mut input = rlst_dynamic_array!(f64, [8, 2] | rlst::FFTW_ALIGNED);
+/// let mut output = rlst_dynamic_array!(c64, [5, 2] | rlst::FFTW_ALIGNED);
+/// input[[1, 0]] = 1.0;
+/// let layout = Layout::along_axis(&input, &output, 0)?;
+/// let plan = Planner::<f64>::new().r2c(&layout)?;
+/// plan.execute(&input, &mut output)?;
+/// // The spectrum of an impulse at 1 is exp(-2πi k / 8).
+/// let expected = c64::new(0.0, -std::f64::consts::PI / 2.0).exp();
+/// assert!((output[[2, 0]] - expected).norm() < 1e-12);
+/// # Ok::<(), rlst::fftw::FftwError>(())
+/// ```
+///
+/// The input is real, so a complex input does not compile:
+///
+/// ```compile_fail,E0277
+/// use rlst::{c64, rlst_dynamic_array};
+/// use rlst::fftw::{Layout, Planner};
+///
+/// let input = rlst_dynamic_array!(f64, [8] | rlst::FFTW_ALIGNED);
+/// let mut output = rlst_dynamic_array!(c64, [5] | rlst::FFTW_ALIGNED);
+/// let layout = Layout::along_axis(&input, &output, 0)?;
+/// let plan = Planner::<f64>::new().r2c(&layout)?;
+/// let complex_input = rlst_dynamic_array!(c64, [8] | rlst::FFTW_ALIGNED);
+/// plan.execute(&complex_input, &mut output)?;
+/// # Ok::<(), rlst::fftw::FftwError>(())
+/// ```
+///
+/// while the same code with the real input does:
+///
+/// ```
+/// use rlst::{c64, rlst_dynamic_array};
+/// use rlst::fftw::{Layout, Planner};
+///
+/// let input = rlst_dynamic_array!(f64, [8] | rlst::FFTW_ALIGNED);
+/// let mut output = rlst_dynamic_array!(c64, [5] | rlst::FFTW_ALIGNED);
+/// let layout = Layout::along_axis(&input, &output, 0)?;
+/// let plan = Planner::<f64>::new().r2c(&layout)?;
+/// plan.execute(&input, &mut output)?;
+/// # Ok::<(), rlst::fftw::FftwError>(())
+/// ```
+#[derive(Clone, Copy, Debug)]
+pub enum R2c {}
+
+/// Complex-to-real transforms: interleaved complex input, real output, always backward
+/// (FFTW's sign +1).
+///
+/// The inverse of [`R2c`]: the input is the non-redundant half of a Hermitian spectrum, `n /
+/// 2 + 1` complex values along the halved axis, the last transform dimension, for `n` real
+/// outputs. FFTW reads only that half, and assumes the symmetry: imaginary parts that
+/// Hermitian symmetry forces to zero are ignored. Unlike every other family, **a
+/// complex-to-real plan destroys its input by default**, as in FFTW: the default plan is
+/// [`Destroying`] and executes with `&mut input`, so the default is visible at the call site.
+/// [`Planner::preserve_input`](super::Planner::preserve_input) makes a [`Preserving`] plan,
+/// over one transform dimension only (design, Section 3 item 5). A type-level marker; it is
+/// never constructed.
+///
+/// ```
+/// use rlst::{c64, rlst_dynamic_array};
+/// use rlst::fftw::{C2r, Destroying, Layout, Plan, Planner};
+///
+/// let mut input = rlst_dynamic_array!(c64, [5] | rlst::FFTW_ALIGNED);
+/// let mut output = rlst_dynamic_array!(f64, [8] | rlst::FFTW_ALIGNED);
+/// input[[0]] = c64::new(8.0, 0.0);
+/// let layout = Layout::along_axis(&input, &output, 0)?;
+/// let plan: Plan<f64, C2r, Destroying> = Planner::new().c2r(&layout)?;
+/// plan.execute(&mut input, &mut output)?;
+/// // The spectrum of a constant 1 of length 8.
+/// assert!((0..8).all(|i| (output[[i]] - 8.0).abs() < 1e-12));
+/// # Ok::<(), rlst::fftw::FftwError>(())
+/// ```
+///
+/// A default complex-to-real plan may overwrite its input, so this does not compile:
+///
+/// ```compile_fail,E0308
+/// use rlst::{c64, rlst_dynamic_array};
+/// use rlst::fftw::{Layout, Planner};
+///
+/// let input = rlst_dynamic_array!(c64, [5] | rlst::FFTW_ALIGNED);
+/// let mut output = rlst_dynamic_array!(f64, [8] | rlst::FFTW_ALIGNED);
+/// let layout = Layout::along_axis(&input, &output, 0)?;
+/// let plan = Planner::<f64>::new().c2r(&layout)?;
+/// plan.execute(&input, &mut output)?;
+/// # Ok::<(), rlst::fftw::FftwError>(())
+/// ```
+///
+/// while a plan made with `preserve_input()` takes the input shared:
+///
+/// ```
+/// use rlst::{c64, rlst_dynamic_array};
+/// use rlst::fftw::{Layout, Planner};
+///
+/// let input = rlst_dynamic_array!(c64, [5] | rlst::FFTW_ALIGNED);
+/// let mut output = rlst_dynamic_array!(f64, [8] | rlst::FFTW_ALIGNED);
+/// let layout = Layout::along_axis(&input, &output, 0)?;
+/// let plan = Planner::<f64>::new().preserve_input().c2r(&layout)?;
+/// plan.execute(&input, &mut output)?;
+/// # Ok::<(), rlst::fftw::FftwError>(())
+/// ```
+#[derive(Clone, Copy, Debug)]
+pub enum C2r {}
+
+impl sealed::Family for C2c {
+    const KIND: LayoutFamily = LayoutFamily::C2c;
+}
 impl Family for C2c {}
 
-impl sealed::Family for SplitC2c {}
+impl sealed::Family for SplitC2c {
+    const KIND: LayoutFamily = LayoutFamily::SplitC2c;
+}
 impl Family for SplitC2c {}
+
+impl sealed::Family for R2c {
+    const KIND: LayoutFamily = LayoutFamily::R2c;
+}
+impl Family for R2c {}
+
+impl sealed::Family for C2r {
+    const KIND: LayoutFamily = LayoutFamily::C2r;
+}
+impl Family for C2r {}
 
 impl sealed::Policy for Preserving {
     const FLAGS: c_uint = fftw_sys::FFTW_PRESERVE_INPUT;
@@ -426,6 +563,50 @@ impl<T: FftwReal, F: Family, P: Policy> Plan<T, F, P> {
     /// ```
     pub fn alignment(&self) -> Option<(AlignmentClass, AlignmentClass)> {
         self.alignment
+    }
+
+    /// The logical size N of one transform: the product over the transform dimensions of the
+    /// extent n, which for real-to-complex and complex-to-real plans is the logical real
+    /// extent.
+    ///
+    /// A backward transform after a forward one multiplies the data by N, and
+    /// [`scale_factor`](Plan::scale_factor) undoes it (design, Section 4.9).
+    ///
+    /// ```
+    /// use rlst::{c64, rlst_dynamic_array};
+    /// use rlst::fftw::{Layout, Planner};
+    ///
+    /// // Real-to-complex over both axes of a real [6, 8] array; axis 1 is halved.
+    /// let real = rlst_dynamic_array!(f64, [6, 8] | rlst::FFTW_ALIGNED);
+    /// let complex = rlst_dynamic_array!(c64, [6, 5] | rlst::FFTW_ALIGNED);
+    /// let plan = Planner::<f64>::new().r2c(&Layout::over_axes(&real, &complex, &[0, 1])?)?;
+    /// assert_eq!(plan.logical_size(), 48);
+    /// # Ok::<(), rlst::fftw::FftwError>(())
+    /// ```
+    pub fn logical_size(&self) -> usize {
+        self.layout.logical_size()
+    }
+
+    /// The factor 1, 1/N or 1/√N of `scale`, with N the [`logical_size`](Plan::logical_size),
+    /// in the plan's precision.
+    ///
+    /// FFTW's transforms are unnormalised; the caller multiplies the output by the factor
+    /// with RLST's array arithmetic. A uniform factor does not make the discrete cosine and
+    /// sine transforms orthonormal (see [`Scale`]).
+    ///
+    /// ```
+    /// use rlst::fftw::{Dim, Direction, Layout, Placement, Planner, Scale};
+    ///
+    /// let layout = Layout::new(&[Dim { n: 16, is: 1, os: 1 }], &[], Placement::OutOfPlace)?;
+    /// let plan = Planner::<f32>::new().c2c(&layout, Direction::Backward)?;
+    /// assert_eq!(plan.scale_factor(Scale::None), 1.0);
+    /// assert_eq!(plan.scale_factor(Scale::Inverse), 0.0625);
+    /// assert_eq!(plan.scale_factor(Scale::InverseSqrt), 0.25);
+    /// # Ok::<(), rlst::fftw::FftwError>(())
+    /// ```
+    pub fn scale_factor(&self, scale: Scale) -> T {
+        T::from_f64(scale.factor(self.logical_size()))
+            .expect("a scale factor in (0, 1] is a finite real of every FFTW precision")
     }
 }
 

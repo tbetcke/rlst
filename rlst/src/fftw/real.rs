@@ -1,5 +1,6 @@
 //! Precision dispatch: [`FftwReal`] for `f32` and `f64`.
 
+use super::element::FftElement;
 use crate::{RlstScalar, c32, c64};
 
 pub(crate) mod sealed {
@@ -9,7 +10,7 @@ pub(crate) mod sealed {
 
     /// Seals [`FftwReal`](super::FftwReal) and carries FFTW's functions for one precision.
     ///
-    /// Every function except `execute_dft` and `execute_split_dft` must be called inside
+    /// Every function except the `execute_*` functions must be called inside
     /// [`with_fftw`](crate::fftw::lock::with_fftw).
     pub trait Sealed: Sized {
         /// FFTW's opaque plan type of this precision, `fftw_plan_s` or `fftwf_plan_s`.
@@ -82,6 +83,68 @@ pub(crate) mod sealed {
             ii: *mut Self,
             ro: *mut Self,
             io: *mut Self,
+        );
+
+        /// `fftw_plan_guru64_dft_r2c` or `fftwf_plan_guru64_dft_r2c`, which always plans a
+        /// forward transform.
+        ///
+        /// # Safety
+        ///
+        /// The arguments must satisfy FFTW's conditions for the guru64 r2c planner: `dims` and
+        /// `howmany_dims` point to `rank` and `howmany_rank` dimensions, with input strides in
+        /// reals and output strides in complex elements, and `input` and `output` to buffers
+        /// that cover the spans of those dimensions, the last transform dimension with `n`
+        /// reals in and `n / 2 + 1` complex elements out. The caller holds the FFTW lock.
+        unsafe fn plan_guru64_dft_r2c(
+            rank: c_int,
+            dims: *const fftw_sys::fftw_iodim64,
+            howmany_rank: c_int,
+            howmany_dims: *const fftw_sys::fftw_iodim64,
+            input: *mut Self,
+            output: *mut Complex<Self>,
+            flags: c_uint,
+        ) -> *mut Self::RawPlan;
+
+        /// `fftw_execute_dft_r2c` or `fftwf_execute_dft_r2c`.
+        ///
+        /// # Safety
+        ///
+        /// `plan` is a live r2c plan, and `input` and `output` satisfy FFTW's new-array
+        /// conditions for it.
+        unsafe fn execute_dft_r2c(
+            plan: *mut Self::RawPlan,
+            input: *mut Self,
+            output: *mut Complex<Self>,
+        );
+
+        /// `fftw_plan_guru64_dft_c2r` or `fftwf_plan_guru64_dft_c2r`, which always plans a
+        /// backward transform.
+        ///
+        /// # Safety
+        ///
+        /// As for `plan_guru64_dft_r2c`, with the sides swapped: input strides in complex
+        /// elements and output strides in reals, the last transform dimension with `n / 2 + 1`
+        /// complex elements in and `n` reals out. The caller holds the FFTW lock.
+        unsafe fn plan_guru64_dft_c2r(
+            rank: c_int,
+            dims: *const fftw_sys::fftw_iodim64,
+            howmany_rank: c_int,
+            howmany_dims: *const fftw_sys::fftw_iodim64,
+            input: *mut Complex<Self>,
+            output: *mut Self,
+            flags: c_uint,
+        ) -> *mut Self::RawPlan;
+
+        /// `fftw_execute_dft_c2r` or `fftwf_execute_dft_c2r`.
+        ///
+        /// # Safety
+        ///
+        /// `plan` is a live c2r plan, and `input` and `output` satisfy FFTW's new-array
+        /// conditions for it.
+        unsafe fn execute_dft_c2r(
+            plan: *mut Self::RawPlan,
+            input: *mut Complex<Self>,
+            output: *mut Self,
         );
 
         /// `fftw_destroy_plan` or `fftwf_destroy_plan`.
@@ -185,6 +248,70 @@ pub(crate) mod sealed {
                         unsafe { fftw_sys::[<$prefix execute_split_dft>](plan, ri, ii, ro, io) }
                     }
 
+                    unsafe fn plan_guru64_dft_r2c(
+                        rank: c_int,
+                        dims: *const fftw_sys::fftw_iodim64,
+                        howmany_rank: c_int,
+                        howmany_dims: *const fftw_sys::fftw_iodim64,
+                        input: *mut Self,
+                        output: *mut Complex<Self>,
+                        flags: c_uint,
+                    ) -> *mut Self::RawPlan {
+                        // SAFETY: forwarded from the caller, see the trait's contract.
+                        unsafe {
+                            fftw_sys::[<$prefix plan_guru64_dft_r2c>](
+                                rank,
+                                dims,
+                                howmany_rank,
+                                howmany_dims,
+                                input,
+                                output,
+                                flags,
+                            )
+                        }
+                    }
+
+                    unsafe fn execute_dft_r2c(
+                        plan: *mut Self::RawPlan,
+                        input: *mut Self,
+                        output: *mut Complex<Self>,
+                    ) {
+                        // SAFETY: forwarded from the caller, see the trait's contract.
+                        unsafe { fftw_sys::[<$prefix execute_dft_r2c>](plan, input, output) }
+                    }
+
+                    unsafe fn plan_guru64_dft_c2r(
+                        rank: c_int,
+                        dims: *const fftw_sys::fftw_iodim64,
+                        howmany_rank: c_int,
+                        howmany_dims: *const fftw_sys::fftw_iodim64,
+                        input: *mut Complex<Self>,
+                        output: *mut Self,
+                        flags: c_uint,
+                    ) -> *mut Self::RawPlan {
+                        // SAFETY: forwarded from the caller, see the trait's contract.
+                        unsafe {
+                            fftw_sys::[<$prefix plan_guru64_dft_c2r>](
+                                rank,
+                                dims,
+                                howmany_rank,
+                                howmany_dims,
+                                input,
+                                output,
+                                flags,
+                            )
+                        }
+                    }
+
+                    unsafe fn execute_dft_c2r(
+                        plan: *mut Self::RawPlan,
+                        input: *mut Complex<Self>,
+                        output: *mut Self,
+                    ) {
+                        // SAFETY: forwarded from the caller, see the trait's contract.
+                        unsafe { fftw_sys::[<$prefix execute_dft_c2r>](plan, input, output) }
+                    }
+
                     unsafe fn destroy_plan(plan: *mut Self::RawPlan) {
                         // SAFETY: forwarded from the caller, see the trait's contract.
                         unsafe { fftw_sys::[<$prefix destroy_plan>](plan) }
@@ -225,7 +352,7 @@ pub(crate) mod sealed {
 /// assert_eq!(precision::<f32>(), 32);
 /// assert_eq!(precision::<f64>(), 64);
 /// ```
-pub trait FftwReal: RlstScalar<Real = Self> + sealed::Sealed {}
+pub trait FftwReal: RlstScalar<Real = Self> + FftElement<Real = Self> + sealed::Sealed {}
 
 impl FftwReal for f32 {}
 impl FftwReal for f64 {}

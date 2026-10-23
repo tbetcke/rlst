@@ -1,4 +1,5 @@
-//! Concurrency of complex-to-complex plans (tasks F4 and F3; design Sections 5 and 7.5).
+//! Concurrency of complex-to-complex and real-to-complex plans (tasks F4, F3 and F5a; design
+//! Sections 5 and 7.5).
 //!
 //! The tests run as threads of the test process, beside the other tests, and plan with
 //! `Rigor::Estimate` only, so no wisdom of a greater rigor exists in the process and plans of
@@ -18,11 +19,13 @@ use crate::dense::array::StridedSliceArrayMut;
 use crate::fftw::lock::with_fftw;
 use crate::fftw::test_support::{
     PolicyKind, SEED, TestReal, aligned, assert_matches_reference, fill_view, logical_reference,
-    multi_indices, random_values, real_sentinel, real_sentinel_parent, sentinel, sentinel_parent,
+    multi_indices, random_reals, random_values, real_sentinel, real_sentinel_parent, sentinel,
+    sentinel_parent,
 };
 use crate::fftw::{
-    AlignmentClass, C2CDirection, C2CPlan, C2c, Destroying, Direction, FftBufferMut,
-    FftPlanInplace, FftwPlanFlags, FftwReal, InPlace, Layout, Plan, Planner, Preserving, SplitC2c,
+    AlignmentClass, C2CDirection, C2CPlan, C2c, C2r, Destroying, Direction, FftBufferMut,
+    FftPlanInplace, FftwPlanFlags, FftwReal, InPlace, Layout, Plan, Planner, Preserving, R2c,
+    SplitC2c, as_reals_mut,
 };
 use crate::{
     Array, BaseItem, DynArray, Shape, SliceArray, SliceArrayMut, Stride, StridedRawAccessMut,
@@ -243,6 +246,12 @@ fn test_plans_are_send_and_sync() {
     send_and_sync::<Plan<f32, SplitC2c, Preserving>>();
     send_and_sync::<Plan<f32, SplitC2c, Destroying>>();
     send_and_sync::<Plan<f32, SplitC2c, InPlace>>();
+    send_and_sync::<Plan<f64, R2c, Preserving>>();
+    send_and_sync::<Plan<f64, R2c, Destroying>>();
+    send_and_sync::<Plan<f64, R2c, InPlace>>();
+    send_and_sync::<Plan<f32, C2r, Preserving>>();
+    send_and_sync::<Plan<f32, C2r, Destroying>>();
+    send_and_sync::<Plan<f32, C2r, InPlace>>();
 }
 
 /// One plan of `policy` executed by `THREADS` threads at once, `ITERATIONS` times each, on
@@ -417,6 +426,135 @@ fn test_one_split_plan_many_threads() {
     for policy in PolicyKind::ALL {
         check_one_split_plan_many_threads::<f64>(policy);
         check_one_split_plan_many_threads::<f32>(policy);
+    }
+}
+
+/// nd-fmm's unit as a real input (task F5a): `UNIT_SHAPE` reals into this spectrum, halved
+/// along axis 0, 71 = 140 / 2 + 1.
+const R2C_SHAPE: [usize; 2] = [71, 8];
+
+/// The complex values of a unit's spectrum: 568, a multiple of 64 bytes in both precisions,
+/// as the 1120 reals of its input are.
+const R2C_UNIT: usize = 71 * 8;
+
+/// A real-to-complex plan of one of the three input policies.
+enum AnyR2cPlan<T: FftwReal> {
+    Preserving(Plan<T, R2c, Preserving>),
+    Destroying(Plan<T, R2c, Destroying>),
+    InPlace(Plan<T, R2c, InPlace>),
+}
+
+impl<T: TestReal> AnyR2cPlan<T> {
+    /// A plan of `policy` for the real unit along axis 0, at class 0; in place on the
+    /// spectrum, whose columns of 142 reals hold the 140 reals of the input.
+    fn unit(policy: PolicyKind) -> Self {
+        let reals = [T::default(); UNIT];
+        let values = [Complex::<T>::default(); R2C_UNIT];
+        let real = SliceArray::from_shape(&reals[..], UNIT_SHAPE);
+        let complex = SliceArray::from_shape(&values[..], R2C_SHAPE);
+        let layout = Layout::along_axis(&real, &complex, 0).unwrap();
+        let planner = Planner::<T>::new();
+        match policy {
+            PolicyKind::Preserving => Self::Preserving(planner.r2c(&layout).unwrap()),
+            PolicyKind::Destroying => {
+                Self::Destroying(planner.may_destroy_input().r2c(&layout).unwrap())
+            }
+            PolicyKind::InPlace => {
+                let layout = Layout::r2c_inplace(&complex, &[0], UNIT_SHAPE[0]).unwrap();
+                Self::InPlace(planner.r2c_inplace(&layout).unwrap())
+            }
+        }
+    }
+
+    /// Write `values` into the unit's input: `input` out of place, the reals of `output` in
+    /// place, whose other reals are set to the sentinel's parts.
+    fn load(&self, input: &mut [T], output: &mut [Complex<T>], values: &[T]) {
+        output.fill(sentinel::<T>());
+        match self {
+            Self::InPlace(_) => {
+                let n = UNIT_SHAPE[0];
+                let reals = as_reals_mut(output);
+                for (column, values) in values.chunks_exact(n).enumerate() {
+                    let start = 2 * R2C_SHAPE[0] * column;
+                    reals[start..start + n].copy_from_slice(values);
+                }
+            }
+            _ => input.copy_from_slice(values),
+        }
+    }
+
+    /// Execute from `input` into `output` out of place, or on `output` in place.
+    fn execute(&self, input: &mut [T], output: &mut [Complex<T>]) {
+        let mut output = SliceArrayMut::from_shape(output, R2C_SHAPE);
+        match self {
+            Self::Preserving(plan) => {
+                plan.execute(&SliceArray::from_shape(&*input, UNIT_SHAPE), &mut output)
+            }
+            Self::Destroying(plan) => plan.execute(
+                &mut SliceArrayMut::from_shape(input, UNIT_SHAPE),
+                &mut output,
+            ),
+            Self::InPlace(plan) => plan.execute(&mut output),
+        }
+        .unwrap()
+    }
+}
+
+/// One real-to-complex plan of `policy` executed by `THREADS` threads at once, `ITERATIONS`
+/// times each, on disjoint units of one parent, against the sequential results bit for bit.
+fn check_one_r2c_plan_many_threads<T: TestReal>(policy: PolicyKind) {
+    let plan = AnyR2cPlan::<T>::unit(policy);
+    let mut input = real_sentinel_parent::<T, 1>([THREADS * UNIT]);
+    let mut output = sentinel_parent::<T, 1>([THREADS * R2C_UNIT]);
+    let (inputs, _) = input.data_mut().unwrap().as_chunks_mut::<UNIT>();
+    let (outputs, _) = output.data_mut().unwrap().as_chunks_mut::<R2C_UNIT>();
+    // Each unit with its seeded input and its sequential result.
+    let units: Vec<_> = inputs
+        .iter_mut()
+        .zip(outputs)
+        .enumerate()
+        .map(|(k, (input, output))| {
+            let seed = unit_seed(k);
+            let values = random_reals::<T>(seed, UNIT);
+            plan.load(input, output, &values);
+            plan.execute(input, output);
+            let expected = bits(&output[..]);
+            (input, output, values, expected, seed)
+        })
+        .collect();
+    let barrier = Barrier::new(THREADS);
+    std::thread::scope(|scope| {
+        for (thread, (input, output, values, expected, seed)) in units.into_iter().enumerate() {
+            let (plan, barrier) = (&plan, &barrier);
+            scope.spawn(move || {
+                for iteration in 0..ITERATIONS {
+                    let context = Context {
+                        precision: T::NAME,
+                        policy,
+                        seed,
+                        thread,
+                        iteration,
+                        test: "one r2c plan, many threads",
+                    };
+                    plan.load(input, output, &values);
+                    // Every thread starts each execution together with the others.
+                    barrier.wait();
+                    plan.execute(input, output);
+                    assert!(
+                        bits(&output[..]) == expected,
+                        "{context}: the result differs from the sequential one"
+                    );
+                }
+            });
+        }
+    });
+}
+
+#[test]
+fn test_one_r2c_plan_many_threads() {
+    for policy in PolicyKind::ALL {
+        check_one_r2c_plan_many_threads::<f64>(policy);
+        check_one_r2c_plan_many_threads::<f32>(policy);
     }
 }
 
