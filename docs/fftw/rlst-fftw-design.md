@@ -1,7 +1,7 @@
 # FFTW interfaces for RLST: design proposal
 
-Draft 0.14, 2026-10-22. A proposal for the RLST maintainers, not a plan until it is signed
-off. It records the decisions taken on 2026-10-21 and 2026-10-22. It replaces RLST's FFTW interface
+Draft 0.15, 2026-10-23. A proposal for the RLST maintainers, not a plan until it is signed
+off. It records the decisions taken from 2026-10-21 to 2026-10-23. It replaces RLST's FFTW interface
 completely: every transform family of FFTW 3.3's serial interface, plans that are
 independent of the arrays they run on, checked and sound execution, wisdom, threads,
 alignment classes, determinism with stated preconditions, a test suite sized for CI, and
@@ -18,7 +18,7 @@ for nd-fmm: Section 11 lists open points and options for nd-fmm's own review.
 In the RLST repository this document is `docs/fftw/rlst-fftw-design.md`; the task briefs
 are in `docs/fftw/tasks/` and the workflow in `docs/fftw/README.md`.
 
-What drafts 0.6 to 0.14 change, for the start of the implementation:
+What drafts 0.6 to 0.15 change, for the start of the implementation:
 
 - **Work plan** (Section 9): the removal of `fftw_source` and `fftw_mkl` moves from F7 to
   F1; the 0.10 module coexists with the new types until F7 and shares the new FFTW lock;
@@ -61,6 +61,10 @@ What drafts 0.6 to 0.14 change, for the start of the implementation:
   layout functions of their own and no in-place plans (Sections 4.4 and 4.5, DC33);
   `PlanCreationFailed` carries a hint (Section 4.15, DC34); `Plan::logical_size` and
   `Plan::scale_factor` on every plan (Section 4.9, DC35).
+- **In-place layouts and preserving c2r** (draft 0.15, from task F5a): in place, both sides
+  must address distinct elements, since the transform overwrites its input (Section 4.3,
+  DC36); a preserving c2r plan counts every transform dimension, those of extent 1
+  included (Section 4.4, DC37).
 
 Every decision for the RLST maintainers and every design choice is settled (Section 10).
 This document makes no decisions for nd-fmm (Section 11). Earlier drafts' changes are
@@ -422,9 +426,15 @@ plan.execute(&box_in, &mut box_out)?;
   side (DC30); `Layout::new` and `Layout::new_split` are its shorthands for c2c and split
   c2c, and the halved dimension of r2c and c2r is the last transform dimension. Strides must be non-negative in 0.11
   (RLST's views have no negative strides); an in-place layout needs equal input and output
-  strides, as FFTW requires; and the output must address distinct elements. That last
-  condition is checked by a sufficient rule: with the dimensions of extent above 1 sorted
-  by output stride, every stride is positive and at least the extent times the stride of
+  strides for c2c, split c2c and r2r, as FFTW requires, and the padded layout of DC32 for
+  r2c and c2r; and the output must address distinct elements, as must the input of an
+  in-place layout, which the transform overwrites (DC36). For c2c, split c2c and r2r in
+  place the two sides have equal strides, and for r2c the rule on the complex output implies
+  it for the real input, but an in-place c2r layout can have distinct real outputs and
+  overlapping complex inputs, such as `(8, 1, 1)` with the batch `(3, 4, 8)`, whose last
+  complex element of each transform is the first of the next. That last condition is
+  checked by a sufficient rule: with the dimensions of extent above 1 sorted by their stride
+  on the side checked, every stride is positive and at least the extent times the stride of
   the next smaller one. Layouts built from RLST arrays satisfy the first two by
   construction, and usually the third. `StridedBaseArray::new` accepts any strides that map
   indices to distinct offsets, such as shape [2, 2] with strides [2, 3] (offsets 0, 2, 3 and
@@ -465,9 +475,10 @@ them later would not be a breaking change.
 - Because a destroying plan's `execute` takes `&mut input`, the default of c2r is visible
   at the call site; nothing is overwritten that the caller did not lend mutably. The
   documentation states the exception once: c2r destroys its input unless asked not to.
-- `preserve_input()` on a c2r plan over more than one axis is rejected before FFTW is
-  called, with `FftwError::PreserveInputUnsupported`: FFTW has no input-preserving
-  algorithm for it (Section 3 item 5). On one axis FFTW preserves the input at some cost in
+- `preserve_input()` on a c2r plan over more than one transform dimension, those of extent
+  1 included (DC37), is rejected before FFTW is called, with
+  `FftwError::PreserveInputUnsupported`: FFTW has no input-preserving algorithm for it
+  (Section 3 item 5). On one axis FFTW preserves the input at some cost in
   speed.
 - r2r stays preserving by default although HC2R destroys its input in FFTW: the kinds are
   known only at run time, so the plan's type cannot depend on them. RLST passes
@@ -1005,6 +1016,8 @@ waits for is the complete one. When that release comes is Helmholtz decision D14
 | DC33 | Split r2c and c2r have their own layout functions, with one part axis, and no in-place plans in 0.11 (Sections 4.4 and 4.5) | accepted (F5 brief) |
 | DC34 | `PlanCreationFailed` carries `hint: Option<&'static str>` (Section 4.15) | accepted (F5 brief) |
 | DC35 | `Plan::logical_size() -> usize` and `Plan::scale_factor(Scale) -> T` on every plan; `Layout::logical_size` stays the product of the extents (Section 4.9) | accepted (F5 brief) |
+| DC36 | In place, the distinct-element rule applies to the input side as well as the output side: the transform overwrites its input, and an in-place c2r layout can have distinct outputs and overlapping inputs (Section 4.3) | accepted (F5a) |
+| DC37 | `PreserveInputUnsupported` counts every transform dimension of a c2r plan, those of extent 1 included; a layout with one transform dimension of extent above 1 can be planned along it alone instead (Section 4.4) | accepted (F5a) |
 
 ### 10.2 DF6: why `fftw_source` is dropped
 
@@ -1254,6 +1267,13 @@ review.
   their own and no in-place plans, which corrects the table of Section 4.4 (Sections 4.4 and
   4.5, DC33); `PlanCreationFailed` carries a hint (Section 4.15, DC34); `Plan::logical_size`
   and `Plan::scale_factor` exist on every plan, with their types (Section 4.9, DC35).
+
+- **Draft 0.15** (2026-10-23), from task F5a (`docs/fftw/tasks/F5-real.md`, "Open questions"
+  notes 8 and 10), confirmed by the maintainer as implemented: in place, the
+  distinct-element rule applies to both sides of a layout, which an in-place c2r layout
+  needs (Section 4.3, DC36), and Section 4.3 no longer says that every in-place layout has
+  equal strides on both sides, which DC32 changed for r2c and c2r; a preserving c2r plan
+  counts every transform dimension, those of extent 1 included (Section 4.4, DC37).
 
 ## Appendix B. Migration from 0.10
 
