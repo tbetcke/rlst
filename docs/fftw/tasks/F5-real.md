@@ -478,7 +478,8 @@ and F7.
    and overlapping complex inputs (`(8, 1, 1)` with the batch `(3, 4, 8)`: the last complex
    element of each transform is the first of the next). `Layout::with_storage` applies the
    rule to the input side as well in place; for r2c the rule on the complex output implies
-   it for the real input. Design Section 4.3 could say "in place, on both sides".
+   it for the real input. *Accepted by the maintainer as implemented: design draft 0.15,
+   DC36.*
 9. **`FftElement` and generic code.** DC31 names `f32`, `f64`, `c32` and `c64`. The trait is
    implemented for `f32`, `f64` and `Complex<T>` for every `T: FftwReal`, which are `c32`
    and `c64`, and `FftElement<Real = Self>` is a supertrait of the sealed `FftwReal`, so code
@@ -488,5 +489,6 @@ and F7.
 10. **`PreserveInputUnsupported` counts every transform dimension**, those of extent 1
     included, as work item 3 says: a preserving c2r over both axes of an `[n, 1]` array is
     rejected, although FFTW might plan it as one-dimensional; it can be planned along axis 0.
+    *Accepted by the maintainer as implemented: design draft 0.15, DC37.*
 11. **`Layout`'s `Debug` output** shows `storage` where it showed `gaps`; one F3 test that
     asserted the debug text was updated.
