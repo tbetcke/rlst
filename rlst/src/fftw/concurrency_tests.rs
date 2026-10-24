@@ -1,5 +1,5 @@
-//! Concurrency of complex-to-complex and real-to-complex plans (tasks F4, F3 and F5a; design
-//! Sections 5 and 7.5).
+//! Concurrency of complex-to-complex, real-to-complex and real-to-real plans (tasks F4, F3, F5a
+//! and F5b; design Sections 5 and 7.5).
 //!
 //! The tests run as threads of the test process, beside the other tests, and plan with
 //! `Rigor::Estimate` only, so no wisdom of a greater rigor exists in the process and plans of
@@ -24,8 +24,8 @@ use crate::fftw::test_support::{
 };
 use crate::fftw::{
     AlignmentClass, C2CDirection, C2CPlan, C2c, C2r, Destroying, Direction, FftBufferMut,
-    FftPlanInplace, FftwPlanFlags, FftwReal, InPlace, Layout, Plan, Planner, Preserving, R2c,
-    SplitC2c, as_reals_mut,
+    FftPlanInplace, FftwPlanFlags, FftwReal, InPlace, Layout, Plan, Planner, Preserving, R2c, R2r,
+    R2rKind, SplitC2c, as_reals_mut,
 };
 use crate::{
     Array, BaseItem, DynArray, Shape, SliceArray, SliceArrayMut, Stride, StridedRawAccessMut,
@@ -252,6 +252,9 @@ fn test_plans_are_send_and_sync() {
     send_and_sync::<Plan<f32, C2r, Preserving>>();
     send_and_sync::<Plan<f32, C2r, Destroying>>();
     send_and_sync::<Plan<f32, C2r, InPlace>>();
+    send_and_sync::<Plan<f64, R2r, Preserving>>();
+    send_and_sync::<Plan<f32, R2r, Destroying>>();
+    send_and_sync::<Plan<f64, R2r, InPlace>>();
 }
 
 /// One plan of `policy` executed by `THREADS` threads at once, `ITERATIONS` times each, on
@@ -555,6 +558,115 @@ fn test_one_r2c_plan_many_threads() {
     for policy in PolicyKind::ALL {
         check_one_r2c_plan_many_threads::<f64>(policy);
         check_one_r2c_plan_many_threads::<f32>(policy);
+    }
+}
+
+/// A real-to-real plan of one of the three input policies (task F5b).
+enum AnyR2rPlan<T: FftwReal> {
+    Preserving(Plan<T, R2r, Preserving>),
+    Destroying(Plan<T, R2r, Destroying>),
+    InPlace(Plan<T, R2r, InPlace>),
+}
+
+impl<T: TestReal> AnyR2rPlan<T> {
+    /// A `Redft10` plan of `policy` along axis 0 of the real unit `UNIT_SHAPE`, at class 0.
+    fn unit(policy: PolicyKind) -> Self {
+        let reals = [T::default(); UNIT];
+        let unit = SliceArray::from_shape(&reals[..], UNIT_SHAPE);
+        let kinds = [R2rKind::Redft10];
+        let planner = Planner::<T>::new();
+        match policy {
+            PolicyKind::Preserving => {
+                let layout = Layout::along_axis(&unit, &unit, 0).unwrap();
+                Self::Preserving(planner.r2r(&layout, &kinds).unwrap())
+            }
+            PolicyKind::Destroying => {
+                let layout = Layout::along_axis(&unit, &unit, 0).unwrap();
+                Self::Destroying(planner.may_destroy_input().r2r(&layout, &kinds).unwrap())
+            }
+            PolicyKind::InPlace => {
+                let layout = Layout::along_axis_inplace(&unit, 0).unwrap();
+                Self::InPlace(planner.r2r_inplace(&layout, &kinds).unwrap())
+            }
+        }
+    }
+
+    /// Execute from `input` into `output` out of place, or on `input` in place.
+    fn execute(&self, input: &mut [T], output: &mut [T]) {
+        let mut input = SliceArrayMut::from_shape(input, UNIT_SHAPE);
+        let mut output = SliceArrayMut::from_shape(output, UNIT_SHAPE);
+        match self {
+            Self::Preserving(plan) => plan.execute(&input, &mut output),
+            Self::Destroying(plan) => plan.execute(&mut input, &mut output),
+            Self::InPlace(plan) => plan.execute(&mut input),
+        }
+        .unwrap()
+    }
+}
+
+/// One real-to-real plan of `policy` executed by `THREADS` threads at once, `ITERATIONS`
+/// times each, on disjoint units of one parent, against the sequential results bit for bit.
+fn check_one_r2r_plan_many_threads<T: TestReal>(policy: PolicyKind) {
+    let plan = AnyR2rPlan::<T>::unit(policy);
+    let mut input = real_sentinel_parent::<T, 1>([THREADS * UNIT]);
+    let mut output = real_sentinel_parent::<T, 1>([THREADS * UNIT]);
+    let (inputs, _) = input.data_mut().unwrap().as_chunks_mut::<UNIT>();
+    let (outputs, _) = output.data_mut().unwrap().as_chunks_mut::<UNIT>();
+    // Each unit with its seeded input and its sequential result.
+    let units: Vec<_> = inputs
+        .iter_mut()
+        .zip(outputs)
+        .enumerate()
+        .map(|(k, (input, output))| {
+            let seed = unit_seed(k);
+            let values = random_reals::<T>(seed, UNIT);
+            input.copy_from_slice(&values);
+            plan.execute(input, output);
+            let expected = real_bits(match policy {
+                PolicyKind::InPlace => &input[..],
+                _ => &output[..],
+            });
+            (input, output, values, expected, seed)
+        })
+        .collect();
+    let barrier = Barrier::new(THREADS);
+    std::thread::scope(|scope| {
+        for (thread, (input, output, values, expected, seed)) in units.into_iter().enumerate() {
+            let (plan, barrier) = (&plan, &barrier);
+            scope.spawn(move || {
+                for iteration in 0..ITERATIONS {
+                    let context = Context {
+                        precision: T::NAME,
+                        policy,
+                        seed,
+                        thread,
+                        iteration,
+                        test: "one r2r plan, many threads",
+                    };
+                    input.copy_from_slice(&values);
+                    output.fill(real_sentinel::<T>());
+                    // Every thread starts each execution together with the others.
+                    barrier.wait();
+                    plan.execute(input, output);
+                    let result = match policy {
+                        PolicyKind::InPlace => &input[..],
+                        _ => &output[..],
+                    };
+                    assert!(
+                        real_bits(result) == expected,
+                        "{context}: the result differs from the sequential one"
+                    );
+                }
+            });
+        }
+    });
+}
+
+#[test]
+fn test_one_r2r_plan_many_threads() {
+    for policy in PolicyKind::ALL {
+        check_one_r2r_plan_many_threads::<f64>(policy);
+        check_one_r2r_plan_many_threads::<f32>(policy);
     }
 }
 

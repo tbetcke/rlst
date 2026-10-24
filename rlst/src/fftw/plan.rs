@@ -6,7 +6,7 @@ use std::marker::PhantomData;
 use std::ptr::NonNull;
 
 use super::align::AlignmentClass;
-use super::kind::Direction;
+use super::kind::{Direction, R2rKind};
 use super::layout::{Layout, LayoutFamily, Placement};
 use super::lock::with_fftw;
 use super::options::Rigor;
@@ -33,20 +33,21 @@ pub(crate) mod sealed {
     }
 }
 
-/// The transform family of a [`Plan`]: [`C2c`], [`SplitC2c`], [`R2c`] or [`C2r`] (r2r and the
+/// The transform family of a [`Plan`]: [`C2c`], [`SplitC2c`], [`R2c`], [`C2r`] or [`R2r`] (the
 /// split real families follow).
 ///
 /// A family needs layouts of its [`Storage`](super::Storage) on each side, and every planner
 /// method rejects a layout of another family. The trait is sealed.
 ///
 /// ```
-/// use rlst::fftw::{C2c, C2r, Family, R2c, SplitC2c};
+/// use rlst::fftw::{C2c, C2r, Family, R2c, R2r, SplitC2c};
 ///
 /// fn family<F: Family>() {}
 /// family::<C2c>();
 /// family::<SplitC2c>();
 /// family::<R2c>();
 /// family::<C2r>();
+/// family::<R2r>();
 /// ```
 pub trait Family: sealed::Family {}
 
@@ -296,6 +297,36 @@ pub enum R2c {}
 #[derive(Clone, Copy, Debug)]
 pub enum C2r {}
 
+/// Real-to-real transforms: real input, real output, one [`R2rKind`] per transform dimension.
+///
+/// `kinds[i]` belongs to `layout.dims()[i]`, so for a layout made from arrays to `axes[i]`,
+/// whatever the memory order of the arrays. (The 0.10 interface applied the kinds of
+/// column-major arrays to the axes in reverse order.) Plans of this family are made for
+/// layouts of real input and real output storage ([`Layout::over_axes`] of two real arrays,
+/// [`Layout::over_axes_inplace`] of one, [`Layout::with_storage`]) by
+/// [`Planner::r2r`](super::Planner::r2r) and its companions, which record the kinds
+/// ([`Plan::kinds`]). A type-level marker; it is never constructed.
+///
+/// ```
+/// use rlst::rlst_dynamic_array;
+/// use rlst::fftw::{Layout, Planner, R2rKind};
+///
+/// // A DCT-II along axis 0 and a DST-II along axis 1 of a [4, 3] array.
+/// let mut input = rlst_dynamic_array!(f64, [4, 3] | rlst::FFTW_ALIGNED);
+/// let mut output = rlst_dynamic_array!(f64, [4, 3] | rlst::FFTW_ALIGNED);
+/// input.fill_from_seed_equally_distributed(0);
+/// let layout = Layout::over_axes(&input, &output, &[0, 1])?;
+/// let kinds = [R2rKind::Redft10, R2rKind::Rodft10];
+/// let plan = Planner::<f64>::new().r2r(&layout, &kinds)?;
+/// plan.execute(&input, &mut output)?;
+/// assert_eq!(plan.kinds(), &kinds);
+/// // The logical size is 2 · 4 times 2 · 3.
+/// assert_eq!(plan.logical_size(), 48);
+/// # Ok::<(), rlst::fftw::FftwError>(())
+/// ```
+#[derive(Clone, Copy, Debug)]
+pub enum R2r {}
+
 impl sealed::Family for C2c {
     const KIND: LayoutFamily = LayoutFamily::C2c;
 }
@@ -315,6 +346,11 @@ impl sealed::Family for C2r {
     const KIND: LayoutFamily = LayoutFamily::C2r;
 }
 impl Family for C2r {}
+
+impl sealed::Family for R2r {
+    const KIND: LayoutFamily = LayoutFamily::R2r;
+}
+impl Family for R2r {}
 
 impl sealed::Policy for Preserving {
     const FLAGS: c_uint = fftw_sys::FFTW_PRESERVE_INPUT;
@@ -479,6 +515,8 @@ pub struct Plan<T: FftwReal, F: Family, P: Policy> {
     rigor: Rigor,
     flags: c_uint,
     alignment: Option<(AlignmentClass, AlignmentClass)>,
+    /// The kind of each transform dimension of a real-to-real plan; empty otherwise.
+    kinds: Vec<R2rKind>,
     _marker: PhantomData<(T, F, P)>,
 }
 
@@ -508,8 +546,15 @@ impl<T: FftwReal, F: Family, P: Policy> Plan<T, F, P> {
             rigor,
             flags,
             alignment,
+            kinds: Vec::new(),
             _marker: PhantomData,
         }
+    }
+
+    /// The plan with the kinds of a real-to-real plan.
+    pub(crate) fn with_kinds(mut self, kinds: &[R2rKind]) -> Self {
+        self.kinds = kinds.to_vec();
+        self
     }
 
     /// The raw FFTW plan.
@@ -567,7 +612,8 @@ impl<T: FftwReal, F: Family, P: Policy> Plan<T, F, P> {
 
     /// The logical size N of one transform: the product over the transform dimensions of the
     /// extent n, which for real-to-complex and complex-to-real plans is the logical real
-    /// extent.
+    /// extent, and for real-to-real plans of each kind's logical size for its dimension
+    /// ([`R2rKind::logical_size`]: 2 (n − 1) for a DCT-I, 2 n for a DCT-II, …).
     ///
     /// A backward transform after a forward one multiplies the data by N, and
     /// [`scale_factor`](Plan::scale_factor) undoes it (design, Section 4.9).
@@ -584,7 +630,16 @@ impl<T: FftwReal, F: Family, P: Policy> Plan<T, F, P> {
     /// # Ok::<(), rlst::fftw::FftwError>(())
     /// ```
     pub fn logical_size(&self) -> usize {
-        self.layout.logical_size()
+        match F::KIND {
+            LayoutFamily::R2r => self
+                .layout
+                .dims()
+                .iter()
+                .zip(&self.kinds)
+                .map(|(dim, kind)| kind.logical_size(dim.n as usize))
+                .product(),
+            _ => self.layout.logical_size(),
+        }
     }
 
     /// The factor 1, 1/N or 1/√N of `scale`, with N the [`logical_size`](Plan::logical_size),
@@ -661,6 +716,29 @@ impl<T: FftwReal, P: Policy> Plan<T, SplitC2c, P> {
     }
 }
 
+impl<T: FftwReal, P: Policy> Plan<T, R2r, P> {
+    /// The kind of each transform dimension, in the order of
+    /// [`layout().dims()`](Layout::dims): for a layout made from arrays, the kind of each
+    /// entry of `axes`.
+    ///
+    /// ```
+    /// use rlst::fftw::{Dim, Layout, Placement, Planner, R2rKind, Storage};
+    ///
+    /// let layout = Layout::with_storage(
+    ///     &[Dim { n: 8, is: 1, os: 1 }],
+    ///     &[],
+    ///     (Storage::Real, Storage::Real),
+    ///     Placement::OutOfPlace,
+    /// )?;
+    /// let plan = Planner::<f64>::new().r2r(&layout, &[R2rKind::Dht])?;
+    /// assert_eq!(plan.kinds(), &[R2rKind::Dht]);
+    /// # Ok::<(), rlst::fftw::FftwError>(())
+    /// ```
+    pub fn kinds(&self) -> &[R2rKind] {
+        &self.kinds
+    }
+}
+
 /// The offsets, in reals from the real part of the first element of a side with gap `gap`,
 /// of the pointers FFTW receives as its real and imaginary parts for a split transform in
 /// `direction`.
@@ -691,6 +769,7 @@ impl<T: FftwReal, F: Family, P: Policy> fmt::Debug for Plan<T, F, P> {
             .field("rigor", &self.rigor)
             .field("flags", &format_args!("{:#x}", self.flags))
             .field("alignment", &self.alignment)
+            .field("kinds", &self.kinds)
             .finish()
     }
 }

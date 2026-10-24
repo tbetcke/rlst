@@ -12,12 +12,12 @@ use super::align::{AlignmentClass, PLAN_ALIGNMENT};
 use super::buffer::FftBufferMut;
 use super::error::{FftwError, Side};
 use super::execute::check_overlap;
-use super::kind::Direction;
+use super::kind::{Direction, R2rKind};
 use super::layout::{Dim, Layout, LayoutFamily, Placement};
 use super::lock::{SettingsGuard, with_fftw};
 use super::options::sealed::PolicyFor;
 use super::options::{DefaultRequest, DestroyRequest, PreserveRequest, Rigor};
-use super::plan::{C2c, C2r, Family, InPlace, Plan, Policy, R2c, SplitC2c, split_offsets};
+use super::plan::{C2c, C2r, Family, InPlace, Plan, Policy, R2c, R2r, SplitC2c, split_offsets};
 use super::real::FftwReal;
 
 /// The default bound on scratch memory for planning: 1 GiB for input and output together.
@@ -50,6 +50,9 @@ pub const DEFAULT_MAX_SCRATCH: usize = 1 << 30;
 /// | `Planner::new().c2r(…)`, `.may_destroy_input().c2r(…)` | `Plan<T, C2r, Destroying>` |
 /// | `Planner::new().preserve_input().c2r(…)`, one transform dimension only | `Plan<T, C2r, Preserving>` |
 /// | `Planner::new().c2r_inplace(…)` | `Plan<T, C2r, InPlace>` |
+/// | `Planner::new().r2r(…)`, `.preserve_input().r2r(…)` | `Plan<T, R2r, Preserving>` |
+/// | `Planner::new().may_destroy_input().r2r(…)` | `Plan<T, R2r, Destroying>` |
+/// | `Planner::new().r2r_inplace(…)` | `Plan<T, R2r, InPlace>` |
 ///
 /// Each family follows FFTW's default input policy (DC1): every plan preserves its input
 /// unless [`may_destroy_input`](Planner::may_destroy_input) is given, except a
@@ -440,7 +443,7 @@ impl<T: FftwReal, S> Planner<T, S> {
                     flags,
                 )
             };
-            self.plan_or_error(raw, flags, layout)
+            self.plan_or_error(raw, flags, layout, None)
         })?;
 
         let alignment = (!self.unaligned).then_some(classes);
@@ -560,7 +563,7 @@ impl<T: FftwReal, S> Planner<T, S> {
                     flags,
                 )
             };
-            self.plan_or_error(raw, flags, layout)
+            self.plan_or_error(raw, flags, layout, None)
         })?;
 
         let alignment = (!self.unaligned).then_some(classes);
@@ -713,7 +716,7 @@ impl<T: FftwReal, S> Planner<T, S> {
                     )
                 }
             };
-            self.plan_or_error(raw, flags, layout)
+            self.plan_or_error(raw, flags, layout, None)
         })?;
 
         // FFTW's r2c transforms are always forward and its c2r transforms always backward.
@@ -733,19 +736,175 @@ impl<T: FftwReal, S> Planner<T, S> {
         ))
     }
 
-    /// The plan FFTW returned, or [`FftwError::PlanCreationFailed`] for NULL.
+    /// Plan a real-to-real transform of policy `P` with `kinds` on scratch.
+    fn r2r_on_scratch<P: Policy>(
+        &self,
+        layout: &Layout,
+        kinds: &[R2rKind],
+    ) -> Result<Plan<T, R2r, P>, FftwError> {
+        check_storage::<R2r>(layout)?;
+        check_placement::<P>(layout)?;
+        check_kinds(layout, kinds)?;
+        let real = (align_of::<T>(), "real type");
+        let (input_class, output_class) = self.scratch_classes(layout, [real, real])?;
+        let size = size_of::<T>();
+        self.check_scratch_size(layout, (size, size))?;
+
+        // The scratch lives until the end of this function, after planning; in place the
+        // spans of both sides are equal.
+        let mut input = Scratch::<T>::new(layout.input_span(), 1, input_class);
+        let mut output = match layout.placement() {
+            Placement::OutOfPlace => Some(Scratch::<T>::new(layout.output_span(), 1, output_class)),
+            Placement::InPlace => None,
+        };
+        let input_ptr = input.as_mut_ptr();
+        let output_ptr = output.as_mut().map_or(input_ptr, Scratch::as_mut_ptr);
+        // SAFETY: `input_ptr` and `output_ptr` point to scratch buffers of at least the input
+        // and output spans, in reals, which outlive the call; in place they are the same
+        // buffer.
+        unsafe {
+            self.plan_r2r(
+                layout,
+                kinds,
+                input_ptr,
+                output_ptr,
+                (input_class, output_class),
+            )
+        }
+    }
+
+    /// Plan a real-to-real transform of policy `P` with `kinds` on the caller's buffers.
+    fn r2r_on_buffers<P: Policy>(
+        &self,
+        layout: &Layout,
+        kinds: &[R2rKind],
+        input: *mut T,
+        output: *mut T,
+    ) -> Result<Plan<T, R2r, P>, FftwError> {
+        if layout.placement() == Placement::OutOfPlace {
+            check_overlap(input, layout.input_span(), output, layout.output_span())?;
+        }
+        let classes = (
+            AlignmentClass::of_ptr(input),
+            AlignmentClass::of_ptr(output),
+        );
+        // SAFETY: `input` and `output` are the pointers that `check_side_mut` returned after
+        // checking the caller's buffers against the input and output spans of `layout`, and
+        // the caller borrows the buffers mutably for the call.
+        unsafe { self.plan_r2r(layout, kinds, input, output, classes) }
+    }
+
+    /// Call FFTW's guru64 r2r planner under the FFTW lock.
+    ///
+    /// # Safety
+    ///
+    /// `layout` is a real-to-real layout and `kinds` has one kind per transform dimension
+    /// (`check_kinds`); `input` and `output` point to buffers of at least the input and output
+    /// spans of `layout`, in reals, valid for reads and writes for the duration of the call
+    /// (FFTW writes them with rigors other than `Estimate`); for an in-place layout they are
+    /// equal.
+    unsafe fn plan_r2r<P: Policy>(
+        &self,
+        layout: &Layout,
+        kinds: &[R2rKind],
+        input: *mut T,
+        output: *mut T,
+        classes: (AlignmentClass, AlignmentClass),
+    ) -> Result<Plan<T, R2r, P>, FftwError> {
+        let flags = self.flags::<P>();
+        let guru = GuruDims::new(layout)?;
+        // FFTW's kinds in the order of the transform dimensions, which is the order FFTW
+        // receives the dimensions in: `kinds[i]` belongs to `layout.dims()[i]`.
+        let raw_kinds: Vec<fftw_sys::fftw_r2r_kind> = kinds.iter().map(|kind| kind.raw()).collect();
+        // A preserving plan passes `FFTW_PRESERVE_INPUT`, as every preserving plan does. FFTW's
+        // HC2R destroys its input by default, and FFTW may have no input-preserving algorithm
+        // for an HC2R problem (design, Section 4.4; DC34).
+        let preserving = P::FLAGS & fftw_sys::FFTW_PRESERVE_INPUT != 0;
+        let hint = (preserving && kinds.contains(&R2rKind::Hc2r)).then_some(
+            "FFTW may have no input-preserving algorithm for a transform with an HC2R kind; plan \
+             it with `Planner::may_destroy_input()`, whose plans may overwrite their input",
+        );
+
+        let raw = with_fftw(|state| {
+            state.version_check()?;
+            let _settings = SettingsGuard::<T>::new(state, self.time_limit);
+            // SAFETY: the FFTW lock is held. `guru` holds `rank` and `howmany_rank`
+            // dimensions with non-negative strides, in reals, and `raw_kinds` holds `rank`
+            // kinds, one per transform dimension in the order of `guru.dims`, which outlive
+            // the call. By this function's contract `input` and `output` cover the spans of
+            // these dimensions; they are equal exactly for an in-place layout, whose strides
+            // are equal on both sides.
+            let raw = unsafe {
+                T::plan_guru64_r2r(
+                    guru.rank,
+                    guru.dims.as_ptr(),
+                    guru.howmany_rank,
+                    guru.batch.as_ptr(),
+                    input,
+                    output,
+                    raw_kinds.as_ptr(),
+                    flags,
+                )
+            };
+            self.plan_or_error(raw, flags, layout, hint)
+        })?;
+
+        let alignment = (!self.unaligned).then_some(classes);
+        // A real-to-real plan has no direction; its kinds say what it computes.
+        Ok(Plan::from_raw(
+            raw,
+            layout.clone(),
+            Direction::Forward,
+            self.rigor,
+            flags,
+            alignment,
+        )
+        .with_kinds(kinds))
+    }
+
+    /// The plan FFTW returned, or [`FftwError::PlanCreationFailed`] with `hint` for NULL.
     fn plan_or_error(
         &self,
         raw: *mut T::RawPlan,
         flags: c_uint,
         layout: &Layout,
+        hint: Option<&'static str>,
     ) -> Result<NonNull<T::RawPlan>, FftwError> {
         NonNull::new(raw).ok_or_else(|| FftwError::PlanCreationFailed {
             rigor: self.rigor,
             flags,
             layout: layout.describe(),
+            hint,
         })
     }
+}
+
+/// Check the kinds of a real-to-real plan before FFTW is called, each failure an
+/// [`FftwError::InvalidKind`]: one kind per transform dimension, and `Redft00`, the DCT-I,
+/// only on a dimension of extent 2 or more, as it is not defined for n = 1 (design, Section 3
+/// item 11).
+fn check_kinds(layout: &Layout, kinds: &[R2rKind]) -> Result<(), FftwError> {
+    let rank = layout.dims().len();
+    if kinds.len() != rank {
+        return Err(FftwError::InvalidKind {
+            reason: format!(
+                "the layout has {rank} transform dimensions, and a real-to-real plan needs one \
+                 kind for each, in their order, but {} kinds were given",
+                kinds.len()
+            ),
+        });
+    }
+    for (index, (dim, kind)) in layout.dims().iter().zip(kinds).enumerate() {
+        if *kind == R2rKind::Redft00 && dim.n < 2 {
+            return Err(FftwError::InvalidKind {
+                reason: format!(
+                    "{kind} (DCT-I) is not defined for n = 1, the extent of transform dimension \
+                     {index}"
+                ),
+            });
+        }
+    }
+    Ok(())
 }
 
 /// A layout's dimensions as FFTW's guru64 interface takes them.
@@ -844,6 +1003,10 @@ fn check_storage<F: Family>(layout: &Layout) -> Result<(), FftwError> {
             "make such layouts from a complex input and a real output array, with \
              `Layout::c2r_inplace`, or with `Layout::with_storage`"
         }
+        LayoutFamily::R2r => {
+            "make such layouts from two real arrays, from one in place, or with \
+             `Layout::with_storage`"
+        }
         _ => "make such layouts with `Layout::with_storage`",
     };
     let methods = match found {
@@ -851,6 +1014,7 @@ fn check_storage<F: Family>(layout: &Layout) -> Result<(), FftwError> {
         LayoutFamily::SplitC2c => "the `split_c2c` planner methods",
         LayoutFamily::R2c => "the `r2c` planner methods",
         LayoutFamily::C2r => "the `c2r` planner methods",
+        LayoutFamily::R2r => "the `r2r` planner methods",
         _ => "the planner methods of its family",
     };
     Err(FftwError::InvalidLayout {
@@ -1512,5 +1676,171 @@ impl<T: FftwReal> Planner<T, DefaultRequest> {
         // The buffer is the complex side, the input, whose span holds the real side.
         let data = data.check_side_mut(layout, Side::Input)?.cast::<T>();
         self.real_on_buffers(layout, data, data)
+    }
+}
+
+impl<T: FftwReal, S: PolicyFor<R2r>> Planner<T, S> {
+    /// An out-of-place real-to-real plan for `layout` with `kinds`, planned on scratch.
+    ///
+    /// `layout` has real input and real output storage: made from two real arrays by
+    /// [`Layout::along_axis`] or [`Layout::over_axes`], or by [`Layout::with_storage`].
+    /// `kinds[i]` is the [`R2rKind`] of `layout.dims()[i]`, so for a layout made from arrays
+    /// of `axes[i]`, whatever the memory order of the arrays. The plan records the kinds
+    /// ([`Plan::kinds`]) and is [`Preserving`](super::Preserving), or
+    /// [`Destroying`](super::Destroying) after [`may_destroy_input`](Planner::may_destroy_input).
+    ///
+    /// A preserving plan passes FFTW `FFTW_PRESERVE_INPUT`, with an HC2R kind too, which FFTW
+    /// destroys by default. If FFTW has no input-preserving algorithm for the problem, it
+    /// returns no plan, and planning returns [`FftwError::PlanCreationFailed`] whose `hint`
+    /// names the remedy, `may_destroy_input()`.
+    ///
+    /// Before FFTW is called: [`FftwError::InvalidLayout`] for a layout of another family,
+    /// [`FftwError::PlacementMismatch`] for an in-place layout, [`FftwError::InvalidKind`]
+    /// for a number of kinds other than the number of transform dimensions or for
+    /// [`R2rKind::Redft00`] on a dimension of extent 1, and [`FftwError::ScratchTooLarge`] if
+    /// the scratch would exceed [`max_scratch`](Planner::max_scratch).
+    ///
+    /// ```
+    /// use rlst::rlst_dynamic_array;
+    /// use rlst::fftw::{FftwError, Layout, Planner, R2rKind};
+    ///
+    /// // A DCT-II along each column of a [8, 3] array, and the DCT-III back.
+    /// let mut data = rlst_dynamic_array!(f64, [8, 3] | rlst::FFTW_ALIGNED);
+    /// let mut spectrum = rlst_dynamic_array!(f64, [8, 3] | rlst::FFTW_ALIGNED);
+    /// let mut result = rlst_dynamic_array!(f64, [8, 3] | rlst::FFTW_ALIGNED);
+    /// data.fill_from_seed_equally_distributed(0);
+    /// let layout = Layout::along_axis(&data, &spectrum, 0)?;
+    /// let forward = Planner::<f64>::new().r2r(&layout, &[R2rKind::Redft10])?;
+    /// let backward = Planner::<f64>::new().r2r(&layout, &[R2rKind::Redft01])?;
+    /// forward.execute(&data, &mut spectrum)?;
+    /// backward.execute(&spectrum, &mut result)?;
+    /// // The round trip multiplies by the logical size 2 n = 16.
+    /// assert_eq!(forward.logical_size(), 16);
+    /// assert!((result[[3, 2]] - 16.0 * data[[3, 2]]).abs() < 1e-12);
+    ///
+    /// // One kind per transform dimension.
+    /// let error = Planner::<f64>::new().r2r(&layout, &[R2rKind::Redft10, R2rKind::Dht]);
+    /// assert!(matches!(error, Err(FftwError::InvalidKind { .. })));
+    /// # Ok::<(), FftwError>(())
+    /// ```
+    pub fn r2r(
+        &self,
+        layout: &Layout,
+        kinds: &[R2rKind],
+    ) -> Result<Plan<T, R2r, S::Policy>, FftwError> {
+        self.r2r_on_scratch(layout, kinds)
+    }
+
+    /// An out-of-place real-to-real plan for `layout` with `kinds`, planned on the caller's
+    /// buffers.
+    ///
+    /// As [`r2r`](Planner::r2r), but the buffers, slices of reals or real RLST arrays and
+    /// views, are checked against the layout as at execution ([`FftwError::LayoutMismatch`]),
+    /// and the plan is made for their alignment classes. No scratch is allocated, so this
+    /// plans layouts whose span exceeds [`max_scratch`](Planner::max_scratch).
+    ///
+    /// With [`Rigor::Estimate`] or wisdom-only planning FFTW leaves the buffers untouched.
+    /// **With [`Rigor::Measure`] and stronger, FFTW overwrites both buffers.**
+    ///
+    /// ```
+    /// use rlst::rlst_dynamic_array;
+    /// use rlst::fftw::{Layout, Planner, R2rKind};
+    ///
+    /// let mut input = rlst_dynamic_array!(f32, [17] | rlst::FFTW_ALIGNED);
+    /// let mut output = rlst_dynamic_array!(f32, [17] | rlst::FFTW_ALIGNED);
+    /// let layout = Layout::along_axis(&input, &output, 0)?;
+    /// let plan = Planner::<f32>::new().r2r_on(&mut input, &mut output, &layout, &[R2rKind::Dht])?;
+    /// plan.execute(&input, &mut output)?;
+    /// # Ok::<(), rlst::fftw::FftwError>(())
+    /// ```
+    pub fn r2r_on<I, O>(
+        &self,
+        input: &mut I,
+        output: &mut O,
+        layout: &Layout,
+        kinds: &[R2rKind],
+    ) -> Result<Plan<T, R2r, S::Policy>, FftwError>
+    where
+        I: FftBufferMut<T> + ?Sized,
+        O: FftBufferMut<T> + ?Sized,
+    {
+        check_storage::<R2r>(layout)?;
+        check_placement::<S::Policy>(layout)?;
+        check_kinds(layout, kinds)?;
+        let input = input.check_side_mut(layout, Side::Input)?;
+        let output = output.check_side_mut(layout, Side::Output)?;
+        self.r2r_on_buffers(layout, kinds, input, output)
+    }
+}
+
+impl<T: FftwReal> Planner<T, DefaultRequest> {
+    /// An in-place real-to-real plan for `layout` with `kinds`, planned on scratch.
+    ///
+    /// As [`r2r`](Planner::r2r), for an in-place real-to-real layout, made from one real
+    /// array by [`Layout::along_axis_inplace`] or [`Layout::over_axes_inplace`], or by
+    /// [`Layout::with_storage`]. Returns [`FftwError::InvalidLayout`] for a layout of another
+    /// family, [`FftwError::PlacementMismatch`] for an out-of-place layout,
+    /// [`FftwError::InvalidKind`] for kinds that do not fit the layout and
+    /// [`FftwError::ScratchTooLarge`] if the scratch would exceed
+    /// [`max_scratch`](Planner::max_scratch). The input-policy requests do not apply in
+    /// place, so this method is only available on a planner without one.
+    ///
+    /// ```
+    /// use rlst::rlst_dynamic_array;
+    /// use rlst::fftw::{Layout, Planner, R2rKind};
+    ///
+    /// // A DCT-I over both axes of a [5, 4] array, in place, as RLST's Chebyshev module uses.
+    /// let mut data = rlst_dynamic_array!(f64, [5, 4] | rlst::FFTW_ALIGNED);
+    /// let layout = Layout::over_axes_inplace(&data, &[0, 1])?;
+    /// let plan = Planner::<f64>::new().r2r_inplace(&layout, &[R2rKind::Redft00; 2])?;
+    /// plan.execute(&mut data)?;
+    /// assert_eq!(plan.logical_size(), 8 * 6);
+    /// # Ok::<(), rlst::fftw::FftwError>(())
+    /// ```
+    pub fn r2r_inplace(
+        &self,
+        layout: &Layout,
+        kinds: &[R2rKind],
+    ) -> Result<Plan<T, R2r, InPlace>, FftwError> {
+        self.r2r_on_scratch(layout, kinds)
+    }
+
+    /// An in-place real-to-real plan for `layout` with `kinds`, planned on the caller's
+    /// buffer.
+    ///
+    /// The buffer is a slice of reals or a real RLST array or view, checked against the
+    /// layout as at execution ([`FftwError::LayoutMismatch`]), and the plan is made for the
+    /// buffer's alignment class. No scratch is allocated.
+    ///
+    /// With [`Rigor::Estimate`] or wisdom-only planning FFTW leaves the buffer untouched.
+    /// **With [`Rigor::Measure`] and stronger, FFTW overwrites it.**
+    ///
+    /// ```
+    /// use rlst::rlst_dynamic_array;
+    /// use rlst::fftw::{Layout, Planner, R2rKind};
+    ///
+    /// let mut data = rlst_dynamic_array!(f64, [6, 2] | rlst::FFTW_ALIGNED);
+    /// let layout = Layout::along_axis_inplace(&data, 0)?;
+    /// let plan =
+    ///     Planner::<f64>::new().r2r_inplace_on(&mut data, &layout, &[R2rKind::Rodft11])?;
+    /// plan.execute(&mut data)?;
+    /// # Ok::<(), rlst::fftw::FftwError>(())
+    /// ```
+    pub fn r2r_inplace_on<D>(
+        &self,
+        data: &mut D,
+        layout: &Layout,
+        kinds: &[R2rKind],
+    ) -> Result<Plan<T, R2r, InPlace>, FftwError>
+    where
+        D: FftBufferMut<T> + ?Sized,
+    {
+        check_storage::<R2r>(layout)?;
+        check_placement::<InPlace>(layout)?;
+        check_kinds(layout, kinds)?;
+        data.check_side(layout, Side::Output)?;
+        // In place the input and output spans are equal, so one check covers both sides.
+        let data = data.check_side_mut(layout, Side::Input)?;
+        self.r2r_on_buffers(layout, kinds, data, data)
     }
 }

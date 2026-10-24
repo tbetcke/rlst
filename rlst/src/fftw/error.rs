@@ -155,9 +155,14 @@ pub enum FftwError {
     },
 
     /// FFTW returned no plan.
+    ///
+    /// FFTW gives no reason. When RLST knows a remedy, `hint` names it, and the message
+    /// shows it: for a preserving real-to-real plan with an HC2R kind,
+    /// [`may_destroy_input`](super::Planner::may_destroy_input) (DC34).
     #[error(
         "FFTW could not create a plan with rigor {rigor} and flags {flags:#x} for {layout}; \
-         FFTW gives no reason"
+         FFTW gives no reason{}",
+        .hint.map(|hint| format!("; {hint}")).unwrap_or_default()
     )]
     PlanCreationFailed {
         /// The planning rigor.
@@ -166,6 +171,8 @@ pub enum FftwError {
         flags: u32,
         /// A description of the layout.
         layout: String,
+        /// A remedy, when RLST knows one.
+        hint: Option<&'static str>,
     },
 
     /// FFTW did not accept the wisdom given to it.
