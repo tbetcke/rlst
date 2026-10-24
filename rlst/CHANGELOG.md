@@ -30,22 +30,68 @@ by default. Equal classes modulo 64 imply equal alignment for FFTW on every buil
 **Migration:** none for code that only passes the constant to RLST's allocation; code that
 relied on its value being 16 must use 16 directly.
 
-### New FFTW interface (in progress)
+### New FFTW interface — migration required
 
-A new FFTW interface replaces the 0.10 one: plans independent of the arrays they run on,
-checked and sound execution, input policies in the type of a plan, alignment classes and plan
-fingerprints. This entry is completed, with migration notes, at the release. It provides
-complex-to-complex plans on slices (`Layout`, `Planner`, `Plan` and their companions in
-`rlst::fftw`), and the families and buffers described below.
+`rlst::fftw` is rewritten. Plans are independent of the arrays they run on: a plan is made
+once for a `Layout`, the dimensions and strides of its transforms and their batch, and executes
+on any slices, RLST arrays or views that fit the layout and the plan's alignment classes, from
+any thread. Every transform family of FFTW's serial interface is provided: complex-to-complex,
+real-to-complex and complex-to-real, on interleaved and on split complex storage, and
+real-to-real with all eleven kinds. Execution checks each buffer against the plan before FFTW
+is called; a plan's input policy (`Preserving`, `Destroying` or `InPlace`) is part of its type;
+planning uses scratch buffers, so it never touches user data; plans have fingerprints that
+identify FFTW's algorithm; wisdom can be exported, imported and forgotten; and with the new
+feature `fftw_threads` plans can be threaded. Every FFTW call RLST makes other than plan
+execution, planning, plan destruction, wisdom and FFTW's global settings included, runs under
+one process-wide lock. The guide in `rlst::doc::optional_integrations` covers setup, a worked
+example and seven rules on threads and determinism; the module documentation of `rlst::fftw`
+lists every part.
 
-The 0.10 interface is removed: `Array::into_fft`, `Fft`, `FftMutGuard`, `PlanInplace`,
-`FftPlanInplace`, `C2CPlan`, `C2CDirection`, `R2RPlan`, `R2RPlanKind`, `FftwPlanFlags` and
-`FftPrecision`, with the modules `rlst::fftw::c2c_inplace` and `rlst::fftw::r2r_inplace`.
-`Planner` and `Plan` replace them: `C2CDirection` becomes `Direction`, `R2RPlanKind`
-(fftw-sys's `fftw_r2r_kind`) becomes RLST's own `R2rKind`, and `FftwPlanFlags` becomes
-`Rigor` and the planner's options. Every FFTW call RLST makes other than plan execution,
-planning, plan destruction, wisdom and FFTW's global settings included, runs under one
-process-wide lock.
+**Warning: FFTW is licensed under the GNU General Public License (version 2 or later).** The
+`fftw` feature links GPL-licensed code; the README, the guide and the module documentation
+state the full warning.
+
+**Migration** from the 0.10 interface, which is removed (`Array::into_fft`, `Fft`,
+`FftMutGuard`, `PlanInplace`, `FftPlanInplace`, `C2CPlan`, `C2CDirection`, `R2RPlan`,
+`R2RPlanKind`, `FftwPlanFlags` and `FftPrecision`, with the modules `rlst::fftw::c2c_inplace`
+and `rlst::fftw::r2r_inplace`):
+
+- **No more `into_fft`.** `arr.into_fft()`, `Fft`, its `borrow` and `borrow_mut` and
+  `FftMutGuard` are removed: plans hold no array, and arrays stay ordinary RLST arrays.
+- **Complex transforms.** `fft.c2c_fft(flags, direction)` and then `plan.execute()` become
+  `let layout = Layout::over_axes_inplace(&arr, &axes)?;`,
+  `let plan = Planner::<T>::new().c2c_inplace(&layout, direction)?;` and
+  `plan.execute(&mut arr)?;`. `Layout::along_axis` and `Layout::over_axes` give batched and
+  out-of-place layouts, and `Planner::c2c` an out-of-place plan.
+- **Real-to-real transforms.** `fft.r2r_fft(flags, &kinds)` becomes
+  `Planner::<T>::new().r2r_inplace(&layout, &kinds)?`, with `kinds[i]` for `axes[i]`.
+  **Check code written for 0.10 with different kinds on different axes of a column-major
+  array:** 0.10 applied the kinds in reverse order of the axes, so `kinds[0]` acted on the
+  last axis.
+- **Names.** `C2CDirection` becomes `Direction`; `R2RPlanKind`, fftw-sys's enum, becomes
+  RLST's own `R2rKind` (`FFTW_REDFT00` is `R2rKind::Redft00`, and so on); `PlanInplace`,
+  `FftPlanInplace`, `C2CPlan`, `R2RPlan` and `FftPrecision` are replaced by
+  `Plan<T, F, P>`.
+- **Flags.** `FftwPlanFlags` becomes the planner's options: `.rigor(Rigor::…)`,
+  `.wisdom_only()`, `.may_destroy_input()`, `.unaligned()` and `.time_limit(…)`.
+- **Errors.** A plan FFTW cannot make was `None`; every layout function, planner and
+  execution now returns `Result<_, FftwError>`, with the values involved.
+- **Planning no longer overwrites data.** With `Measure` and stronger rigor, 0.10 overwrote
+  the array while planning. Planning now uses scratch (at most `max_scratch`, 1 GiB by
+  default) unless a `*_on` method is chosen.
+- **Alignment.** `FFTW_ALIGNED` is 64 instead of 16 (see "`FFTW_ALIGNED` is 64" above), and
+  a plan runs only on buffers of its alignment class; allocate plan targets with
+  `rlst_dynamic_array!(…, shape | rlst::FFTW_ALIGNED)`.
+- **Chebychev conversions** return `Result` and handle extents 1 and 0 and any number of
+  dimensions (see "Chebyshev conversions on the new FFTW interface" below).
+- **Features.** `fftw_system` implies `fftw`, `fftw` without `fftw_system` is a compile
+  error, and `fftw_mkl` and `fftw_source` are removed (see "FFTW: `fftw_system` is the only
+  back end" above).
+
+The interface in detail, as it was built:
+
+Complex-to-complex plans on slices: `Layout`, `Planner`, `Plan` and their companions in
+`rlst::fftw`.
 
 Plans also run on RLST arrays and views. `Layout::along_axis`, `Layout::over_axes` and their
 in-place variants build layouts from arrays of any memory order, column-major, row-major and
@@ -202,6 +248,13 @@ without elements can have, returns `None`.
 
 New inherent methods `Array::storage()` and `Array::storage_mut()`, beside `data()` and
 `data_mut()`, give the same access without naming the implementation type.
+
+### Unused build dependencies removed
+
+`rlst` no longer declares the build dependencies `bindgen`, `cc`, `cmake` and `git2`, which
+no build script used; `pkg-config`, optional with `fftw_system`, is its only one. A build
+without `mpi` therefore no longer compiles `bindgen`, `libgit2` or `libz`, and no longer needs
+`libclang`. With `mpi`, `mpi-sys` still uses `bindgen` and needs `libclang`.
 
 ## v0.10.3
 

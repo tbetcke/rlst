@@ -14,6 +14,12 @@ categories = ["mathematics", "science"]
 [lib]
 name = "rlst"
 
+# docs.rs builds the FFTW interface too, threads included; `build.rs` skips FFTW discovery
+# there (`DOCS_RS`), and `--cfg docsrs` marks the feature-gated items.
+[package.metadata.docs.rs]
+features = ["fftw", "fftw_system", "fftw_threads"]
+rustdoc-args = ["--cfg", "docsrs"]
+
 [dependencies]
 rlst-proc-macro = { path = "../proc-macro", version = "0.11.0-dev" }
 num = { version = "0.4", features = ["serde", "rand"] }
@@ -58,10 +64,6 @@ blas-src = { version = "0.14", features = ["openblas"] }
 
 [build-dependencies]
 pkg-config = { version = "0.3", optional = true }
-cc = "1.5"
-bindgen = { version = "0.73.2", default-features = false }
-cmake = "0.1"
-git2 = "0.21"
 
 [features]
 strict = []
@@ -76,7 +78,13 @@ mkl_threading = []
 burn = ["dep:burn"]
 enable_tracing = ["rlst-proc-macro/enable_tracing", "dep:log"]
 # FFTW transforms, through the system's FFTW (`fftw_system`, the only back end).
-# FFTW and the fftw-sys bindings are GPL-licensed; see the README.
+# WARNING: FFTW is licensed under the GNU General Public License (version 2 or later).
+# This feature links FFTW and the GPL-licensed fftw-sys bindings: RLST itself is
+# MIT / Apache-2.0, but distributing a program built with it is subject to the GPL
+# unless you hold a non-free FFTW licence from MIT's Technology Licensing Office.
+# Cargo enables a feature for the whole build when any crate requests it, so check
+# your graph (`cargo tree -e features`). Off by default. Not legal advice; see the
+# README for the full warning.
 fftw = ["dep:fftw-sys", "dep:libc"]
 fftw_system = ["fftw", "fftw-sys/system", "dep:pkg-config"]
 # Threaded FFTW plans (`Planner::threads`): also links FFTW's threads libraries,

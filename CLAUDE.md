@@ -88,7 +88,11 @@ changes:
   set, `build.rs` skips discovery. Set `PKG_CONFIG_PATH` for custom installations;
   cross-compilation must use target libraries, not host Homebrew paths. The interface is being
   rewritten for 0.11 on the `fftw-0.11` branch (see "FFTW rework (0.11)" below); `fftw_source`
-  and `fftw_mkl` were removed by task F1.
+  and `fftw_mkl` were removed by task F1. docs.rs builds with `fftw`, `fftw_system` and
+  `fftw_threads` and `--cfg docsrs` (`[package.metadata.docs.rs]` in `rlst/Cargo.toml`), and
+  `pub mod fftw` and `pub mod chebychev` carry `doc(cfg(feature = "fftw"))` there. `rlst`'s
+  only build dependency is `pkg-config`, with `fftw_system`; task F7c removed the unused
+  `bindgen`, `cc`, `cmake` and `git2`, so `libclang` is needed only by `mpi-sys`, with `mpi`.
 - `fftw_threads` — implies `fftw_system`; adds threaded plans (`Planner::threads`) and
   `rlst::fftw::threads`. `build.rs` also links `fftw3_threads` and `fftw3f_threads`, found in
   the directories of `fftw3` and `fftw3f` (pkg-config's `libdir` or the Homebrew fallback) and
@@ -116,8 +120,12 @@ SuiteSparse discovery checks Homebrew prefixes, `/usr/local`, and `/usr` (includ
 library directories). Set `SUITESPARSE_PATH` to an installation prefix containing `include/` and
 `lib/` to override discovery; see `rlst-suitesparse/README.md`.
 
-FFTW linkage through `fftw_system` can impose GPL obligations; preserve the licensing notice in
-the README when changing that integration. UMFPACK is GPL-2.0-or-later; also preserve
+FFTW linkage through `fftw_system` can impose GPL obligations. The licence warning of the
+FFTW design (Section 6), "Warning: FFTW is licensed under the GNU General Public License
+(version 2 or later)", stands word for word in four places: the README's "LICENSE" section,
+the guide `doc/optional_integrations.rs`, the module documentation of `rlst::fftw`, and (in
+shorter form) the comment on the `fftw` feature in `rlst/Cargo.toml`. Preserve all four when
+changing that integration; a change to the wording goes into the design first. UMFPACK is GPL-2.0-or-later; also preserve
 the SuiteSparse README and build-script licensing warnings.
 
 ## Coding conventions
@@ -305,6 +313,10 @@ cargo test -p rlst-suitesparse
 cargo test --features "fftw,fftw_system,fftw_threads,strict"
 python3 scripts/run_mpi_tests.py
 cargo doc --no-deps --features "mpi,fftw,fftw_system,strict"
+
+# The documentation as docs.rs builds it (nightly; not in CI until task F8a). The guide's
+# links into `rlst::fftw` are checked only in builds with `fftw_threads`
+DOCS_RS=1 RUSTDOCFLAGS="--cfg docsrs -D warnings" cargo +nightly doc --no-deps --features "fftw,fftw_system,fftw_threads"
 
 # The macOS CI job (Homebrew FFTW and pkg-config; BLAS/LAPACK through Accelerate)
 cargo clippy --features "fftw,fftw_system,strict" -- -D warnings
