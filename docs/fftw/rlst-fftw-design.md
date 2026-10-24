@@ -1,6 +1,6 @@
 # FFTW interfaces for RLST: design proposal
 
-Draft 0.16, 2026-10-24. A proposal for the RLST maintainers, not a plan until it is signed
+Draft 0.17, 2026-10-24. A proposal for the RLST maintainers, not a plan until it is signed
 off. It records the decisions taken from 2026-10-21 to 2026-10-24. It replaces RLST's FFTW interface
 completely: every transform family of FFTW 3.3's serial interface, plans that are
 independent of the arrays they run on, checked and sound execution, wisdom, threads,
@@ -18,7 +18,7 @@ for nd-fmm: Section 11 lists open points and options for nd-fmm's own review.
 In the RLST repository this document is `docs/fftw/rlst-fftw-design.md`; the task briefs
 are in `docs/fftw/tasks/` and the workflow in `docs/fftw/README.md`.
 
-What drafts 0.6 to 0.16 change, for the start of the implementation:
+What drafts 0.6 to 0.17 change, for the start of the implementation:
 
 - **Work plan** (Section 9): the removal of `fftw_source` and `fftw_mkl` moves from F7 to
   F1; the 0.10 module coexists with the new types until F7 and shares the new FFTW lock;
@@ -72,6 +72,11 @@ What drafts 0.6 to 0.16 change, for the start of the implementation:
   takes a `NonZeroUsize` and exists only with `fftw_threads`, `Plan::threads` on every plan,
   with two new errors (Sections 4.14 and 4.15, DC41); threaded plans in the determinism tests
   (Section 7.6, DC42); F6 adds `fftw_threads` to CI (Sections 7.7 and 9, DC43).
+- **The Chebyshev port, docs.rs and the build** (draft 0.17, from the F7 brief): the
+  Chebyshev conversions take any number of dimensions and return an empty result for an
+  extent 0 (Section 8, DC44); the comparison with 0.10.3 runs while the 0.10 module exists
+  (Sections 7.3 and 8, DC45); docs.rs builds with `fftw_threads` (Section 6, DC46); F7
+  removes `rlst`'s unused build dependencies (Sections 4.10 and 9, DC47).
 
 Every decision for the RLST maintainers and every design choice is settled (Section 10).
 This document makes no decisions for nd-fmm (Section 11). Earlier drafts' changes are
@@ -680,9 +685,10 @@ Forward and Backward, which belong to `Direction`.
   carries the string (DC13).
 - When `DOCS_RS` is set, `build.rs` skips discovery: rustdoc does not link, so docs.rs can
   build with `fftw_system` without FFTW installed. The build still compiles RLST's build
-  dependencies, and `bindgen` needs `libclang` for that (found while checking F1 in a
-  container without it), so the docs.rs build image must provide `libclang`; F7, which adds
-  the docs.rs metadata, checks that it does.
+  dependencies. `build.rs` uses only `pkg-config`, but `rlst` also declared `bindgen`, `cc`,
+  `cmake` and `git2`, used by no build script since 0.10.3 or earlier, and `bindgen` needs
+  `libclang` (found while checking F1 in a container without it). F7 removes those four
+  (DC47); the docs.rs build image provides `libclang` and FFTW in any case (brief F7).
 
 **`fftw_system`** links `fftw3` and `fftw3f` as today. With `fftw_threads` it also links
 `fftw3_threads` and `fftw3f_threads`, never the `_omp` libraries. Those libraries have no
@@ -824,8 +830,9 @@ Placements:
 
 1. `doc::optional_integrations`, which is not feature-gated, so docs.rs always shows it;
 2. the `fftw` module documentation, made visible on docs.rs by
-   `[package.metadata.docs.rs]` with `features = ["fftw", "fftw_system"]` and
-   `rustdoc-args = ["--cfg", "docsrs"]`, with feature-gated items marked
+   `[package.metadata.docs.rs]` with `features = ["fftw", "fftw_system", "fftw_threads"]`,
+   so that the items of `fftw_threads` appear too (DC46), and `rustdoc-args = ["--cfg",
+   "docsrs"]`, with feature-gated items marked
    `#[cfg_attr(docsrs, doc(cfg(feature = "fftw")))]` (`build.rs` skips discovery on
    docs.rs, Section 4.10);
 3. the README, replacing its current note (which `CLAUDE.md` asks contributors to keep);
@@ -873,7 +880,8 @@ logical size); linearity; Parseval; the shift theorem; r2c against c2c on real d
 against interleaved; a batched plan against a loop of single plans; a multidimensional r2r
 against successive one-dimensional ones. Each holds to round-off, and bit for bit where the
 identity is the same computation. Regressions: kinds per axis on column-major and row-major
-arrays (Section 2.2 item 9); the Chebyshev port against 0.10.3's results to round-off.
+arrays (Section 2.2 item 9); the Chebyshev port against 0.10.3's results to round-off,
+while the 0.10 module exists (DC45), and at extents 1 and 0 (DC44).
 
 ### 7.4 Plans and arrays
 
@@ -973,9 +981,14 @@ GitHub Actions, in `run-tests.yml`, with `CLAUDE.md`'s validation list updated t
   data and coefficient are equal along that axis;
 - the conversion functions return `Result<DynArray<…>, FftwError>` instead of
   unwrapping;
-- results are compared with 0.10.3's to round-off (Section 7.3). The last bits may differ,
-  since one-dimensional plans in turn are not the same plans as one multidimensional plan;
-  the CHANGELOG says so.
+- they take any number of dimensions, since the per-axis steps need nothing per dimension
+  (0.10.3 has `unimplemented!()` above three; with none they return a copy), and an extent
+  of 0 along any axis gives an empty result of the same shape without planning, where
+  0.10.3 panics (DC44);
+- results are compared with 0.10.3's to round-off (Section 7.3) by a test that exists
+  while the 0.10 module does, and is removed with it; the analytic and extent-1 tests stay
+  as the lasting regressions (DC45). The last bits may differ, since one-dimensional plans
+  in turn are not the same plans as one multidimensional plan; the CHANGELOG says so.
 
 ## 9. Work plan
 
@@ -992,7 +1005,7 @@ document and decides nothing for it.
 | F4 | Concurrency and determinism for c2c; rules 2 to 6 of Section 5 in the rustdoc of `Plan` and `Plan::fingerprint` (DC23) | 7.5 and 7.6 without the wisdom API and threads, in the harness-free binary, wisdom-only planning without wisdom and the `ESTIMATE` plan after a `MEASURE` plan included (DC24) | CHR.3, CH4.6, CH8.1 |
 | F5 | r2c and c2r (in place with padding), r2r with all kinds and kinds per axis, split r2c and c2r, `Scale` | 7.2 and 7.3 for these families | "not used" |
 | F6 | Wisdom; the `fftw_threads` feature, with its CI commands (DC43) | 4.13, 4.14; 7.5 and 7.6 for them: wisdom export and import during planning, export, forget and import, shared wisdom, threaded plans (DC24, DC39, DC40, DC42) | "not used" |
-| F7 | Removal of the 0.10 module; the Chebyshev port (Section 8, after F5); documentation with an example for every public item; the licence warning in its four places and the docs.rs metadata; CHANGELOG with the migration notes of Appendix B | doctests; the warning in the four places; the Chebyshev regressions of 7.3 | CHR.1 (the warning) |
+| F7 | Removal of the 0.10 module; the Chebyshev port (Section 8, after F5); documentation with an example for every public item; the licence warning in its four places and the docs.rs metadata; the unused build dependencies removed (DC47); CHANGELOG with the migration notes of Appendix B | doctests; the warning in the four places; the Chebyshev regressions of 7.3 | CHR.1 (the warning) |
 | F8a | CI on Linux (system FFTW, with and without `fftw_threads`) and macOS; the default-build check; docs | 7.7 F8a | CHR.1 (tests on Linux and macOS) |
 | F8b | Benchmarks; **release 0.11.0** | 7.7 F8b; every task above done | CHR.1 and CHR.2 (the release) |
 
@@ -1070,6 +1083,10 @@ waits for is the complete one. When that release comes is Helmholtz decision D14
 | DC41 | `Planner::threads(n: NonZeroUsize)` exists only with `fftw_threads`; `Plan::threads() -> usize` on every plan, 1 without the feature; `InvalidThreadCount` above FFTW's `int`, `ThreadsUnavailable` when n > 1 and thread initialisation failed; `make_planner_thread_safe()` returns `()` (Sections 4.14 and 4.15) | accepted (F6 brief) |
 | DC42 | With `fftw_threads`, the determinism tests assert that threaded `Estimate` plans agree across fresh processes and that threaded planning leaves no trace on single-threaded plans; failures are design questions (Section 7.6) | accepted (F6 brief) |
 | DC43 | F6 adds Clippy and tests with `fftw_threads` to both CI jobs, beside those without it; F8a reviews the matrix (Sections 7.7 and 9) | accepted (F6 brief) |
+| DC44 | The Chebyshev conversions take any number of dimensions (none: a copy), and an extent 0 along any axis gives an empty result without planning (Section 8) | accepted (F7 brief) |
+| DC45 | The comparison of the Chebyshev port with 0.10.3 is a test of F7a, run while the 0.10 module exists and removed with it; the analytic and extent-1 tests are the lasting regressions (Sections 7.3 and 8) | accepted (F7 brief) |
+| DC46 | docs.rs builds with `features = ["fftw", "fftw_system", "fftw_threads"]` (Section 6) | accepted (F7 brief) |
+| DC47 | F7 removes the build dependencies `bindgen`, `cc`, `cmake` and `git2`, which no build script of `rlst` uses (Sections 4.10 and 9) | accepted (F7 brief) |
 
 ### 10.2 DF6: why `fftw_source` is dropped
 
@@ -1338,6 +1355,17 @@ review.
   DC41); threaded plans in the determinism tests (Section 7.6, DC42); F6 adds `fftw_threads`
   to both CI jobs (Sections 7.7 and 9, DC43).
 
+- **Draft 0.17** (2026-10-24), from the open questions of the F7 brief
+  (`docs/fftw/tasks/F7-removal-docs.md`), settled by the maintainer before the task
+  started: the Chebyshev conversions take any number of dimensions and give an empty result
+  for an extent 0, where 0.10.3 panics (Section 8, DC44); the comparison with 0.10.3 is a
+  test that exists while the 0.10 module does (Sections 7.3 and 8, DC45); docs.rs builds
+  with `fftw_threads` as well, which corrects Section 6 (DC46); F7 removes the build
+  dependencies `bindgen`, `cc`, `cmake` and `git2`, which no build script uses, and Section
+  4.10 no longer says that docs.rs must provide `libclang` for them (Sections 4.10 and 9,
+  DC47). The first three take the proposed options; the last takes the brief's option (b)
+  instead of the proposed separate pull request into `main`.
+
 ## Appendix B. Migration from 0.10
 
 | 0.10 | 0.11 |
@@ -1352,7 +1380,7 @@ review.
 | `Option` on failure | `Result<_, FftwError>` |
 | planning with `Measure` overwrote the array | planning uses scratch (at most `max_scratch`), unless `*_on` is chosen |
 | `FFTW_ALIGNED` = 16 | `FFTW_ALIGNED` = 64 |
-| `chebychev` conversions return arrays and panic on failure | they return `Result`; extent 1 is handled |
+| `chebychev` conversions return arrays and panic on failure | they return `Result`; extents 1 and 0 and any number of dimensions are handled |
 | `fftw_system` without `fftw` linked FFTW | `fftw_system` implies `fftw`; `fftw` without `fftw_system` is a compile error |
 | `fftw_mkl` | removed (DF5) |
 | `fftw_source` | removed (DF6); install FFTW from the system, as the README describes |
