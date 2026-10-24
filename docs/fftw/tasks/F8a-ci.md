@@ -3,7 +3,7 @@
 | | |
 | --- | --- |
 | Task | F8a (design, Section 9) |
-| Status | not started |
+| Status | done |
 | Depends on | F0 to F7 |
 | Pull requests | one, into `fftw-0.11`: `ci(fftw): F8a CI matrix, default-build check, documentation builds` |
 | Read first | design (draft 0.19): Section 4.10 (versions, docs.rs), Section 6 (the docs.rs metadata), Section 7.7 (CI, the F8a item and the builds without SIMD), Section 9 (F8a row), Section 10 (DF8, DC43, DC46, DC47), Section 11 item 5 (the default-build check for nd-fmm); `docs/fftw/F0-findings.md` (the runners); the "Open questions" of `docs/fftw/tasks/F6-wisdom-threads.md` (note 11, `doc(cfg)`) and `F7-removal-docs.md` (facts 5 and 6); `.github/workflows/run-tests.yml`; `CLAUDE.md` ("Validation commands") |
