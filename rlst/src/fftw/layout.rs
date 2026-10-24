@@ -1342,6 +1342,8 @@ impl Layout {
             (ArrayStorage::Complex, ArrayStorage::Complex) => "complex-to-complex",
             (ArrayStorage::Real, ArrayStorage::Real) => "real-to-real",
             (ArrayStorage::Split { .. }, ArrayStorage::Split { .. }) => "split complex-to-complex",
+            (ArrayStorage::Real, ArrayStorage::Split { .. }) => "split real-to-complex",
+            (ArrayStorage::Split { .. }, ArrayStorage::Real) => "split complex-to-real",
             (ArrayStorage::Real, _) => "real-to-complex",
             _ => "complex-to-real",
         };
@@ -1578,8 +1580,8 @@ impl Layout {
     {
         Self::from_split_arrays(
             &[
-                ("input", part_in, &input.shape(), &input.stride()),
-                ("output", part_out, &output.shape(), &output.stride()),
+                ("input", Some(part_in), &input.shape(), &input.stride()),
+                ("output", Some(part_out), &output.shape(), &output.stride()),
             ],
             axes,
             Placement::OutOfPlace,
@@ -1646,17 +1648,192 @@ impl Layout {
         A: BaseItem<Item = T> + StridedRawAccess + Shape<N> + Stride<N>,
     {
         Self::from_split_arrays(
-            &[("array", part, &data.shape(), &data.stride())],
+            &[("array", Some(part), &data.shape(), &data.stride())],
             axes,
             Placement::InPlace,
         )
     }
 
+    /// One-dimensional real-to-complex transforms along the logical axis `axis`, batched over
+    /// the other axes, from the real array `input` of rank `N` into the split complex array
+    /// `output` of rank `M = N + 1`, with part axis `part_out`.
+    ///
+    /// The same as [`split_r2c_over_axes`](Layout::split_r2c_over_axes) with the one axis
+    /// `axis`, whose checks, errors and notes apply; `axis` is halved.
+    ///
+    /// ```
+    /// use rlst::rlst_dynamic_array;
+    /// use rlst::fftw::{Dim, Layout, Planner, Storage};
+    ///
+    /// // Three transforms of length 8 into a real and an imaginary plane [5, 3] each.
+    /// let mut input = rlst_dynamic_array!(f64, [8, 3] | rlst::FFTW_ALIGNED);
+    /// let mut output = rlst_dynamic_array!(f64, [5, 3, 2] | rlst::FFTW_ALIGNED);
+    /// input.fill_from_seed_equally_distributed(0);
+    /// let layout = Layout::split_r2c_along_axis(&input, &output, 2, 0)?;
+    /// assert_eq!(layout.storage(), (Storage::Real, Storage::Split { gap: 15 }));
+    /// assert_eq!(layout.dims(), &[Dim { n: 8, is: 1, os: 1 }]);
+    /// assert_eq!(layout.batch(), &[Dim { n: 3, is: 8, os: 5 }]);
+    ///
+    /// let plan = Planner::<f64>::new().split_r2c(&layout)?;
+    /// plan.execute(&input, &mut output)?;
+    /// // Frequency 0 of each column is its sum, with imaginary part 0.
+    /// let sum: f64 = (0..8).map(|i| input[[i, 1]]).sum();
+    /// assert!((output[[0, 1, 0]] - sum).abs() < 1e-12 && output[[0, 1, 1]].abs() < 1e-12);
+    /// # Ok::<(), rlst::fftw::FftwError>(())
+    /// ```
+    pub fn split_r2c_along_axis<T, AIn, AOut, const N: usize, const M: usize>(
+        input: &Array<AIn, N>,
+        output: &Array<AOut, M>,
+        part_out: usize,
+        axis: usize,
+    ) -> Result<Self, FftwError>
+    where
+        T: FftwReal,
+        AIn: BaseItem<Item = T> + StridedRawAccess + Shape<N> + Stride<N>,
+        AOut: BaseItem<Item = T> + StridedRawAccess + Shape<M> + Stride<M>,
+    {
+        Self::split_r2c_over_axes(input, output, part_out, &[axis])
+    }
+
+    /// Real-to-complex transforms over the logical axes `axes`, in the order given, batched
+    /// over the other axes, from the real array `input` of rank `N` into the split complex
+    /// array `output` of rank `M = N + 1`, with part axis `part_out` (DC33).
+    ///
+    /// The output keeps the real parts of the half spectrum at index 0 of its part axis and
+    /// the imaginary parts at index 1, the part axis's stride, its gap, apart. Its other axes
+    /// are its logical axes, which `axes` counts (DC26), and which pair with the input's axes
+    /// in order. The halved axis is the last entry of `axes` (DC2): along it the output has
+    /// `n / 2 + 1` complex values for the input's `n` reals. Both arrays are real (DC29), of
+    /// one precision. There is no in-place variant: RLST has no in-place split
+    /// real-to-complex plans (DC33).
+    ///
+    /// The checks, in this order, each returning [`FftwError::InvalidLayout`] that names
+    /// `part axis`, `axes` or the logical axis concerned: `part_out` is below `M`, the
+    /// output's extent along it is 2, and `M = N + 1`; then the checks of
+    /// [`over_axes`](Layout::over_axes) on the logical axes, the halved extent included; and
+    /// those of [`Layout::with_storage`] for the storages `(Storage::Real, Storage::Split {
+    /// gap })`.
+    ///
+    /// ```
+    /// use rlst::rlst_dynamic_array;
+    /// use rlst::fftw::{Dim, Layout};
+    ///
+    /// // Over both axes of a real [6, 4]: logical axis 1 is halved, to 3. The output's part
+    /// // axis is innermost, so its memory is that of interleaved complex values.
+    /// let input = rlst_dynamic_array!(f32, [6, 4] | rlst::FFTW_ALIGNED);
+    /// let output = rlst_dynamic_array!(f32, [2, 6, 3] | rlst::FFTW_ALIGNED);
+    /// let layout = Layout::split_r2c_over_axes(&input, &output, 0, &[0, 1])?;
+    /// assert_eq!(layout.dims(), &[Dim { n: 6, is: 1, os: 2 }, Dim { n: 4, is: 6, os: 12 }]);
+    /// assert_eq!(layout.output_span(), 36);
+    /// # Ok::<(), rlst::fftw::FftwError>(())
+    /// ```
+    pub fn split_r2c_over_axes<T, AIn, AOut, const N: usize, const M: usize>(
+        input: &Array<AIn, N>,
+        output: &Array<AOut, M>,
+        part_out: usize,
+        axes: &[usize],
+    ) -> Result<Self, FftwError>
+    where
+        T: FftwReal,
+        AIn: BaseItem<Item = T> + StridedRawAccess + Shape<N> + Stride<N>,
+        AOut: BaseItem<Item = T> + StridedRawAccess + Shape<M> + Stride<M>,
+    {
+        Self::from_split_arrays(
+            &[
+                ("input", None, &input.shape(), &input.stride()),
+                ("output", Some(part_out), &output.shape(), &output.stride()),
+            ],
+            axes,
+            Placement::OutOfPlace,
+        )
+    }
+
+    /// One-dimensional complex-to-real transforms along the logical axis `axis`, batched over
+    /// the other axes, from the split complex array `input` of rank `M = N + 1`, with part
+    /// axis `part_in`, into the real array `output` of rank `N`.
+    ///
+    /// The same as [`split_c2r_over_axes`](Layout::split_c2r_over_axes) with the one axis
+    /// `axis`, whose checks, errors and notes apply; `axis` is halved.
+    ///
+    /// ```
+    /// use rlst::rlst_dynamic_array;
+    /// use rlst::fftw::{Layout, Planner};
+    ///
+    /// // The spectrum of a constant 1 of length 8, real plane then imaginary plane.
+    /// let mut input = rlst_dynamic_array!(f64, [5, 2] | rlst::FFTW_ALIGNED);
+    /// let mut output = rlst_dynamic_array!(f64, [8] | rlst::FFTW_ALIGNED);
+    /// input[[0, 0]] = 8.0;
+    /// let layout = Layout::split_c2r_along_axis(&input, 1, &output, 0)?;
+    /// // Like c2r, split c2r destroys its input by default.
+    /// let plan = Planner::<f64>::new().split_c2r(&layout)?;
+    /// plan.execute(&mut input, &mut output)?;
+    /// assert!((0..8).all(|i| (output[[i]] - 8.0).abs() < 1e-12));
+    /// # Ok::<(), rlst::fftw::FftwError>(())
+    /// ```
+    pub fn split_c2r_along_axis<T, AIn, AOut, const N: usize, const M: usize>(
+        input: &Array<AIn, M>,
+        part_in: usize,
+        output: &Array<AOut, N>,
+        axis: usize,
+    ) -> Result<Self, FftwError>
+    where
+        T: FftwReal,
+        AIn: BaseItem<Item = T> + StridedRawAccess + Shape<M> + Stride<M>,
+        AOut: BaseItem<Item = T> + StridedRawAccess + Shape<N> + Stride<N>,
+    {
+        Self::split_c2r_over_axes(input, part_in, output, &[axis])
+    }
+
+    /// Complex-to-real transforms over the logical axes `axes`, in the order given, batched
+    /// over the other axes, from the split complex array `input` of rank `M = N + 1`, with
+    /// part axis `part_in`, into the real array `output` of rank `N` (DC33).
+    ///
+    /// The inverse of [`split_r2c_over_axes`](Layout::split_r2c_over_axes), whose memory
+    /// layout, checks and notes apply with the sides swapped: the input holds the half
+    /// spectrum, `n / 2 + 1` complex values along the halved axis, the last entry of `axes`,
+    /// for the output's `n` reals, and the storages are `(Storage::Split { gap },
+    /// Storage::Real)`. There is no in-place variant.
+    ///
+    /// ```
+    /// use rlst::rlst_dynamic_array;
+    /// use rlst::fftw::{Dim, Layout, Storage};
+    ///
+    /// let input = rlst_dynamic_array!(f64, [3, 2, 7] | rlst::FFTW_ALIGNED);
+    /// let output = rlst_dynamic_array!(f64, [3, 12] | rlst::FFTW_ALIGNED);
+    /// // Logical axis 1 of the input is its axis 2: 7 = 12 / 2 + 1.
+    /// let layout = Layout::split_c2r_over_axes(&input, 1, &output, &[1])?;
+    /// assert_eq!(layout.storage(), (Storage::Split { gap: 3 }, Storage::Real));
+    /// assert_eq!(layout.dims(), &[Dim { n: 12, is: 6, os: 3 }]);
+    /// # Ok::<(), rlst::fftw::FftwError>(())
+    /// ```
+    pub fn split_c2r_over_axes<T, AIn, AOut, const N: usize, const M: usize>(
+        input: &Array<AIn, M>,
+        part_in: usize,
+        output: &Array<AOut, N>,
+        axes: &[usize],
+    ) -> Result<Self, FftwError>
+    where
+        T: FftwReal,
+        AIn: BaseItem<Item = T> + StridedRawAccess + Shape<M> + Stride<M>,
+        AOut: BaseItem<Item = T> + StridedRawAccess + Shape<N> + Stride<N>,
+    {
+        Self::from_split_arrays(
+            &[
+                ("input", Some(part_in), &input.shape(), &input.stride()),
+                ("output", None, &output.shape(), &output.stride()),
+            ],
+            axes,
+            Placement::OutOfPlace,
+        )
+    }
+
     /// The split layout of transforms over the logical axes `axes` of arrays given as
     /// `(name, part axis, shape, strides)`: input and output, or one array in place, with the
-    /// checks of [`split_over_axes`](Layout::split_over_axes).
+    /// checks of [`split_over_axes`](Layout::split_over_axes). An array without a part axis
+    /// (`None`) is a real side, of split real-to-complex and complex-to-real layouts, whose
+    /// rank must be one less than the split array's.
     fn from_split_arrays(
-        arrays: &[(&str, usize, &[usize], &[usize])],
+        arrays: &[SplitArray<'_>],
         axes: &[usize],
         placement: Placement,
     ) -> Result<Self, FftwError> {
@@ -1667,6 +1844,10 @@ impl Layout {
         let mut logical = Vec::with_capacity(arrays.len());
         for &(name, part, shape, stride) in arrays {
             let rank = shape.len();
+            let Some(part) = part else {
+                logical.push((shape.to_vec(), stride.to_vec(), ArrayStorage::Real));
+                continue;
+            };
             if part >= rank {
                 return Err(invalid(format!(
                     "the {name}'s part axis {part} is not below the rank {rank}"
@@ -1681,24 +1862,29 @@ impl Layout {
             }
             let gap = stride[part];
             let (shape, stride) = remove_axis(shape, stride, part);
-            logical.push((shape, stride, gap));
+            logical.push((shape, stride, ArrayStorage::Split { part_stride: gap }));
         }
         let (input, output) = (&logical[0], &logical[logical.len() - 1]);
+        if input.0.len() != output.0.len() {
+            let (real, split) = if matches!(input.2, ArrayStorage::Real) {
+                (arrays[0], arrays[1])
+            } else {
+                (arrays[1], arrays[0])
+            };
+            return Err(invalid(format!(
+                "the {} has rank {}, and its logical axes, without the part axis, are {}, but \
+                 the real {} has rank {}; the split array needs one axis more than the real \
+                 array, its part axis",
+                split.0,
+                split.2.len(),
+                split.2.len() - 1,
+                real.0,
+                real.2.len()
+            )));
+        }
         Self::from_arrays(
-            (
-                &input.0,
-                &input.1,
-                ArrayStorage::Split {
-                    part_stride: input.2,
-                },
-            ),
-            (
-                &output.0,
-                &output.1,
-                ArrayStorage::Split {
-                    part_stride: output.2,
-                },
-            ),
+            (&input.0, &input.1, input.2),
+            (&output.0, &output.1, output.2),
             axes,
             placement,
         )
@@ -1859,6 +2045,11 @@ impl Layout {
 
 /// The name of the part axis of split storage in errors.
 const PART_AXIS: &str = "part axis";
+
+/// An array given to the split layout functions: its name in errors, its part axis (`None`
+/// for the real side of a split real-to-complex or complex-to-real layout), its shape and its
+/// strides.
+type SplitArray<'a> = (&'a str, Option<usize>, &'a [usize], &'a [usize]);
 
 /// Checks 1 to 3 of [`Layout::over_axes`]: `axes` is not empty, its entries are below `rank`
 /// (`out_of_range` describes the bound) and none is repeated. `name` names an axis.

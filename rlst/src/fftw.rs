@@ -131,9 +131,10 @@
 //!
 //! RLST 0.11 replaces the interface above. Until it is complete, the new types live in this
 //! module beside the 0.10 ones, which keep their names and share the new FFTW lock; the 0.10
-//! types are removed when the new interface is complete. So far the new interface has
-//! complex-to-complex plans, on interleaved and on split complex storage, real-to-complex and
-//! complex-to-real plans, and real-to-real plans, on slices and on RLST arrays and views:
+//! types are removed when the new interface is complete. The new interface has every transform
+//! family of FFTW's serial interface: complex-to-complex, real-to-complex and complex-to-real
+//! plans, on interleaved and on split complex storage, and real-to-real plans, on slices and on
+//! RLST arrays and views:
 //!
 //! - [`Layout`], made from [`Dim`]s, the [`Storage`] of each side (complex, real or split)
 //!   and a [`Placement`]: transform and batch dimensions with strides, validated and
@@ -153,6 +154,11 @@
 //! - real-to-real transforms, [`R2r`], with all eleven [`R2rKind`]s of FFTW and one kind per
 //!   transform dimension, `kinds[i]` for `axes[i]` whatever the memory order, made by
 //!   [`Planner::r2r`] and its companions;
+//! - split real-to-complex and complex-to-real transforms, [`SplitR2c`] and [`SplitC2r`],
+//!   between a real array and a split complex one with a part axis
+//!   ([`Layout::split_r2c_along_axis`], [`Layout::split_c2r_along_axis`] and their
+//!   companions), made by [`Planner::split_r2c`] and [`Planner::split_c2r`] and their
+//!   companions; they have no in-place plans, and split c2r destroys its input by default;
 //! - [`Planner`], a builder with [`Rigor`], wisdom-only, unaligned, time-limit, alignment-class
 //!   and scratch options, whose input-policy requests ([`DefaultRequest`],
 //!   [`PreserveRequest`], [`DestroyRequest`]) decide a plan's policy;
@@ -161,11 +167,11 @@
 //!   array with a *part axis* of extent 2, and [`Layout::split_along_axis`],
 //!   [`Layout::split_over_axes`], their in-place variants and [`Layout::new_split`] make
 //!   layouts with gaps, which count reals, for [`Planner::split_c2c`] and its companions;
-//! - [`Plan`], of precision [`FftwReal`], family [`C2c`], [`SplitC2c`], [`R2c`], [`C2r`] or
-//!   [`R2r`] and policy [`Preserving`], [`Destroying`] or [`InPlace`], which runs on any
-//!   buffers that fit its layout and [`AlignmentClass`]es, from any thread, with
-//!   [`Plan::description`], [`Plan::fingerprint`], [`Plan::logical_size`] and
-//!   [`Plan::scale_factor`] for a [`Scale`];
+//! - [`Plan`], of precision [`FftwReal`], family [`C2c`], [`SplitC2c`], [`R2c`], [`C2r`],
+//!   [`R2r`], [`SplitR2c`] or [`SplitC2r`] and policy [`Preserving`], [`Destroying`] or
+//!   [`InPlace`], which runs on any buffers that fit its layout and [`AlignmentClass`]es,
+//!   from any thread, with [`Plan::description`], [`Plan::fingerprint`],
+//!   [`Plan::logical_size`] and [`Plan::scale_factor`] for a [`Scale`];
 //! - [`FftBuffer`] and [`FftBufferMut`], implemented for slices and for RLST arrays and views
 //!   through [`StridedRawAccess`](crate::StridedRawAccess), checked at execution by shape,
 //!   strides and storage;
@@ -176,8 +182,7 @@
 //! method is used, so planning never touches user data. Execution checks the buffers against
 //! the plan before calling FFTW and takes no lock. Split plans can use fewer of FFTW's SIMD
 //! stages than interleaved ones (see [`SplitC2c`]). Every planner method rejects a layout of
-//! another family. The split real-to-complex and complex-to-real families, wisdom and threads
-//! follow.
+//! another family. Wisdom and threads follow.
 //!
 //! ```
 //! use rlst::{c64, rlst_dynamic_array};
@@ -246,7 +251,8 @@ pub use kind::{Direction, R2rKind};
 pub use layout::{Dim, Layout, Placement, Storage};
 pub use options::{DefaultRequest, DestroyRequest, PreserveRequest, Rigor};
 pub use plan::{
-    C2c, C2r, Destroying, Family, InPlace, Plan, Policy, Preserving, R2c, R2r, SplitC2c,
+    C2c, C2r, Destroying, Family, InPlace, Plan, Policy, Preserving, R2c, R2r, SplitC2c, SplitC2r,
+    SplitR2c,
 };
 pub use planner::{DEFAULT_MAX_SCRATCH, Planner};
 pub use real::FftwReal;

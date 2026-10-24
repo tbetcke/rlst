@@ -176,6 +176,75 @@ pub(crate) mod sealed {
         /// conditions for it.
         unsafe fn execute_r2r(plan: *mut Self::RawPlan, input: *mut Self, output: *mut Self);
 
+        /// `fftw_plan_guru64_split_dft_r2c` or `fftwf_plan_guru64_split_dft_r2c`, which always
+        /// plans a forward transform.
+        ///
+        /// # Safety
+        ///
+        /// The arguments must satisfy FFTW's conditions for the guru64 split r2c planner:
+        /// `dims` and `howmany_dims` point to `rank` and `howmany_rank` dimensions, in reals,
+        /// `input` to a real buffer, and `ro` and `io` to the real and imaginary parts of the
+        /// first output element of a split buffer, which cover the spans of those dimensions,
+        /// the last transform dimension with `n` reals in and `n / 2 + 1` complex elements out.
+        /// The caller holds the FFTW lock.
+        #[expect(clippy::too_many_arguments, reason = "mirrors FFTW's guru64 planner")]
+        unsafe fn plan_guru64_split_dft_r2c(
+            rank: c_int,
+            dims: *const fftw_sys::fftw_iodim64,
+            howmany_rank: c_int,
+            howmany_dims: *const fftw_sys::fftw_iodim64,
+            input: *mut Self,
+            ro: *mut Self,
+            io: *mut Self,
+            flags: c_uint,
+        ) -> *mut Self::RawPlan;
+
+        /// `fftw_execute_split_dft_r2c` or `fftwf_execute_split_dft_r2c`.
+        ///
+        /// # Safety
+        ///
+        /// `plan` is a live split r2c plan, and `input`, `ro` and `io` satisfy FFTW's
+        /// new-array conditions for it, the gap `io − ro` included.
+        unsafe fn execute_split_dft_r2c(
+            plan: *mut Self::RawPlan,
+            input: *mut Self,
+            ro: *mut Self,
+            io: *mut Self,
+        );
+
+        /// `fftw_plan_guru64_split_dft_c2r` or `fftwf_plan_guru64_split_dft_c2r`, which always
+        /// plans a backward transform.
+        ///
+        /// # Safety
+        ///
+        /// As for `plan_guru64_split_dft_r2c`, with the sides swapped: `ri` and `ii` point to
+        /// the real and imaginary parts of the first input element of a split buffer, and
+        /// `output` to a real buffer. The caller holds the FFTW lock.
+        #[expect(clippy::too_many_arguments, reason = "mirrors FFTW's guru64 planner")]
+        unsafe fn plan_guru64_split_dft_c2r(
+            rank: c_int,
+            dims: *const fftw_sys::fftw_iodim64,
+            howmany_rank: c_int,
+            howmany_dims: *const fftw_sys::fftw_iodim64,
+            ri: *mut Self,
+            ii: *mut Self,
+            output: *mut Self,
+            flags: c_uint,
+        ) -> *mut Self::RawPlan;
+
+        /// `fftw_execute_split_dft_c2r` or `fftwf_execute_split_dft_c2r`.
+        ///
+        /// # Safety
+        ///
+        /// `plan` is a live split c2r plan, and `ri`, `ii` and `output` satisfy FFTW's
+        /// new-array conditions for it, the gap `ii − ri` included.
+        unsafe fn execute_split_dft_c2r(
+            plan: *mut Self::RawPlan,
+            ri: *mut Self,
+            ii: *mut Self,
+            output: *mut Self,
+        );
+
         /// `fftw_destroy_plan` or `fftwf_destroy_plan`.
         ///
         /// # Safety
@@ -373,6 +442,76 @@ pub(crate) mod sealed {
                     ) {
                         // SAFETY: forwarded from the caller, see the trait's contract.
                         unsafe { fftw_sys::[<$prefix execute_r2r>](plan, input, output) }
+                    }
+
+                    unsafe fn plan_guru64_split_dft_r2c(
+                        rank: c_int,
+                        dims: *const fftw_sys::fftw_iodim64,
+                        howmany_rank: c_int,
+                        howmany_dims: *const fftw_sys::fftw_iodim64,
+                        input: *mut Self,
+                        ro: *mut Self,
+                        io: *mut Self,
+                        flags: c_uint,
+                    ) -> *mut Self::RawPlan {
+                        // SAFETY: forwarded from the caller, see the trait's contract.
+                        unsafe {
+                            fftw_sys::[<$prefix plan_guru64_split_dft_r2c>](
+                                rank,
+                                dims,
+                                howmany_rank,
+                                howmany_dims,
+                                input,
+                                ro,
+                                io,
+                                flags,
+                            )
+                        }
+                    }
+
+                    unsafe fn execute_split_dft_r2c(
+                        plan: *mut Self::RawPlan,
+                        input: *mut Self,
+                        ro: *mut Self,
+                        io: *mut Self,
+                    ) {
+                        // SAFETY: forwarded from the caller, see the trait's contract.
+                        unsafe { fftw_sys::[<$prefix execute_split_dft_r2c>](plan, input, ro, io) }
+                    }
+
+                    unsafe fn plan_guru64_split_dft_c2r(
+                        rank: c_int,
+                        dims: *const fftw_sys::fftw_iodim64,
+                        howmany_rank: c_int,
+                        howmany_dims: *const fftw_sys::fftw_iodim64,
+                        ri: *mut Self,
+                        ii: *mut Self,
+                        output: *mut Self,
+                        flags: c_uint,
+                    ) -> *mut Self::RawPlan {
+                        // SAFETY: forwarded from the caller, see the trait's contract.
+                        unsafe {
+                            fftw_sys::[<$prefix plan_guru64_split_dft_c2r>](
+                                rank,
+                                dims,
+                                howmany_rank,
+                                howmany_dims,
+                                ri,
+                                ii,
+                                output,
+                                flags,
+                            )
+                        }
+                    }
+
+                    unsafe fn execute_split_dft_c2r(
+                        plan: *mut Self::RawPlan,
+                        ri: *mut Self,
+                        ii: *mut Self,
+                        output: *mut Self,
+                    ) {
+                        // SAFETY: forwarded from the caller, see the trait's contract.
+                        unsafe { fftw_sys::[<$prefix execute_split_dft_c2r>](plan, ri, ii, output) }
                     }
 
                     unsafe fn destroy_plan(plan: *mut Self::RawPlan) {

@@ -763,3 +763,31 @@ pub(crate) fn reference_r2r<T: TestReal, const N: usize>(
     }
     reference
 }
+
+/// Assert that `actual` equals `expected` to `tolerance` in the relative L2 norm of each
+/// transform: the elements that share their indices off `axes` (task F5c).
+pub(crate) fn assert_transforms_close<const N: usize>(
+    actual: &DynArray<Complex<f64>, N>,
+    expected: &DynArray<Complex<f64>, N>,
+    axes: &[usize],
+    tolerance: f64,
+    context: &dyn std::fmt::Display,
+) {
+    assert_eq!(actual.shape(), expected.shape(), "{context}");
+    let mut transforms = std::collections::BTreeMap::<Vec<usize>, (Vec<_>, Vec<_>)>::new();
+    for index in multi_indices(actual.shape()) {
+        let batch: Vec<usize> = (0..N)
+            .map(|axis| if axes.contains(&axis) { 0 } else { index[axis] })
+            .collect();
+        let (found, wanted) = transforms.entry(batch).or_default();
+        found.push(actual[index]);
+        wanted.push(expected[index]);
+    }
+    for (batch, (found, wanted)) in transforms {
+        let error = relative_error(&found, &wanted);
+        assert!(
+            error <= tolerance,
+            "{context}, transform at {batch:?}: relative error {error:e} above {tolerance:e}"
+        );
+    }
+}
