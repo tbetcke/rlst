@@ -48,7 +48,7 @@ so that every later family is written against the separate-process determinism t
 | F2 | Layouts from RLST arrays and views | `tasks/F2-layouts.md` | done | [#8](https://github.com/tbetcke/rlst/pull/8) (F2a), [#9](https://github.com/tbetcke/rlst/pull/9) (F2b) |
 | F4 | Concurrency and determinism, harness-free test binary | `tasks/F4-determinism.md` | done | [#12](https://github.com/tbetcke/rlst/pull/12) |
 | F3 | Split c2c with the part axis | `tasks/F3-split.md` | done | [#15](https://github.com/tbetcke/rlst/pull/15) |
-| F5 | r2c, c2r, r2r, split r2c and c2r, `Scale` | `tasks/F5-real.md` | not started | |
+| F5 | r2c, c2r, r2r, split r2c and c2r, `Scale` | `tasks/F5-real.md` | done | [#18](https://github.com/tbetcke/rlst/pull/18) (F5a), [#20](https://github.com/tbetcke/rlst/pull/20) (F5b), [#21](https://github.com/tbetcke/rlst/pull/21) (F5c) |
 | F6 | Wisdom; `fftw_threads` | to be written | not started | |
 | F7 | Removal of the 0.10 module; Chebyshev port; documentation; licence warning; CHANGELOG | to be written | not started | |
 | F8a | CI on Linux and macOS, default-build check, docs | to be written | not started | |
