@@ -146,7 +146,9 @@
 //! values stored as a real plane and an imaginary plane
 //! ([`split_c2c`](crate::fftw::Planner::split_c2c) and its companions). For r2c and c2r, the
 //! last axis given is halved: `n` reals along it on one side, `n / 2 + 1` complex values on
-//! the other. For r2r, `kinds[i]` applies to `axes[i]`, whatever the memory order.
+//! the other. Whether to halve the contiguous axis or a strided one was measured for 0.11:
+//! neither order was faster on every machine, so RLST recommends neither; time both at your
+//! sizes if it matters. For r2r, `kinds[i]` applies to `axes[i]`, whatever the memory order.
 //!
 //! A plan's input policy is part of its type, so the borrow checker enforces it: a
 //! `Preserving` plan executes with `&input`, a `Destroying` plan with `&mut input`, an

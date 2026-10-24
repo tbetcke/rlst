@@ -16,9 +16,10 @@ This directory holds everything needed to implement the new FFTW interface of RL
 | `tasks/F8a-ci.md` | Brief for task F8a: the review of the CI matrix, the default-build check, doctests in the default configuration, and the documentation builds, docs.rs's included. |
 | `tasks/F8b-benchmarks-release.md` | Brief for task F8b: the benchmark example and its findings, and the release of 0.11.0, in three pull requests. |
 | `F0-findings.md` | Written by task F0: the baseline and the FFTW found on each CI runner. |
+| `F8b-benchmarks.md` | Written by task F8b: the benchmarks' machines, method and results, and what follows from them for the documentation. |
 
 The briefs of F2 to F8b were written when their task was next, from Section 9 of the design
-and from what the earlier tasks found. `F8b-benchmarks.md` is written by task F8b.
+and from what the earlier tasks found.
 
 ## Workflow
 
