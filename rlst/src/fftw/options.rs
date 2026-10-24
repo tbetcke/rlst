@@ -55,7 +55,7 @@ impl fmt::Display for Rigor {
 
 /// The planner's default input policy: each family follows FFTW's default (DC1).
 ///
-/// For c2c, split c2c and r2c, the plan preserves its input
+/// For c2c, split c2c, r2c and r2r, the plan preserves its input
 /// ([`Preserving`](super::Preserving)); for c2r it may overwrite it
 /// ([`Destroying`](super::Destroying)), as in FFTW. This is the type parameter of
 /// [`Planner::new`](super::Planner::new); it is never constructed.
@@ -72,7 +72,8 @@ pub enum DefaultRequest {}
 /// A request that the plan preserves its input, made with
 /// [`Planner::preserve_input`](super::Planner::preserve_input).
 ///
-/// For c2c, split c2c and r2c this is FFTW's default as well. For c2r it makes
+/// For c2c, split c2c, r2c and r2r this is FFTW's default as well, except for r2r's HC2R
+/// kind, which FFTW destroys by default. For c2r it makes
 /// [`Preserving`](super::Preserving) plans over one transform dimension; over more, FFTW has
 /// no input-preserving algorithm and planning returns
 /// [`FftwError::PreserveInputUnsupported`](super::FftwError::PreserveInputUnsupported). It is
@@ -103,7 +104,7 @@ pub enum PreserveRequest {}
 pub enum DestroyRequest {}
 
 pub(crate) mod sealed {
-    use crate::fftw::plan::{C2c, C2r, Destroying, Policy, Preserving, R2c, SplitC2c};
+    use crate::fftw::plan::{C2c, C2r, Destroying, Policy, Preserving, R2c, R2r, SplitC2c};
 
     use super::{DefaultRequest, DestroyRequest, PreserveRequest};
 
@@ -160,6 +161,20 @@ pub(crate) mod sealed {
     }
 
     impl PolicyFor<C2r> for DestroyRequest {
+        type Policy = Destroying;
+    }
+
+    // Preserving by default, HC2R included: the kinds are known only at run time (design,
+    // Section 4.4).
+    impl PolicyFor<R2r> for DefaultRequest {
+        type Policy = Preserving;
+    }
+
+    impl PolicyFor<R2r> for PreserveRequest {
+        type Policy = Preserving;
+    }
+
+    impl PolicyFor<R2r> for DestroyRequest {
         type Policy = Destroying;
     }
 }

@@ -147,6 +147,35 @@ pub(crate) mod sealed {
             output: *mut Self,
         );
 
+        /// `fftw_plan_guru64_r2r` or `fftwf_plan_guru64_r2r`.
+        ///
+        /// # Safety
+        ///
+        /// The arguments must satisfy FFTW's conditions for the guru64 r2r planner: `dims` and
+        /// `howmany_dims` point to `rank` and `howmany_rank` dimensions, in reals, `kinds` to
+        /// `rank` kinds, one per transform dimension in the order of `dims`, and `input` and
+        /// `output` to buffers that cover the spans of those dimensions. The caller holds the
+        /// FFTW lock.
+        #[expect(clippy::too_many_arguments, reason = "mirrors FFTW's guru64 planner")]
+        unsafe fn plan_guru64_r2r(
+            rank: c_int,
+            dims: *const fftw_sys::fftw_iodim64,
+            howmany_rank: c_int,
+            howmany_dims: *const fftw_sys::fftw_iodim64,
+            input: *mut Self,
+            output: *mut Self,
+            kinds: *const fftw_sys::fftw_r2r_kind,
+            flags: c_uint,
+        ) -> *mut Self::RawPlan;
+
+        /// `fftw_execute_r2r` or `fftwf_execute_r2r`.
+        ///
+        /// # Safety
+        ///
+        /// `plan` is a live r2r plan, and `input` and `output` satisfy FFTW's new-array
+        /// conditions for it.
+        unsafe fn execute_r2r(plan: *mut Self::RawPlan, input: *mut Self, output: *mut Self);
+
         /// `fftw_destroy_plan` or `fftwf_destroy_plan`.
         ///
         /// # Safety
@@ -310,6 +339,40 @@ pub(crate) mod sealed {
                     ) {
                         // SAFETY: forwarded from the caller, see the trait's contract.
                         unsafe { fftw_sys::[<$prefix execute_dft_c2r>](plan, input, output) }
+                    }
+
+                    unsafe fn plan_guru64_r2r(
+                        rank: c_int,
+                        dims: *const fftw_sys::fftw_iodim64,
+                        howmany_rank: c_int,
+                        howmany_dims: *const fftw_sys::fftw_iodim64,
+                        input: *mut Self,
+                        output: *mut Self,
+                        kinds: *const fftw_sys::fftw_r2r_kind,
+                        flags: c_uint,
+                    ) -> *mut Self::RawPlan {
+                        // SAFETY: forwarded from the caller, see the trait's contract.
+                        unsafe {
+                            fftw_sys::[<$prefix plan_guru64_r2r>](
+                                rank,
+                                dims,
+                                howmany_rank,
+                                howmany_dims,
+                                input,
+                                output,
+                                kinds,
+                                flags,
+                            )
+                        }
+                    }
+
+                    unsafe fn execute_r2r(
+                        plan: *mut Self::RawPlan,
+                        input: *mut Self,
+                        output: *mut Self,
+                    ) {
+                        // SAFETY: forwarded from the caller, see the trait's contract.
+                        unsafe { fftw_sys::[<$prefix execute_r2r>](plan, input, output) }
                     }
 
                     unsafe fn destroy_plan(plan: *mut Self::RawPlan) {

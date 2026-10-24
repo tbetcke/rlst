@@ -103,6 +103,21 @@ split storage is involved on one side only and the layout otherwise. `Plan::logi
 `Plan::scale_factor` with the new `Scale` (`None`, `Inverse`, `InverseSqrt`) give the factors 1,
 1/N and 1/√N of the unnormalised transforms, on every plan.
 
+Real-to-real plans. `R2rKind`, RLST's own enum, covers FFTW's eleven kinds (`R2hc`, `Hc2r`,
+`Dht` and the DCT and DST kinds `Redft00` to `Rodft11`), with `Display` and
+`R2rKind::logical_size`. `Planner::r2r`, `r2r_on`, `r2r_inplace` and `r2r_inplace_on` take the
+layout and then one kind per transform dimension, and make `Plan<T, R2r, P>` plans with the
+three input policies, which execute on real slices, arrays and views; `Plan::kinds` returns the
+kinds, and `Plan::logical_size` is the product of each kind's logical size. `kinds[i]` belongs
+to `layout.dims()[i]`, so for a layout from arrays to `axes[i]`, whatever the memory order: the
+0.10 interface applied the kinds of column-major arrays to the axes in reverse order, and code
+with different kinds on different axes must be checked when it moves. A number of kinds other
+than the number of transform dimensions, and `Redft00` on a dimension of extent 1, are an
+`InvalidKind` before FFTW is called. Real-to-real plans preserve their input by default, an
+`Hc2r` kind included, which FFTW destroys by default: they pass `FFTW_PRESERVE_INPUT`, and if
+FFTW returns no plan, `PlanCreationFailed` carries the new field `hint`, shown in its message,
+naming `may_destroy_input()`.
+
 ### New traits `StridedRawAccess` and `StridedRawAccessMut`
 
 `rlst::StridedRawAccess::storage` and `StridedRawAccessMut::storage_mut` return the backing

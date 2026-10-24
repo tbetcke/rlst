@@ -1,5 +1,5 @@
-//! Determinism of FFTW plans across fresh processes (tasks F4, F3 and F5a; design Sections 5
-//! and 7.6).
+//! Determinism of FFTW plans across fresh processes (tasks F4, F3, F5a and F5b; design
+//! Sections 5 and 7.6).
 //!
 //! FFTW's wisdom is global to the process, so these tests cannot run as threads of one test
 //! process. This executable has `harness = false` and is both parent and child:
@@ -32,7 +32,7 @@ use rand_chacha::ChaCha8Rng;
 use rlst::dense::array::{AlignedDynArray, StridedSliceArrayMut};
 use rlst::fftw::{
     C2CDirection, C2CPlan, Direction, FftBufferMut, FftPlanInplace, FftwError, FftwPlanFlags,
-    FftwReal, Layout, Planner, Rigor, as_reals, as_reals_mut,
+    FftwReal, Layout, Planner, R2rKind, Rigor, as_reals, as_reals_mut,
 };
 use rlst::{DynArray, SliceArray, SliceArrayMut, c32, c64};
 
@@ -314,6 +314,10 @@ enum Problem {
     /// real-to-complex transform into `[71, RINGS]` (`Preserving`), or with `r2c` false the
     /// complex-to-real transform back (`Destroying`).
     Real { r2c: bool },
+    /// A real-to-real transform, f64, `Preserving`: `Redft10` along axis 0 of nd-fmm's unit
+    /// `[140, RINGS]` as reals, or with `mixed` the kinds `Redft01` and `Rodft00` over both
+    /// axes of `[17, RINGS]`.
+    R2r { mixed: bool },
 }
 
 impl fmt::Display for Problem {
@@ -367,6 +371,14 @@ impl fmt::Display for Problem {
                 f,
                 "complex [71, {RINGS}] into real [140, {RINGS}] along axis 0, c2r, Destroying, \
                  f64"
+            ),
+            Problem::R2r { mixed: false } => write!(
+                f,
+                "real [140, {RINGS}] along axis 0, r2r REDFT10, Preserving, f64"
+            ),
+            Problem::R2r { mixed: true } => write!(
+                f,
+                "real [17, {RINGS}] over [0, 1], r2r REDFT01 and RODFT00, Preserving, f64"
             ),
         }
     }
@@ -449,6 +461,8 @@ impl Problem {
         });
         // Real-to-complex and complex-to-real (task F5a).
         problems.extend([Problem::Real { r2c: true }, Problem::Real { r2c: false }]);
+        // Real-to-real (task F5b).
+        problems.extend([Problem::R2r { mixed: false }, Problem::R2r { mixed: true }]);
         problems
     }
 
@@ -543,8 +557,65 @@ impl Problem {
                     real_transform::<f64>(&label, [140, RINGS], &[0], r2c, false, rigor);
                 line(&label, fingerprint, output)
             }
+            Problem::R2r { mixed: false } => {
+                let (fingerprint, output) = r2r_transform::<f64>(
+                    &label,
+                    [140, RINGS],
+                    &[0],
+                    &[R2rKind::Redft10],
+                    false,
+                    rigor,
+                );
+                line(&label, fingerprint, output)
+            }
+            Problem::R2r { mixed: true } => {
+                let (fingerprint, output) = r2r_transform::<f64>(
+                    &label,
+                    [17, RINGS],
+                    &[0, 1],
+                    &[R2rKind::Redft01, R2rKind::Rodft00],
+                    false,
+                    rigor,
+                );
+                line(&label, fingerprint, output)
+            }
         }
     }
+}
+
+/// Plan, with `rigor` and on scratch, a real-to-real transform over `axes` of `shape` with
+/// `kinds`, preserving out of place or in place, and execute it once on its seeded input.
+/// Returns the plan's fingerprint and the output as complex values with imaginary part 0.
+fn r2r_transform<T: Precision>(
+    label: &str,
+    shape: [usize; 2],
+    axes: &[usize],
+    kinds: &[R2rKind],
+    in_place: bool,
+    rigor: Rigor,
+) -> (u64, Vec<Complex<T>>) {
+    let planner = Planner::<T>::new().rigor(rigor);
+    let zero = T::round_from(0.0);
+    let mut input = AlignedReal::<T, 2>::from_shape(shape);
+    input.fill_from_iter(
+        values::<T>(label, shape[0] * shape[1])
+            .into_iter()
+            .map(|v| v.re),
+    );
+    let (fingerprint, output) = if in_place {
+        let layout = Layout::over_axes_inplace(&input, axes).unwrap();
+        let plan = planner.r2r_inplace(&layout, kinds).unwrap();
+        plan.execute(&mut input).unwrap();
+        (plan.fingerprint(), input)
+    } else {
+        let mut output = AlignedReal::<T, 2>::from_shape(shape);
+        let layout = Layout::over_axes(&input, &output, axes).unwrap();
+        let plan = planner.r2r(&layout, kinds).unwrap();
+        plan.execute(&input, &mut output).unwrap();
+        (plan.fingerprint(), output)
+    };
+    let output = output.iter_value().map(|x| Complex::new(x, zero)).collect();
+    (fingerprint, output)
 }
 
 /// Plan, with `rigor` and on scratch, a real-to-complex (`r2c`) or complex-to-real transform
@@ -745,6 +816,22 @@ fn other_plans<T: Precision>() {
             let label = format!("other real {shape:?} {axes:?} r2c {r2c} in place {in_place}");
             real_transform::<T>(&label, shape, axes, r2c, in_place, Rigor::Estimate);
         }
+    }
+    // Real-to-real plans of other sizes, kinds and placements (task F5b).
+    for (shape, axes, kinds, in_place) in [
+        ([100, 3], &[0][..], &[R2rKind::Redft10][..], false),
+        ([140, 5], &[0], &[R2rKind::Redft01], true),
+        (
+            [17, 9],
+            &[1, 0],
+            &[R2rKind::Rodft00, R2rKind::Redft01],
+            false,
+        ),
+        ([33, 9], &[0, 1], &[R2rKind::Redft00, R2rKind::Dht], true),
+        ([140, 9], &[0], &[R2rKind::R2hc], false),
+    ] {
+        let label = format!("other r2r {shape:?} {axes:?} {kinds:?} in place {in_place}");
+        r2r_transform::<T>(&label, shape, axes, kinds, in_place, Rigor::Estimate);
     }
 }
 
