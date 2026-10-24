@@ -118,6 +118,17 @@ than the number of transform dimensions, and `Redft00` on a dimension of extent 
 FFTW returns no plan, `PlanCreationFailed` carries the new field `hint`, shown in its message,
 naming `may_destroy_input()`.
 
+Split real-to-complex and complex-to-real plans, with split storage on the complex side only.
+`Layout::split_r2c_along_axis` and `split_r2c_over_axes` take a real input of rank `N` and a
+split output of rank `N + 1` with its part axis, and `Layout::split_c2r_along_axis` and
+`split_c2r_over_axes` the reverse; both arrays are real, `axes` counts the split array's
+logical axes, and the last entry of `axes` is halved, with `n / 2 + 1` complex values on the
+split side. `Planner::split_r2c`, `split_r2c_on`, `split_c2r` and `split_c2r_on` make
+`Plan<T, SplitR2c, P>` and `Plan<T, SplitC2r, P>` plans, which execute on real slices, arrays and
+views. Split c2r destroys its input by default, as c2r does, and `preserve_input()` makes a
+preserving one over one transform dimension only. There are no in-place split r2c or c2r
+plans.
+
 ### New traits `StridedRawAccess` and `StridedRawAccessMut`
 
 `rlst::StridedRawAccess::storage` and `StridedRawAccessMut::storage_mut` return the backing
