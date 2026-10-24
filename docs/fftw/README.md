@@ -11,6 +11,7 @@ This directory holds everything needed to implement the new FFTW interface of RL
 | `tasks/F4-determinism.md` | Brief for task F4: concurrency tests, and the harness-free binary that tests determinism in fresh processes. |
 | `tasks/F3-split.md` | Brief for task F3: split complex storage with the part axis, split c2c plans, and their tests. |
 | `tasks/F5-real.md` | Brief for task F5: r2c, c2r and r2r plans with kinds per axis, split r2c and c2r, logical sizes and `Scale`, in three pull requests. |
+| `tasks/F6-wisdom-threads.md` | Brief for task F6: wisdom export, import and forgetting, and the `fftw_threads` feature, in two pull requests. |
 | `F0-findings.md` | Written by task F0: the baseline and the FFTW found on each CI runner. |
 
 Briefs for F2 to F8b are written when their task is next, from Section 9 of the design and
@@ -49,7 +50,7 @@ so that every later family is written against the separate-process determinism t
 | F4 | Concurrency and determinism, harness-free test binary | `tasks/F4-determinism.md` | done | [#12](https://github.com/tbetcke/rlst/pull/12) |
 | F3 | Split c2c with the part axis | `tasks/F3-split.md` | done | [#15](https://github.com/tbetcke/rlst/pull/15) |
 | F5 | r2c, c2r, r2r, split r2c and c2r, `Scale` | `tasks/F5-real.md` | done | [#18](https://github.com/tbetcke/rlst/pull/18) (F5a), [#20](https://github.com/tbetcke/rlst/pull/20) (F5b), [#21](https://github.com/tbetcke/rlst/pull/21) (F5c) |
-| F6 | Wisdom; `fftw_threads` | to be written | not started | |
+| F6 | Wisdom; `fftw_threads` | `tasks/F6-wisdom-threads.md` | not started | |
 | F7 | Removal of the 0.10 module; Chebyshev port; documentation; licence warning; CHANGELOG | to be written | not started | |
 | F8a | CI on Linux and macOS, default-build check, docs | to be written | not started | |
 | F8b | Benchmarks; release 0.11.0 | to be written | not started | |
