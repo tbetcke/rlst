@@ -525,19 +525,24 @@ impl Policy for InPlace {}
 ///   different buffers. This is safe and takes no lock.
 /// - **Same plan, same bits.** A plan gives bit-for-bit identical results on inputs of the
 ///   same alignment class. Two plans are the same plan when they have the same normalised
-///   layout, placement, alignment classes, input policy, rigor and wisdom-only setting, were
-///   made with the same FFTW build on a CPU with the same SIMD support, and found the same
-///   wisdom for their problem in the process. FFTW uses any wisdom of equal or greater rigor,
-///   so an [`Estimate`](Rigor::Estimate) plan made after a [`Measure`](Rigor::Measure) plan
-///   of the same problem can be the `Measure` plan. [`Plan::fingerprint`] tells whether two
-///   plans are the same.
+///   layout, placement, alignment classes, input policy, rigor, wisdom-only setting and
+///   thread count ([`Plan::threads`]), were made with the same FFTW build on a CPU with the
+///   same SIMD support, and found the same wisdom for their problem in the process. FFTW
+///   uses any wisdom of equal or greater rigor, so an [`Estimate`](Rigor::Estimate) plan
+///   made after a [`Measure`](Rigor::Measure) plan of the same problem can be the `Measure`
+///   plan. [`Plan::fingerprint`] tells whether two plans are the same.
 /// - **Timed planning.** Plans made with [`Rigor::Measure`] and stronger rigor choose
 ///   algorithms by timing them, so they, and their bits, can differ between runs and between
 ///   processes.
 /// - **Batch and threads.** A plan for another batch count or layout is another plan and can
 ///   round differently. For results that do not depend on the number of threads or on
 ///   scheduling, fix the unit of work, such as one box of a fixed batch, and execute one plan
-///   on every unit. Never size a plan from a scheduler's chunking.
+///   on every unit. Never size a plan from a scheduler's chunking. A threaded plan, made with
+///   `Planner::threads` (feature `fftw_threads`), can round differently from a
+///   single-threaded one.
+/// - **Threaded plans from several threads.** Executing a threaded plan from several threads
+///   at once is allowed, but runs more threads than the machine has cores, notably under
+///   rayon.
 ///
 /// One plan executed from several threads on disjoint units of one aligned buffer, each unit
 /// a multiple of 64 bytes long so that all of them are at alignment class 0:
@@ -583,6 +588,7 @@ pub struct Plan<T: FftwReal, F: Family, P: Policy> {
     rigor: Rigor,
     flags: c_uint,
     alignment: Option<(AlignmentClass, AlignmentClass)>,
+    threads: usize,
     /// The kind of each transform dimension of a real-to-real plan; empty otherwise.
     kinds: Vec<R2rKind>,
     _marker: PhantomData<(T, F, P)>,
@@ -606,6 +612,7 @@ impl<T: FftwReal, F: Family, P: Policy> Plan<T, F, P> {
         rigor: Rigor,
         flags: c_uint,
         alignment: Option<(AlignmentClass, AlignmentClass)>,
+        threads: usize,
     ) -> Self {
         Self {
             raw,
@@ -614,6 +621,7 @@ impl<T: FftwReal, F: Family, P: Policy> Plan<T, F, P> {
             rigor,
             flags,
             alignment,
+            threads,
             kinds: Vec::new(),
             _marker: PhantomData,
         }
@@ -676,6 +684,21 @@ impl<T: FftwReal, F: Family, P: Policy> Plan<T, F, P> {
     /// ```
     pub fn alignment(&self) -> Option<(AlignmentClass, AlignmentClass)> {
         self.alignment
+    }
+
+    /// The number of threads the plan was made for: the count given to
+    /// `Planner::threads`, which needs the feature `fftw_threads`, and 1 otherwise.
+    ///
+    /// ```
+    /// use rlst::fftw::{Dim, Direction, Layout, Placement, Planner};
+    ///
+    /// let layout = Layout::new(&[Dim { n: 8, is: 1, os: 1 }], &[], Placement::OutOfPlace)?;
+    /// let plan = Planner::<f64>::new().c2c(&layout, Direction::Forward)?;
+    /// assert_eq!(plan.threads(), 1);
+    /// # Ok::<(), rlst::fftw::FftwError>(())
+    /// ```
+    pub fn threads(&self) -> usize {
+        self.threads
     }
 
     /// The logical size N of one transform: the product over the transform dimensions of the
@@ -837,6 +860,7 @@ impl<T: FftwReal, F: Family, P: Policy> fmt::Debug for Plan<T, F, P> {
             .field("rigor", &self.rigor)
             .field("flags", &format_args!("{:#x}", self.flags))
             .field("alignment", &self.alignment)
+            .field("threads", &self.threads)
             .field("kinds", &self.kinds)
             .finish()
     }

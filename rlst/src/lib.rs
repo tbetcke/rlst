@@ -25,6 +25,8 @@
 
 #![cfg_attr(feature = "strict", deny(warnings), deny(unused_crate_dependencies))]
 #![warn(missing_docs)]
+// docs.rs builds with `--cfg docsrs` and marks feature-gated items with `doc(cfg)`.
+#![cfg_attr(docsrs, feature(doc_cfg))]
 
 #[cfg(all(feature = "fftw", not(feature = "fftw_system")))]
 compile_error!("the `fftw` feature needs a back end: enable `fftw_system`");

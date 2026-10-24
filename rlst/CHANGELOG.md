@@ -139,6 +139,20 @@ and imported again, or imported in another process, gives wisdom-only plans with
 fingerprints and bits of the plans it came from; the module documentation states what wisdom
 means for determinism.
 
+Threads. The new feature `fftw_threads`, which implies `fftw_system`, adds
+`Planner::threads(n: NonZeroUsize)`, which makes plans for `n` threads, and the module
+`rlst::fftw::threads` with `make_planner_thread_safe`, which installs FFTW's own lock around
+plan creation and destruction for processes where another library plans with FFTW. Every plan
+has `Plan::threads()`, the thread count it was made for, 1 without the feature. The feature
+links FFTW's threads libraries, `fftw3_threads` and `fftw3f_threads`, before `fftw3` and
+`fftw3f`, and fails the build if they are missing; it raises the minimum FFTW to 3.3.6, at
+build time and at run time. RLST initialises FFTW's threads under its FFTW lock on its first
+FFTW call; the thread count is set for one planner call and reset to 1 before the lock is
+released. Planning returns the new `FftwError::InvalidThreadCount` for a count above FFTW's
+`int`, and the new `FftwError::ThreadsUnavailable` for more than one thread when FFTW could not
+initialise its threads. As tested, threaded `Estimate` plans are the same in fresh processes,
+and threaded planning leaves single-threaded plans unchanged.
+
 ### New traits `StridedRawAccess` and `StridedRawAccessMut`
 
 `rlst::StridedRawAccess::storage` and `StridedRawAccessMut::storage_mut` return the backing

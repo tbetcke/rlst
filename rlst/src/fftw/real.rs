@@ -306,6 +306,33 @@ pub(crate) mod sealed {
         ///
         /// The caller holds the FFTW lock.
         unsafe fn import_system_wisdom() -> c_int;
+
+        /// `fftw_init_threads` or `fftwf_init_threads`, in FFTW's threads library. Returns 0
+        /// if FFTW could not initialise its threads.
+        ///
+        /// # Safety
+        ///
+        /// The caller holds the FFTW lock.
+        #[cfg(feature = "fftw_threads")]
+        unsafe fn init_threads() -> c_int;
+
+        /// `fftw_plan_with_nthreads` or `fftwf_plan_with_nthreads`, in FFTW's threads library.
+        ///
+        /// # Safety
+        ///
+        /// `init_threads` of this precision succeeded, and `threads` is positive. The caller
+        /// holds the FFTW lock.
+        #[cfg(feature = "fftw_threads")]
+        unsafe fn plan_with_nthreads(threads: c_int);
+
+        /// `fftw_make_planner_thread_safe` or `fftwf_make_planner_thread_safe`, in FFTW's
+        /// threads library.
+        ///
+        /// # Safety
+        ///
+        /// The caller holds the FFTW lock.
+        #[cfg(feature = "fftw_threads")]
+        unsafe fn make_planner_thread_safe();
     }
 
     macro_rules! impl_sealed {
@@ -595,6 +622,24 @@ pub(crate) mod sealed {
                     unsafe fn import_system_wisdom() -> c_int {
                         // SAFETY: forwarded from the caller, see the trait's contract.
                         unsafe { fftw_sys::[<$prefix import_system_wisdom>]() }
+                    }
+
+                    #[cfg(feature = "fftw_threads")]
+                    unsafe fn init_threads() -> c_int {
+                        // SAFETY: forwarded from the caller, see the trait's contract.
+                        unsafe { fftw_sys::[<$prefix init_threads>]() }
+                    }
+
+                    #[cfg(feature = "fftw_threads")]
+                    unsafe fn plan_with_nthreads(threads: c_int) {
+                        // SAFETY: forwarded from the caller, see the trait's contract.
+                        unsafe { fftw_sys::[<$prefix plan_with_nthreads>](threads) }
+                    }
+
+                    #[cfg(feature = "fftw_threads")]
+                    unsafe fn make_planner_thread_safe() {
+                        // SAFETY: forwarded from the caller, see the trait's contract.
+                        unsafe { fftw_sys::[<$prefix make_planner_thread_safe>]() }
                     }
                 }
             }

@@ -79,6 +79,9 @@ enable_tracing = ["rlst-proc-macro/enable_tracing", "dep:log"]
 # FFTW and the fftw-sys bindings are GPL-licensed; see the README.
 fftw = ["dep:fftw-sys", "dep:libc"]
 fftw_system = ["fftw", "fftw-sys/system", "dep:pkg-config"]
+# Threaded FFTW plans (`Planner::threads`): also links FFTW's threads libraries,
+# `fftw3_threads` and `fftw3f_threads`, and needs FFTW 3.3.6 or later.
+fftw_threads = ["fftw_system"]
 
 
 [lints.clippy]

@@ -1,5 +1,5 @@
-//! Concurrency of complex-to-complex, real-to-complex and real-to-real plans, and of wisdom
-//! export (tasks F4, F3, F5a, F5b and F6a; design Sections 5 and 7.5).
+//! Concurrency of complex-to-complex, real-to-complex and real-to-real plans, of wisdom export,
+//! and of threaded plans (tasks F4, F3, F5a, F5b, F6a and F6b; design Sections 5 and 7.5).
 //!
 //! The tests run as threads of the test process, beside the other tests, and plan with
 //! `Rigor::Estimate` only, so no wisdom of a greater rigor exists in the process and plans of
@@ -1071,4 +1071,241 @@ fn test_plans_move_between_threads() {
     let reference = logical_reference(UNIT_SHAPE, &values, &[0], Direction::Forward);
     let output = SliceArray::from_shape(output.data().unwrap(), UNIT_SHAPE);
     assert_matches_reference(&output, &reference, &[0], &"plans move between threads");
+}
+
+/// Threaded plans (feature `fftw_threads`, task F6b; design Sections 4.7, 4.14 and 7.5).
+#[cfg(feature = "fftw_threads")]
+mod threads {
+    use std::num::NonZeroUsize;
+    use std::sync::Barrier;
+
+    use num::Complex;
+
+    use super::{AnyPlan, Context, UNIT_SHAPE, parents, units};
+    use crate::fftw::test_support::{
+        PolicyKind, SEED, TestReal, aligned, c2c_tolerance, filled, random_reals, random_values,
+        relative_error, sentinel, widen,
+    };
+    use crate::fftw::{Direction, Layout, Planner};
+    use crate::{SliceArray, SliceArrayMut};
+
+    /// The thread counts of threaded plans: fixed and small, for debug builds and the macOS
+    /// runner's 3 cores.
+    const COUNTS: [usize; 2] = [2, 4];
+
+    /// The shapes of the c2c plans, transformed along axis 0: a larger problem, and nd-fmm's
+    /// unit.
+    const SHAPES: [[usize; 2]; 2] = [[1080, 64], UNIT_SHAPE];
+
+    fn count(threads: usize) -> NonZeroUsize {
+        NonZeroUsize::new(threads).unwrap()
+    }
+
+    fn threads_of<T: TestReal>(plan: &AnyPlan<T>) -> usize {
+        match plan {
+            AnyPlan::Preserving(plan) => plan.threads(),
+            AnyPlan::Destroying(plan) => plan.threads(),
+            AnyPlan::InPlace(plan) => plan.threads(),
+        }
+    }
+
+    /// A c2c plan of `policy` for `shape` along axis 0, forward, from `planner`.
+    fn c2c_plan<T: TestReal>(
+        planner: &Planner<T>,
+        policy: PolicyKind,
+        shape: [usize; 2],
+    ) -> AnyPlan<T> {
+        let scratch = vec![Complex::<T>::default(); shape[0] * shape[1]];
+        let array = SliceArray::from_shape(&scratch[..], shape);
+        let layout = Layout::along_axis(&array, &array, 0).unwrap();
+        let inplace = Layout::along_axis_inplace(&array, 0).unwrap();
+        AnyPlan::new(planner, policy, &layout, &inplace, Direction::Forward)
+    }
+
+    /// The result of `plan` on `values` of `shape`, widened to f64.
+    fn c2c_result<T: TestReal>(
+        plan: &AnyPlan<T>,
+        policy: PolicyKind,
+        shape: [usize; 2],
+        values: &[Complex<T>],
+    ) -> Vec<Complex<f64>> {
+        let mut input = aligned(values);
+        let mut output = filled(sentinel::<T>(), values.len());
+        plan.execute(
+            &mut SliceArrayMut::from_shape(&mut input[..], shape),
+            &mut SliceArrayMut::from_shape(&mut output[..], shape),
+        );
+        widen(match policy {
+            PolicyKind::InPlace => &input,
+            _ => &output,
+        })
+    }
+
+    /// Assert that each transform of `len` outputs in `found` is within the c2c tolerance of
+    /// precision `T`, for the logical size `n`, of the same transform in `expected`.
+    fn assert_close<T: TestReal>(
+        found: &[Complex<f64>],
+        expected: &[Complex<f64>],
+        (len, n): (usize, usize),
+        context: &str,
+    ) {
+        let tolerance = c2c_tolerance::<T>(n);
+        let transforms = found.chunks_exact(len).zip(expected.chunks_exact(len));
+        for (k, (found, expected)) in transforms.enumerate() {
+            let error = relative_error(found, expected);
+            assert!(
+                error <= tolerance,
+                "{context}, transform {k}: relative error {error:e} above {tolerance:e}"
+            );
+        }
+    }
+
+    fn check_threaded_c2c<T: TestReal>(shape: [usize; 2], values: &[Complex<T>]) {
+        for policy in PolicyKind::ALL {
+            check_threaded_c2c_policy(policy, shape, values);
+        }
+    }
+
+    fn check_threaded_c2c_policy<T: TestReal>(
+        policy: PolicyKind,
+        shape: [usize; 2],
+        values: &[Complex<T>],
+    ) {
+        let single = c2c_plan(&Planner::<T>::new(), policy, shape);
+        let expected = c2c_result(&single, policy, shape, values);
+        for threads in COUNTS {
+            let planner = Planner::<T>::new().threads(count(threads));
+            let plan = c2c_plan(&planner, policy, shape);
+            let context = format!(
+                "threaded c2c: {} {policy:?} {shape:?}, {threads} threads",
+                T::NAME
+            );
+            assert_eq!(threads_of(&plan), threads, "{context}");
+            let found = c2c_result(&plan, policy, shape, values);
+            assert_close::<T>(&found, &expected, (shape[0], shape[0]), &context);
+        }
+    }
+
+    fn check_threaded_r2c<T: TestReal>() {
+        let (real_shape, complex_shape) = (UNIT_SHAPE, [UNIT_SHAPE[0] / 2 + 1, UNIT_SHAPE[1]]);
+        let reals = vec![T::default(); real_shape[0] * real_shape[1]];
+        let values = vec![Complex::<T>::default(); complex_shape[0] * complex_shape[1]];
+        let layout = Layout::along_axis(
+            &SliceArray::from_shape(&reals[..], real_shape),
+            &SliceArray::from_shape(&values[..], complex_shape),
+            0,
+        )
+        .unwrap();
+        let input = aligned(&random_reals::<T>(SEED, reals.len()));
+        let result = |planner: Planner<T>| {
+            let plan = planner.r2c(&layout).unwrap();
+            let mut output = filled(sentinel::<T>(), values.len());
+            plan.execute(
+                &SliceArray::from_shape(&input[..], real_shape),
+                &mut SliceArrayMut::from_shape(&mut output[..], complex_shape),
+            )
+            .unwrap();
+            (plan.threads(), widen(&output))
+        };
+        let (_, expected) = result(Planner::new());
+        for threads in COUNTS {
+            let (found_threads, found) = result(Planner::new().threads(count(threads)));
+            let context = format!("threaded r2c: {}, {threads} threads", T::NAME);
+            assert_eq!(found_threads, threads, "{context}");
+            let sizes = (complex_shape[0], real_shape[0]);
+            assert_close::<T>(&found, &expected, sizes, &context);
+        }
+    }
+
+    #[test]
+    fn test_threaded_against_single_threaded() {
+        for shape in SHAPES {
+            let len = shape[0] * shape[1];
+            check_threaded_c2c(shape, &random_values::<f64>(SEED, len));
+            check_threaded_c2c(shape, &random_values::<f32>(SEED, len));
+        }
+        check_threaded_r2c::<f64>();
+        check_threaded_r2c::<f32>();
+    }
+
+    /// One 2-thread plan of `policy` executed by 3 threads at once, 4 times each, on their own
+    /// units, against the sequential results bit for bit (design, Section 5 rule 3).
+    fn check_threaded_plan_many_threads<T: TestReal>(policy: PolicyKind) {
+        const EXECUTORS: usize = 3;
+        const ITERATIONS: usize = 4;
+        let plan = c2c_plan(&Planner::<T>::new().threads(count(2)), policy, UNIT_SHAPE);
+        let (mut input, mut output) = parents::<T>(EXECUTORS);
+        let units = units(
+            &plan,
+            policy,
+            input.data_mut().unwrap(),
+            output.data_mut().unwrap(),
+            0,
+        );
+        let barrier = Barrier::new(EXECUTORS);
+        std::thread::scope(|scope| {
+            for (thread, mut unit) in units.into_iter().enumerate() {
+                let (plan, barrier) = (&plan, &barrier);
+                scope.spawn(move || {
+                    for iteration in 0..ITERATIONS {
+                        let context = Context {
+                            precision: T::NAME,
+                            policy,
+                            seed: unit.seed,
+                            thread,
+                            iteration,
+                            test: "a threaded plan from several threads",
+                        };
+                        barrier.wait();
+                        unit.execute_and_check(plan, policy, &context);
+                    }
+                });
+            }
+        });
+    }
+
+    #[test]
+    fn test_threaded_plan_many_threads() {
+        for policy in PolicyKind::ALL {
+            check_threaded_plan_many_threads::<f64>(policy);
+            check_threaded_plan_many_threads::<f32>(policy);
+        }
+    }
+
+    #[test]
+    fn test_thread_count_does_not_leak() {
+        for shape in SHAPES {
+            let before = c2c_plan(&Planner::<f64>::new(), PolicyKind::Preserving, shape);
+            for threads in COUNTS {
+                let planner = Planner::<f64>::new().threads(count(threads));
+                let threaded = c2c_plan(&planner, PolicyKind::Preserving, shape);
+                drop(threaded);
+                let after = c2c_plan(&Planner::<f64>::new(), PolicyKind::Preserving, shape);
+                assert_eq!(threads_of(&after), 1, "{shape:?} after {threads} threads");
+                assert_eq!(
+                    after.fingerprint(),
+                    before.fingerprint(),
+                    "{shape:?} after {threads} threads: {} became {}",
+                    before.description(),
+                    after.description()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_one_thread_is_unthreaded() {
+        for shape in SHAPES {
+            for policy in PolicyKind::ALL {
+                let unthreaded = c2c_plan(&Planner::<f32>::new(), policy, shape);
+                let one = c2c_plan(&Planner::<f32>::new().threads(count(1)), policy, shape);
+                assert_eq!(threads_of(&one), 1);
+                assert_eq!(
+                    one.fingerprint(),
+                    unthreaded.fingerprint(),
+                    "{shape:?} {policy:?}"
+                );
+            }
+        }
+    }
 }

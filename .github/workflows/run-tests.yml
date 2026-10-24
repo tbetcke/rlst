@@ -57,11 +57,13 @@ jobs:
           cargo clippy --examples --features "mpi,fftw,fftw_system,strict" -- -D warnings
           cargo clippy --features "openblas_threading,mkl_threading,blis_threading,strict" -- -D warnings
           cargo clippy -p rlst-suitesparse -- -D warnings
+          cargo clippy --features "fftw,fftw_system,fftw_threads,strict" -- -D warnings
 
       - name: Run unit tests
         run: |
           RUST_MIN_STACK=8388608 cargo test --features "mpi,fftw,fftw_system,strict"
           cargo test -p rlst-suitesparse
+          cargo test --features "fftw,fftw_system,fftw_threads,strict"
 
       - name: Run bounded empty-rank MPI regressions (1, 2, and 4 ranks)
         run: python3 scripts/run_mpi_tests.py
@@ -95,7 +97,11 @@ jobs:
           "$RUNNER_TEMP/fv"
 
       - name: Clippy
-        run: cargo clippy --features "fftw,fftw_system,strict" -- -D warnings
+        run: |
+          cargo clippy --features "fftw,fftw_system,strict" -- -D warnings
+          cargo clippy --features "fftw,fftw_system,fftw_threads,strict" -- -D warnings
 
       - name: Run unit tests
-        run: cargo test --features "fftw,fftw_system,strict"
+        run: |
+          cargo test --features "fftw,fftw_system,strict"
+          cargo test --features "fftw,fftw_system,fftw_threads,strict"

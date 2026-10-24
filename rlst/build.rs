@@ -19,8 +19,29 @@ fn discover_fftw() {
 
     // fftw-sys links both precisions, but does not discover system search paths.
     for library in ["fftw3", "fftw3f"] {
-        match pkg_config::Config::new().probe(library) {
-            Ok(found) => check_fftw_version(library, &found.version),
+        // pkg-config prints its link lines as it probes. With `fftw_threads`, the threads
+        // library must be linked before `library` (design, Section 3 item 12), so the first
+        // probe prints nothing, and the second prints pkg-config's lines after it.
+        match pkg_config::Config::new()
+            .cargo_metadata(false)
+            .probe(library)
+        {
+            Ok(found) => {
+                check_fftw_version(library, &found.version);
+                #[cfg(feature = "fftw_threads")]
+                {
+                    let mut directories = found.link_paths.clone();
+                    // pkg-config leaves out `-L` for system directories, but reports them
+                    // as `libdir`.
+                    if let Ok(libdir) = pkg_config::get_variable(library, "libdir") {
+                        directories.push(libdir.into());
+                    }
+                    link_threads(library, &directories);
+                }
+                if let Err(error) = pkg_config::Config::new().probe(library) {
+                    panic!("pkg-config found {library}, then failed: {error}");
+                }
+            }
             Err(error) => {
                 // Never substitute host Homebrew libraries when cross-compiling.
                 let native_macos = std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("macos")
@@ -34,6 +55,8 @@ fn discover_fftw() {
                     // No version is known here; the crate checks it at run time.
                     println!("cargo:rerun-if-changed={}", dylib.display());
                     println!("cargo:rustc-link-search=native={prefix}");
+                    #[cfg(feature = "fftw_threads")]
+                    link_threads(library, &[prefix.into()]);
                     println!("cargo:rustc-link-lib={library}");
                 } else {
                     panic!(
@@ -49,15 +72,49 @@ fn discover_fftw() {
     }
 }
 
+/// Link `{library}_threads`, FFTW's threads library for `library`, which has no pkg-config
+/// file of its own, if one of `directories` holds it, shared or static. Never the `_omp`
+/// library.
+///
+/// The linker finds it where it finds `library`: in a directory that the caller passes to the
+/// linker, or in a system directory, which pkg-config leaves out of `-L`.
+#[cfg(feature = "fftw_threads")]
+fn link_threads(library: &str, directories: &[std::path::PathBuf]) {
+    let threads = format!("{library}_threads");
+    let found = directories.iter().any(|directory| {
+        ["so", "dylib", "a"].iter().any(|extension| {
+            directory
+                .join(format!("lib{threads}.{extension}"))
+                .is_file()
+        })
+    });
+    if found {
+        println!("cargo:rustc-link-lib={threads}");
+    } else {
+        panic!(
+            "The feature `fftw_threads` needs FFTW's threads library lib{threads}, which was not \
+             found in {directories:?}, the directories where {library} was found.\n\
+             Install FFTW with its threads libraries (configure FFTW with --enable-threads; \
+             Homebrew and Debian/Ubuntu packages include them), or build without \
+             `fftw_threads`."
+        );
+    }
+}
+
 /// Fail the build if pkg-config reports a version of `library` below the minimum.
 #[cfg(feature = "fftw_system")]
 fn check_fftw_version(library: &str, version: &str) {
     if !fftw_version::parse_numbers(version).is_some_and(fftw_version::meets_minimum) {
         panic!(
-            "pkg-config found {library} version {version:?}, but RLST needs FFTW {} or later.\n\
+            "pkg-config found {library} version {version:?}, but RLST needs FFTW {} or later{}.\n\
              Install a newer FFTW (3.3.10 or later is recommended), and set PKG_CONFIG_PATH to \
              its lib/pkgconfig directory.",
-            fftw_version::MINIMUM_TEXT
+            fftw_version::MINIMUM_TEXT,
+            if cfg!(feature = "fftw_threads") {
+                " with the feature `fftw_threads`"
+            } else {
+                ""
+            }
         );
     }
 }

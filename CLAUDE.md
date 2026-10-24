@@ -55,7 +55,8 @@ The repository uses the Rust 2024 edition for `rlst` and `rlst-suitesparse`, and
 - `.github/workflows/` — GitHub Actions CI on hosted runners. `run-tests.yml` is the
   authoritative validation matrix and the only workflow. It runs on pushes and pull requests to
   `main` and `fftw-0.11`, with two jobs: `run-tests` (the full feature matrix on `ubuntu-24.04`)
-  and `run-tests-macos` (FFTW Clippy and tests on arm64 `macos-26`). Both jobs first report the
+  and `run-tests-macos` (FFTW Clippy and tests, with and without `fftw_threads`, on arm64
+  `macos-26`). Both jobs first report the
   FFTW that pkg-config finds: its version, the threads libraries beside it, and `fftw_version`.
 
 The guides in `rlst/src/doc/` are the best existing description of intended usage and double as
@@ -88,6 +89,12 @@ changes:
   cross-compilation must use target libraries, not host Homebrew paths. The interface is being
   rewritten for 0.11 on the `fftw-0.11` branch (see "FFTW rework (0.11)" below); `fftw_source`
   and `fftw_mkl` were removed by task F1.
+- `fftw_threads` — implies `fftw_system`; adds threaded plans (`Planner::threads`) and
+  `rlst::fftw::threads`. `build.rs` also links `fftw3_threads` and `fftw3f_threads`, found in
+  the directories of `fftw3` and `fftw3f` (pkg-config's `libdir` or the Homebrew fallback) and
+  linked before them, and fails if they are missing; the minimum version becomes 3.3.6, at
+  build time and at run time. Without it, nothing references a symbol of the threads
+  libraries.
 - `burn` — enables the optional Burn integration.
 - `enable_tracing` — enables tracing macro support and `log`.
 - `blis_threading`, `openblas_threading`, `mkl_threading` — link that backend's thread-control
@@ -99,7 +106,8 @@ changes:
 
 On Linux, the CI feature matrix installs `libclang-dev`, CMake, OpenBLAS, FFTW, OpenMPI, and
 SuiteSparse. On macOS, CI installs FFTW and pkg-config with Homebrew (`brew install fftw
-pkg-config`) and runs Clippy and the tests with `fftw,fftw_system,strict`; it installs no MPI,
+pkg-config`) and runs Clippy and the tests with `fftw,fftw_system,strict` and with
+`fftw,fftw_system,fftw_threads,strict`; it installs no MPI,
 SuiteSparse, or OpenBLAS. The normal test configuration links BLAS/LAPACK through the platform dev dependencies
 (`Accelerate` on macOS; system OpenBLAS on Linux). Do not assume MPI, FFTW, SuiteSparse, or their
 native libraries are available locally.
@@ -267,7 +275,7 @@ workflow and tracks the status of every task; `docs/fftw/tasks/` holds one brief
 ## Validation commands
 
 Run commands from the repository root. After every code edit, and again after any corrective
-edit, run all six Clippy commands below independently so a failure does not prevent later
+edit, run all seven Clippy commands below independently so a failure does not prevent later
 checks. `.github/workflows/run-tests.yml` is authoritative; keep this list synchronized with it.
 
 ```bash
@@ -277,6 +285,7 @@ cargo clippy --features "mpi,fftw,fftw_system,strict" -- -D warnings
 cargo clippy --examples --features "mpi,fftw,fftw_system,strict" -- -D warnings
 cargo clippy --features "openblas_threading,mkl_threading,blis_threading,strict" -- -D warnings
 cargo clippy -p rlst-suitesparse -- -D warnings
+cargo clippy --features "fftw,fftw_system,fftw_threads,strict" -- -D warnings
 ```
 
 The feature and SuiteSparse checks require their native dependencies. If those dependencies are
@@ -293,15 +302,20 @@ cargo test
 # FFTW, OpenMPI, and SuiteSparse on Linux)
 RUST_MIN_STACK=8388608 cargo test --features "mpi,fftw,fftw_system,strict"
 cargo test -p rlst-suitesparse
+cargo test --features "fftw,fftw_system,fftw_threads,strict"
 python3 scripts/run_mpi_tests.py
 cargo doc --no-deps --features "mpi,fftw,fftw_system,strict"
 
 # The macOS CI job (Homebrew FFTW and pkg-config; BLAS/LAPACK through Accelerate)
 cargo clippy --features "fftw,fftw_system,strict" -- -D warnings
+cargo clippy --features "fftw,fftw_system,fftw_threads,strict" -- -D warnings
 cargo test --features "fftw,fftw_system,strict"
+cargo test --features "fftw,fftw_system,fftw_threads,strict"
 
-# The FFTW determinism binary alone (part of every `cargo test` with `fftw`)
+# The FFTW determinism binary alone (part of every `cargo test` with `fftw`); its threaded
+# cases and scenarios run only with `fftw_threads`
 cargo test --features "fftw,fftw_system" --test fftw_determinism
+cargo test --features "fftw,fftw_system,fftw_threads" --test fftw_determinism
 
 # Work on the proc-macro crate directly
 cargo test -p rlst-proc-macro
