@@ -3,7 +3,7 @@
 | | |
 | --- | --- |
 | Task | F5 (design, Section 9) |
-| Status | in progress: F5a and F5b done, F5c |
+| Status | done |
 | Depends on | F1, F2, F3, F4 |
 | Pull requests | three, into `fftw-0.11`, in this order: F5a (the storage of each side in `Layout`, the element types of the layout functions, r2c and c2r out of place and in place, `Plan::logical_size`, `Scale`), F5b (r2r with `R2rKind` and kinds per axis), F5c (split r2c and c2r) |
 | Read first | design: Section 2.2 item 9, Section 3 items 1, 5, 7, 8 and 11, Sections 4.1–4.9 and 4.15, Section 5, Sections 7.1–7.6, Section 9 (F5 row), Section 10, in particular DC1, DC2, DC3, DC5, DC12, DC14–DC16, DC21, DC25–DC29, Appendix A (drafts 0.8 to 0.13), Appendix B; `docs/fftw/tasks/F1-core.md`, `F2-layouts.md`, `F3-split.md` and `F4-determinism.md`, including their "Open questions"; `docs/fftw/F0-findings.md`; `CLAUDE.md` |
