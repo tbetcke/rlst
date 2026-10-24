@@ -46,6 +46,11 @@ jobs:
           cc "$RUNNER_TEMP/fv.c" $(pkg-config --cflags --libs fftw3) -o "$RUNNER_TEMP/fv"
           "$RUNNER_TEMP/fv"
 
+      - name: Chebyshev comparison with 0.10.3 (temporary)
+        run: |
+          lscpu | grep -E 'Model name|Flags' | sed -E 's/(Flags:).*( avx512f| avx2).*/\1 ...\2 .../' || true
+          cargo test --features "fftw,fftw_system,strict" --lib chebychev::test::test_compare_with_v0_10 -- --nocapture
+
       - name: Format
         run: cargo fmt -- --check
 
