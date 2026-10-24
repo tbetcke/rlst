@@ -1,7 +1,9 @@
 //! Errors of the FFTW interface.
 
 use std::fmt;
+use std::io;
 use std::ops::Range;
+use std::path::PathBuf;
 
 use super::align::AlignmentClass;
 use super::layout::Placement;
@@ -175,10 +177,37 @@ pub enum FftwError {
         hint: Option<&'static str>,
     },
 
-    /// FFTW did not accept the wisdom given to it.
+    /// FFTW did not accept the wisdom given to it, or found no system wisdom.
+    ///
+    /// FFTW gives no reason. Wisdom of the other precision is not accepted.
     #[error("FFTW did not accept the {precision} wisdom; FFTW gives no reason")]
     WisdomImportFailed {
         /// The precision of the wisdom, `f32` or `f64`.
         precision: &'static str,
     },
+
+    /// A wisdom file could not be read or written.
+    ///
+    /// The error carries the kind and the message of the I/O error rather than the error
+    /// itself, so that `FftwError` stays `Clone` and `Eq` (DC38).
+    #[error("the wisdom file {} could not be read or written: {message}", .path.display())]
+    WisdomFile {
+        /// The path of the file.
+        path: PathBuf,
+        /// The kind of the I/O error.
+        kind: io::ErrorKind,
+        /// The message of the I/O error.
+        message: String,
+    },
+}
+
+impl FftwError {
+    /// The [`FftwError::WisdomFile`] of an I/O `error` on the file at `path`.
+    pub(crate) fn wisdom_file(path: &std::path::Path, error: &io::Error) -> Self {
+        FftwError::WisdomFile {
+            path: path.to_path_buf(),
+            kind: error.kind(),
+            message: error.to_string(),
+        }
+    }
 }

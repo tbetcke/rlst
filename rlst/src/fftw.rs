@@ -176,13 +176,15 @@
 //!   through [`StridedRawAccess`](crate::StridedRawAccess), checked at execution by shape,
 //!   strides and storage;
 //! - [`FftwError`] and [`Side`]; [`Direction`]; [`PLAN_ALIGNMENT`]; [`Backend`],
-//!   [`backend`] and [`version`].
+//!   [`backend`] and [`version`];
+//! - [`wisdom`]: FFTW's wisdom of each precision, exported to and imported from strings and
+//!   files, forgotten, and the system's wisdom, with what wisdom means for determinism.
 //!
 //! Plans are made through FFTW's 64-bit guru interface, on scratch buffers unless a `*_on`
 //! method is used, so planning never touches user data. Execution checks the buffers against
 //! the plan before calling FFTW and takes no lock. Split plans can use fewer of FFTW's SIMD
 //! stages than interleaved ones (see [`SplitC2c`]). Every planner method rejects a layout of
-//! another family. Wisdom and threads follow.
+//! another family. Threads follow.
 //!
 //! ```
 //! use rlst::{c64, rlst_dynamic_array};
@@ -239,6 +241,7 @@ mod scale;
 #[cfg(test)]
 mod test_support;
 mod version;
+pub mod wisdom;
 
 use lock::with_fftw;
 

@@ -182,7 +182,8 @@ impl<T: FftwReal, S> Planner<T, S> {
     /// Plan only from wisdom (`FFTW_WISDOM_ONLY`).
     ///
     /// FFTW uses wisdom of the planner's rigor or greater; without such wisdom, planning
-    /// returns [`FftwError::PlanCreationFailed`].
+    /// returns [`FftwError::PlanCreationFailed`]. The [`wisdom`](super::wisdom) module
+    /// exports and imports wisdom, for example to make the same plans in several processes.
     ///
     /// ```
     /// use rlst::fftw::Planner;
