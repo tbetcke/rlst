@@ -3,7 +3,7 @@
 | | |
 | --- | --- |
 | Task | F7 (design, Section 9) |
-| Status | not started |
+| Status | done |
 | Depends on | F1 to F6 |
 | Pull requests | three, into `fftw-0.11`, in this order: F7a (the Chebyshev port to the new plans, while the 0.10 module still exists to compare with), F7b (the removal of the 0.10 module, its tests and its documentation; the module documentation of `rlst::fftw` for the new interface), F7c (the user guide with the seven rules of Section 5, the licence warning in its four places, the docs.rs metadata, the removal of the unused build dependencies, and the CHANGELOG with the migration notes of Appendix B) |
 | Read first | design (draft 0.17): Sections 2.1 and 2.2 (what 0.10.3 provides, and its limitations), Section 4.10 (versions, docs.rs and the build dependencies), Section 5 (all seven rules), Section 6 (the licence notice), Section 7.3 (the Chebyshev regression), Section 8 (the Chebyshev module), Section 9 (F7 row and Transition), Section 10, in particular DC10, DC22, DC23, DC39 and DC44 to DC47, Appendix B (migration); the "Open questions" of `docs/fftw/tasks/F3-split.md` (note 7), `F4-determinism.md` (notes on the fingerprint) and `F6-wisdom-threads.md` (notes 7, 11 and 14); `CLAUDE.md` |
