@@ -35,7 +35,7 @@ jobs:
       - name: Install native dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libclang-dev cmake libfftw3-dev libopenblas-dev \
+          sudo apt-get install -y libclang-dev libfftw3-dev libopenblas-dev \
             openmpi-bin libopenmpi-dev libsuitesparse-dev
 
       - name: Report FFTW
@@ -49,6 +49,14 @@ jobs:
       - name: Format
         run: cargo fmt -- --check
 
+      - name: Default build has no fftw-sys
+        run: |
+          tree=$(cargo tree -p rlst -e normal --prefix none)
+          if grep -q '^fftw-sys ' <<< "$tree"; then
+            echo "::error::Default-build check failed: the default build of rlst lists fftw-sys (cargo tree -p rlst -e normal)"
+            exit 1
+          fi
+
       - name: Clippy
         run: |
           cargo clippy -- -D warnings
@@ -58,9 +66,12 @@ jobs:
           cargo clippy --features "openblas_threading,mkl_threading,blis_threading,strict" -- -D warnings
           cargo clippy -p rlst-suitesparse -- -D warnings
           cargo clippy --features "fftw,fftw_system,fftw_threads,strict" -- -D warnings
+          cargo clippy --tests --features "fftw,fftw_system,strict" -- -D warnings
+          cargo clippy --tests --features "fftw,fftw_system,fftw_threads,strict" -- -D warnings
 
       - name: Run unit tests
         run: |
+          cargo test
           RUST_MIN_STACK=8388608 cargo test --features "mpi,fftw,fftw_system,strict"
           cargo test -p rlst-suitesparse
           cargo test --features "fftw,fftw_system,fftw_threads,strict"
@@ -69,7 +80,11 @@ jobs:
         run: python3 scripts/run_mpi_tests.py
 
       - name: Build docs
-        run: cargo doc --no-deps --features "mpi,fftw,fftw_system,strict"
+        env:
+          RUSTDOCFLAGS: -D warnings
+        run: |
+          cargo doc --no-deps --features "mpi,fftw,fftw_system,strict"
+          cargo doc --no-deps --features "fftw,fftw_system,fftw_threads,strict"
 
   run-tests-macos:
     name: run-tests-macos
@@ -100,8 +115,32 @@ jobs:
         run: |
           cargo clippy --features "fftw,fftw_system,strict" -- -D warnings
           cargo clippy --features "fftw,fftw_system,fftw_threads,strict" -- -D warnings
+          cargo clippy --tests --features "fftw,fftw_system,strict" -- -D warnings
+          cargo clippy --tests --features "fftw,fftw_system,fftw_threads,strict" -- -D warnings
 
       - name: Run unit tests
         run: |
           cargo test --features "fftw,fftw_system,strict"
           cargo test --features "fftw,fftw_system,fftw_threads,strict"
+
+  docs:
+    name: docs
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@nightly
+
+      - uses: actions/checkout@v6
+
+      # As docs.rs builds: current nightly, `DOCS_RS` set (build.rs skips FFTW discovery),
+      # `--cfg docsrs`, the features of `[package.metadata.docs.rs]`, and no native packages.
+      - name: Build docs as docs.rs does
+        env:
+          DOCS_RS: 1
+          RUSTDOCFLAGS: --cfg docsrs -D warnings
+        run: |
+          rustc +nightly --version
+          if ! cargo +nightly doc --no-deps --features "fftw,fftw_system,fftw_threads"; then
+            echo "::error::The docs.rs build failed on $(rustc +nightly --version). Only this nightly build is affected if the stable jobs pass; check whether the nightly changed before changing RLST."
+            exit 1
+          fi

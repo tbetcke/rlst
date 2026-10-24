@@ -54,10 +54,22 @@ The repository uses the Rust 2024 edition for `rlst` and `rlst-suitesparse`, and
   below.
 - `.github/workflows/` — GitHub Actions CI on hosted runners. `run-tests.yml` is the
   authoritative validation matrix and the only workflow. It runs on pushes and pull requests to
-  `main` and `fftw-0.11`, with two jobs: `run-tests` (the full feature matrix on `ubuntu-24.04`)
-  and `run-tests-macos` (FFTW Clippy and tests, with and without `fftw_threads`, on arm64
-  `macos-26`). Both jobs first report the
-  FFTW that pkg-config finds: its version, the threads libraries beside it, and `fftw_version`.
+  `main` and `fftw-0.11`, with three jobs:
+  - `run-tests` (`ubuntu-24.04`, FFTW 3.3.10 with SIMD): formatting; the check that the default
+    build of `rlst` has no `fftw-sys` (`cargo tree -p rlst -e normal`); Clippy on the library,
+    the examples and, with FFTW, the tests; `cargo test` without features (the default build
+    and its doctests), with `mpi,fftw,fftw_system,strict`, for `rlst-suitesparse`, and with
+    `fftw,fftw_system,fftw_threads,strict`; the bounded MPI runner; and `cargo doc` with
+    `-D warnings` with and without `fftw_threads`.
+  - `run-tests-macos` (arm64 `macos-26`, Homebrew FFTW 3.3.11 without SIMD): Clippy (library
+    and tests) and `cargo test` with `fftw,fftw_system,strict` and with
+    `fftw,fftw_system,fftw_threads,strict`.
+  - `docs` (`ubuntu-24.04`, current nightly, no native packages): the documentation as docs.rs
+    builds it (`DOCS_RS=1`, `--cfg docsrs`, `-D warnings`). A failure there alone usually
+    means the nightly changed.
+
+  The two test jobs first report the FFTW that pkg-config finds: its version, the threads
+  libraries beside it, and `fftw_version`.
 
 The guides in `rlst/src/doc/` are the best existing description of intended usage and double as
 doctests. Read the relevant one before changing a user-facing API, and update it when behavior
@@ -108,8 +120,8 @@ changes:
   binaries require each enabled library.
 - `nightly` — specialized configuration flag; follow existing code patterns before using it.
 
-On Linux, the CI feature matrix installs `libclang-dev`, CMake, OpenBLAS, FFTW, OpenMPI, and
-SuiteSparse. On macOS, CI installs FFTW and pkg-config with Homebrew (`brew install fftw
+On Linux, the CI feature matrix installs `libclang-dev` (for `mpi-sys`), OpenBLAS, FFTW,
+OpenMPI, and SuiteSparse. On macOS, CI installs FFTW and pkg-config with Homebrew (`brew install fftw
 pkg-config`) and runs Clippy and the tests with `fftw,fftw_system,strict` and with
 `fftw,fftw_system,fftw_threads,strict`; it installs no MPI,
 SuiteSparse, or OpenBLAS. The normal test configuration links BLAS/LAPACK through the platform dev dependencies
@@ -283,7 +295,7 @@ workflow and tracks the status of every task; `docs/fftw/tasks/` holds one brief
 ## Validation commands
 
 Run commands from the repository root. After every code edit, and again after any corrective
-edit, run all seven Clippy commands below independently so a failure does not prevent later
+edit, run all nine Clippy commands below independently so a failure does not prevent later
 checks. `.github/workflows/run-tests.yml` is authoritative; keep this list synchronized with it.
 
 ```bash
@@ -294,6 +306,8 @@ cargo clippy --examples --features "mpi,fftw,fftw_system,strict" -- -D warnings
 cargo clippy --features "openblas_threading,mkl_threading,blis_threading,strict" -- -D warnings
 cargo clippy -p rlst-suitesparse -- -D warnings
 cargo clippy --features "fftw,fftw_system,fftw_threads,strict" -- -D warnings
+cargo clippy --tests --features "fftw,fftw_system,strict" -- -D warnings
+cargo clippy --tests --features "fftw,fftw_system,fftw_threads,strict" -- -D warnings
 ```
 
 The feature and SuiteSparse checks require their native dependencies. If those dependencies are
@@ -306,16 +320,22 @@ integrations have distinct environment and linkage requirements.
 cargo fmt -- --check
 cargo test
 
-# Check the full CI feature configuration (requires libclang, CMake, OpenBLAS,
-# FFTW, OpenMPI, and SuiteSparse on Linux)
+# The default build must not pull in fftw-sys; this must print nothing
+cargo tree -p rlst -e normal --prefix none | grep '^fftw-sys '
+
+# Check the full CI feature configuration (requires libclang, OpenBLAS, FFTW, OpenMPI,
+# and SuiteSparse on Linux)
 RUST_MIN_STACK=8388608 cargo test --features "mpi,fftw,fftw_system,strict"
 cargo test -p rlst-suitesparse
 cargo test --features "fftw,fftw_system,fftw_threads,strict"
 python3 scripts/run_mpi_tests.py
-cargo doc --no-deps --features "mpi,fftw,fftw_system,strict"
 
-# The documentation as docs.rs builds it (nightly; not in CI until task F8a). The guide's
-# links into `rlst::fftw` are checked only in builds with `fftw_threads`
+# The documentation, with warnings denied. The guide's links into `rlst::fftw` are
+# checked only in builds with `fftw_threads`
+RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --features "mpi,fftw,fftw_system,strict"
+RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --features "fftw,fftw_system,fftw_threads,strict"
+
+# The documentation as docs.rs builds it (CI job `docs`; current nightly, no FFTW needed)
 DOCS_RS=1 RUSTDOCFLAGS="--cfg docsrs -D warnings" cargo +nightly doc --no-deps --features "fftw,fftw_system,fftw_threads"
 
 # The macOS CI job (Homebrew FFTW and pkg-config; BLAS/LAPACK through Accelerate)
