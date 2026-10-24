@@ -499,3 +499,31 @@ F7.
     `wisdom-only` and `wisdom round trip` scenarios. On macOS a failed import of text that
     is not wisdom left the wisdom unchanged (fact 2), and `system-wisdom` reports
     `WisdomImportFailed` for both precisions (fact 5).
+
+Raised during F6b. None needs a design change; they are recorded for review and for F7.
+
+11. **`doc(cfg)` needs a crate-level gate.** The `#[cfg_attr(docsrs, doc(cfg(feature =
+    "fftw_threads")))]` of work item 8 fails a build with `--cfg docsrs`, which docs.rs
+    always passes, with "`#[doc(cfg)]` is experimental" (nightly 1.97). F6b adds
+    `#![cfg_attr(docsrs, feature(doc_cfg))]` to `rlst/src/lib.rs`, so that
+    `RUSTDOCFLAGS="--cfg docsrs" cargo +nightly doc` builds and shows the feature on the
+    gated items. F7, which adds the docs.rs metadata, keeps it.
+12. **How `build.rs` orders the link lines.** The first pkg-config probe of each library runs
+    with `cargo_metadata(false)`; after the threads library is emitted, a second probe with
+    metadata prints pkg-config's own lines, rather than `build.rs` re-emitting the fields of
+    `pkg_config::Library` by hand. The threads library is looked for in pkg-config's link
+    paths and its `libdir` variable, since pkg-config leaves `-L` out for system directories;
+    `build.rs` emits no search path for it, as the linker finds it where it finds `fftw3`.
+    On macOS the build script prints `fftw3_threads` before `fftw3` and `fftw3f_threads`
+    before `fftw3f`; the Linux job builds the same way.
+13. **What the tests cannot reach.** `ThreadsUnavailable` needs `fftw_init_threads` to fail,
+    which no test can arrange; only its message is tested. `InvalidThreadCount` is tested with
+    `c_int::MAX + 1` threads, before FFTW is called; no test plans with `c_int::MAX` threads,
+    for which FFTW could allocate per-thread state. No unit test calls
+    `make_planner_thread_safe`, which changes FFTW for the rest of the process; the
+    `planner-thread-safe` case calls it twice, and its doctest calls it once.
+14. **Measured locally** (macOS, debug build): the F6b unit tests add about 0.3 s (threaded
+    against single-threaded 0.26 s, the others 0.02 s each); the determinism binary takes
+    1.8 s with `fftw_threads` (13 scenarios) and 1.0–1.2 s without (10 scenarios). The
+    threaded `Estimate` fingerprints of nd-fmm's units differ from the single-threaded ones
+    and between 2 and 4 threads, for `[140, 9]` as well (fact 7).

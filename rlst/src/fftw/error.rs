@@ -199,6 +199,29 @@ pub enum FftwError {
         /// The message of the I/O error.
         message: String,
     },
+
+    /// The thread count given to `Planner::threads` exceeds FFTW's `int`.
+    ///
+    /// Only planning with the feature `fftw_threads` returns it (DC41).
+    #[error(
+        "the thread count {requested} exceeds FFTW's largest thread count {}",
+        std::ffi::c_int::MAX
+    )]
+    InvalidThreadCount {
+        /// The thread count given to `Planner::threads`.
+        requested: usize,
+    },
+
+    /// A plan for more than one thread was requested, but FFTW could not initialise its
+    /// threads (`fftw_init_threads` failed).
+    ///
+    /// Only planning with the feature `fftw_threads` returns it (DC41). Plans for one thread
+    /// are still made.
+    #[error(
+        "FFTW could not initialise its threads, so it cannot make plans for more than one \
+         thread; plan without `Planner::threads`"
+    )]
+    ThreadsUnavailable,
 }
 
 impl FftwError {

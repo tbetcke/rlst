@@ -34,6 +34,12 @@ set `PKG_CONFIG_PATH` to the directory containing `fftw3.pc` and `fftw3f.pc`.
 Cross-compilation requires target libraries and the corresponding `pkg-config`
 configuration; host Homebrew paths are not used as a fallback.
 
+Enable `fftw_threads` (which implies `fftw_system`) for threaded FFTW plans. It
+also links FFTW's threads libraries, `fftw3_threads` and `fftw3f_threads`, which
+must be installed beside `fftw3` and `fftw3f` (the Homebrew and Debian/Ubuntu
+packages above include them; a source build needs `--enable-threads`), and it
+needs FFTW 3.3.6 or later. FFTW's OpenMP libraries are not used.
+
 ## Notes
 
 This library is the result of the merger of two experimental linear algebra projects

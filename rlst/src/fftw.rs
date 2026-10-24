@@ -9,7 +9,9 @@
 //! FFTW supports FFT computations on one-, two-, and three-dimensional input arrays.
 //! Enable the `fftw_system` feature, the only backend, which implies `fftw`. The system
 //! must provide both single- and double-precision libraries (`fftw3f` and `fftw3`), version
-//! 3.3.4 or later, normally discovered through `pkg-config`.
+//! 3.3.4 or later, normally discovered through `pkg-config`. The feature `fftw_threads`, which
+//! implies `fftw_system`, adds threaded plans; it also links FFTW's threads libraries
+//! (`fftw3_threads` and `fftw3f_threads`) and needs version 3.3.6 or later.
 //!
 //! ## Complex-to-Complex transform
 //!
@@ -160,8 +162,9 @@
 //!   companions), made by [`Planner::split_r2c`] and [`Planner::split_c2r`] and their
 //!   companions; they have no in-place plans, and split c2r destroys its input by default;
 //! - [`Planner`], a builder with [`Rigor`], wisdom-only, unaligned, time-limit, alignment-class
-//!   and scratch options, whose input-policy requests ([`DefaultRequest`],
-//!   [`PreserveRequest`], [`DestroyRequest`]) decide a plan's policy;
+//!   and scratch options, and with `fftw_threads` a thread count (`Planner::threads`), whose
+//!   input-policy requests ([`DefaultRequest`], [`PreserveRequest`], [`DestroyRequest`])
+//!   decide a plan's policy;
 //! - split complex storage, the real and imaginary parts in one buffer of reals a fixed gap
 //!   apart, such as a real plane and then an imaginary plane: a split complex array is a real
 //!   array with a *part axis* of extent 2, and [`Layout::split_along_axis`],
@@ -170,7 +173,7 @@
 //! - [`Plan`], of precision [`FftwReal`], family [`C2c`], [`SplitC2c`], [`R2c`], [`C2r`],
 //!   [`R2r`], [`SplitR2c`] or [`SplitC2r`] and policy [`Preserving`], [`Destroying`] or
 //!   [`InPlace`], which runs on any buffers that fit its layout and [`AlignmentClass`]es,
-//!   from any thread, with [`Plan::description`], [`Plan::fingerprint`],
+//!   from any thread, with [`Plan::description`], [`Plan::fingerprint`], [`Plan::threads`],
 //!   [`Plan::logical_size`] and [`Plan::scale_factor`] for a [`Scale`];
 //! - [`FftBuffer`] and [`FftBufferMut`], implemented for slices and for RLST arrays and views
 //!   through [`StridedRawAccess`](crate::StridedRawAccess), checked at execution by shape,
@@ -178,13 +181,16 @@
 //! - [`FftwError`] and [`Side`]; [`Direction`]; [`PLAN_ALIGNMENT`]; [`Backend`],
 //!   [`backend`] and [`version`];
 //! - [`wisdom`]: FFTW's wisdom of each precision, exported to and imported from strings and
-//!   files, forgotten, and the system's wisdom, with what wisdom means for determinism.
+//!   files, forgotten, and the system's wisdom, with what wisdom means for determinism;
+//! - `threads`, with the feature `fftw_threads`: RLST's FFTW lock, its limits, and
+//!   `make_planner_thread_safe`, which adds FFTW's own lock for other libraries that plan
+//!   with FFTW in the process.
 //!
 //! Plans are made through FFTW's 64-bit guru interface, on scratch buffers unless a `*_on`
 //! method is used, so planning never touches user data. Execution checks the buffers against
 //! the plan before calling FFTW and takes no lock. Split plans can use fewer of FFTW's SIMD
 //! stages than interleaved ones (see [`SplitC2c`]). Every planner method rejects a layout of
-//! another family. Threads follow.
+//! another family.
 //!
 //! ```
 //! use rlst::{c64, rlst_dynamic_array};
@@ -240,6 +246,9 @@ mod real;
 mod scale;
 #[cfg(test)]
 mod test_support;
+#[cfg(feature = "fftw_threads")]
+#[cfg_attr(docsrs, doc(cfg(feature = "fftw_threads")))]
+pub mod threads;
 mod version;
 pub mod wisdom;
 

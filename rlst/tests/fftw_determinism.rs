@@ -1,5 +1,5 @@
-//! Determinism of FFTW plans across fresh processes, and FFTW's wisdom (tasks F4, F3, F5a,
-//! F5b and F6a; design Sections 5, 7.5 and 7.6).
+//! Determinism of FFTW plans across fresh processes, FFTW's wisdom, and threaded plans (tasks
+//! F4, F3, F5a, F5b, F6a and F6b; design Sections 5, 7.5 and 7.6).
 //!
 //! FFTW's wisdom is global to the process, so these tests cannot run as threads of one test
 //! process. This executable has `harness = false` and is both parent and child:
@@ -16,12 +16,16 @@
 //! build: fingerprints and bits depend on the FFTW build and the CPU's SIMD support. Every
 //! buffer whose bits are compared is at alignment class 0, from an aligned allocation.
 //!
-//! Later tasks add cases to [`CASES`] and scenarios to [`SCENARIOS`].
+//! Later tasks add cases to [`CASES`] and scenarios to [`SCENARIOS`]. The cases and scenarios
+//! of threaded plans, in [`THREADED_CASES`] and [`THREADED_SCENARIOS`], run with
+//! `fftw_threads` only.
 
 use std::collections::BTreeMap;
 use std::env;
 use std::fmt;
 use std::io::Read;
+#[cfg(feature = "fftw_threads")]
+use std::num::NonZeroUsize;
 use std::path::PathBuf;
 use std::process::{Command, ExitCode, ExitStatus, Stdio};
 use std::sync::Barrier;
@@ -47,6 +51,43 @@ const DEADLINE: Duration = Duration::from_secs(120);
 
 /// The rings of nd-fmm's units `[n_phi, RINGS]` (design, Section 2.5).
 const RINGS: usize = 9;
+
+/// The options a problem is planned with: a rigor and, with `fftw_threads`, a thread count.
+#[derive(Clone, Copy, Debug)]
+struct Options {
+    rigor: Rigor,
+    threads: usize,
+}
+
+impl From<Rigor> for Options {
+    /// Single-threaded plans of `rigor`.
+    fn from(rigor: Rigor) -> Self {
+        Options { rigor, threads: 1 }
+    }
+}
+
+impl Options {
+    /// A planner with these options.
+    fn planner<T: FftwReal>(self) -> Planner<T> {
+        let planner = Planner::new().rigor(self.rigor);
+        #[cfg(feature = "fftw_threads")]
+        let planner = planner.threads(NonZeroUsize::new(self.threads).unwrap());
+        assert!(
+            cfg!(feature = "fftw_threads") || self.threads == 1,
+            "threads need `fftw_threads`"
+        );
+        planner
+    }
+
+    /// The label of `problem` planned with these options: the problem, and the thread count
+    /// if it is not 1.
+    fn label(self, problem: impl fmt::Display) -> String {
+        match self.threads {
+            1 => problem.to_string(),
+            threads => format!("{problem}, {threads} threads"),
+        }
+    }
+}
 
 // Precisions, inputs and result lines.
 
@@ -469,42 +510,31 @@ impl Problem {
         problems
     }
 
-    /// Plan the problem with `rigor`, execute it once on its seeded input, and return its
-    /// result line.
-    fn run(self, rigor: Rigor) -> String {
-        let label = self.to_string();
+    /// Plan the problem with `options` (a rigor, or a rigor and a thread count), execute it
+    /// once on its seeded input, and return its result line.
+    fn run(self, options: impl Into<Options>) -> String {
+        let options = options.into();
+        let label = options.label(self);
         match self {
             Problem::Unit {
                 n_phi,
                 double: true,
                 direction,
                 policy,
-            } => unit::<f64>(
-                &label,
-                n_phi,
-                direction,
-                policy,
-                &Planner::new().rigor(rigor),
-            ),
+            } => unit::<f64>(&label, n_phi, direction, policy, &options.planner()),
             Problem::Unit {
                 n_phi,
                 double: false,
                 direction,
                 policy,
-            } => unit::<f32>(
-                &label,
-                n_phi,
-                direction,
-                policy,
-                &Planner::new().rigor(rigor),
-            ),
+            } => unit::<f32>(&label, n_phi, direction, policy, &options.planner()),
             Problem::ColumnMajor => {
                 let shape = [8, 6, 4];
                 let mut input = Aligned::<f64, 3>::from_shape(shape);
                 let mut output = Aligned::<f64, 3>::from_shape(shape);
                 input.fill_from_iter(values::<f64>(&label, 8 * 6 * 4).into_iter());
                 let layout = Layout::over_axes(&input, &output, &[0, 1]).unwrap();
-                let planner = Planner::new().rigor(rigor);
+                let planner = options.planner();
                 let fingerprint = plan_and_execute(
                     &planner,
                     Policy::Preserving,
@@ -523,7 +553,7 @@ impl Problem {
                 let mut output = output.r_mut().into_subview(origin, shape);
                 input.fill_from_iter(values::<f64>(&label, 12 * 7).into_iter());
                 let layout = Layout::along_axis(&input, &output, 1).unwrap();
-                let planner = Planner::new().rigor(rigor);
+                let planner = options.planner();
                 let fingerprint = plan_and_execute(
                     &planner,
                     Policy::Preserving,
@@ -544,7 +574,7 @@ impl Problem {
                 let mut output = StridedSliceArrayMut::from_shape_and_stride(output, shape, stride);
                 input.fill_from_iter(values::<f64>(&label, 10 * 3).into_iter());
                 let layout = Layout::along_axis(&input, &output, 0).unwrap();
-                let planner = Planner::new().rigor(rigor);
+                let planner = options.planner();
                 let fingerprint = plan_and_execute(
                     &planner,
                     Policy::Preserving,
@@ -560,16 +590,16 @@ impl Problem {
                 double: true,
                 direction,
                 innermost,
-            } => split::<f64>(&label, n_phi, direction, innermost, rigor),
+            } => split::<f64>(&label, n_phi, direction, innermost, options),
             Problem::Split {
                 n_phi,
                 double: false,
                 direction,
                 innermost,
-            } => split::<f32>(&label, n_phi, direction, innermost, rigor),
+            } => split::<f32>(&label, n_phi, direction, innermost, options),
             Problem::Real { r2c } => {
                 let (fingerprint, output) =
-                    real_transform::<f64>(&label, [140, RINGS], &[0], r2c, false, rigor);
+                    real_transform::<f64>(&label, [140, RINGS], &[0], r2c, false, options);
                 line(&label, fingerprint, output)
             }
             Problem::R2r { mixed: false } => {
@@ -579,7 +609,7 @@ impl Problem {
                     &[0],
                     &[R2rKind::Redft10],
                     false,
-                    rigor,
+                    options,
                 );
                 line(&label, fingerprint, output)
             }
@@ -590,7 +620,7 @@ impl Problem {
                     &[0, 1],
                     &[R2rKind::Redft01, R2rKind::Rodft00],
                     false,
-                    rigor,
+                    options,
                 );
                 line(&label, fingerprint, output)
             }
@@ -620,7 +650,7 @@ impl Problem {
     }
 }
 
-/// Plan, with `rigor` and on scratch, a real-to-real transform over `axes` of `shape` with
+/// Plan, with `options` and on scratch, a real-to-real transform over `axes` of `shape` with
 /// `kinds`, preserving out of place or in place, and execute it once on its seeded input.
 /// Returns the plan's fingerprint and the output as complex values with imaginary part 0.
 fn r2r_transform<T: Precision>(
@@ -629,9 +659,9 @@ fn r2r_transform<T: Precision>(
     axes: &[usize],
     kinds: &[R2rKind],
     in_place: bool,
-    rigor: Rigor,
+    options: Options,
 ) -> (u64, Vec<Complex<T>>) {
-    let planner = Planner::<T>::new().rigor(rigor);
+    let planner = options.planner::<T>();
     let zero = T::round_from(0.0);
     let mut input = AlignedReal::<T, 2>::from_shape(shape);
     input.fill_from_iter(
@@ -655,7 +685,7 @@ fn r2r_transform<T: Precision>(
     (fingerprint, output)
 }
 
-/// Plan, with `rigor` and on scratch, a real-to-complex (`r2c`) or complex-to-real transform
+/// Plan, with `options` and on scratch, a real-to-complex (`r2c`) or complex-to-real transform
 /// over `axes` of the real shape `shape`, with the default policy out of place or in place,
 /// and execute it once on its seeded input. Returns the plan's fingerprint and the output,
 /// reals as complex values with imaginary part 0. In place, the halved axis must be axis 0.
@@ -665,12 +695,12 @@ fn real_transform<T: Precision>(
     axes: &[usize],
     r2c: bool,
     in_place: bool,
-    rigor: Rigor,
+    options: Options,
 ) -> (u64, Vec<Complex<T>>) {
     let halved = *axes.last().unwrap();
     let mut complex_shape = shape;
     complex_shape[halved] = shape[halved] / 2 + 1;
-    let planner = Planner::<T>::new().rigor(rigor);
+    let planner = options.planner::<T>();
     let zero = T::round_from(0.0);
     let real_values = || {
         values::<T>(label, shape[0] * shape[1])
@@ -730,7 +760,7 @@ fn split<T: Precision>(
     n_phi: usize,
     direction: Direction,
     innermost: bool,
-    rigor: Rigor,
+    options: Options,
 ) -> String {
     let part = if innermost { 0 } else { 2 };
     let mut input = AlignedReal::<T, 3>::from_shape(split_shape(part, n_phi));
@@ -738,7 +768,7 @@ fn split<T: Precision>(
     fill_split(&mut input, part, &values::<T>(label, n_phi * RINGS));
     let layout = Layout::split_along_axis(&input, part, &output, part, 0).unwrap();
     let fingerprint = plan_and_execute_split(
-        &Planner::new().rigor(rigor),
+        &options.planner(),
         Policy::Preserving,
         &layout,
         direction,
@@ -844,7 +874,7 @@ fn other_plans<T: Precision>() {
     ] {
         for r2c in [true, false] {
             let label = format!("other real {shape:?} {axes:?} r2c {r2c} in place {in_place}");
-            real_transform::<T>(&label, shape, axes, r2c, in_place, Rigor::Estimate);
+            real_transform::<T>(&label, shape, axes, r2c, in_place, Rigor::Estimate.into());
         }
     }
     // Real-to-real plans of other sizes, kinds and placements (task F5b).
@@ -861,7 +891,7 @@ fn other_plans<T: Precision>() {
         ([140, 9], &[0], &[R2rKind::R2hc], false),
     ] {
         let label = format!("other r2r {shape:?} {axes:?} {kinds:?} in place {in_place}");
-        r2r_transform::<T>(&label, shape, axes, kinds, in_place, Rigor::Estimate);
+        r2r_transform::<T>(&label, shape, axes, kinds, in_place, Rigor::Estimate.into());
     }
 }
 
@@ -1412,6 +1442,88 @@ fn case_system_wisdom() -> Vec<String> {
     ]
 }
 
+// Threaded plans (feature `fftw_threads`, task F6b; DC42).
+
+/// The thread counts of threaded plans: fixed and small, for debug builds and the macOS
+/// runner's 3 cores.
+#[cfg(feature = "fftw_threads")]
+const THREAD_COUNTS: [usize; 2] = [2, 4];
+
+/// nd-fmm's units among the problems of `estimate`: `Preserving`, f64 in both directions and
+/// n_phi = 140 in f32.
+#[cfg(feature = "fftw_threads")]
+fn estimate_units() -> Vec<Problem> {
+    Problem::estimate()
+        .into_iter()
+        .filter(|problem| {
+            matches!(
+                problem,
+                Problem::Unit {
+                    policy: Policy::Preserving,
+                    ..
+                }
+            )
+        })
+        .collect()
+}
+
+/// `estimate-threads`: nd-fmm's units of `estimate`, planned with `Estimate` for each of
+/// [`THREAD_COUNTS`].
+#[cfg(feature = "fftw_threads")]
+fn case_estimate_threads() -> Vec<String> {
+    THREAD_COUNTS
+        .into_iter()
+        .flat_map(|threads| {
+            estimate_units().into_iter().map(move |problem| {
+                problem.run(Options {
+                    rigor: Rigor::Estimate,
+                    threads,
+                })
+            })
+        })
+        .collect()
+}
+
+/// `estimate-after-threads`: threaded `Estimate` and `Measure` plans of the problems of
+/// `estimate`, for each of [`THREAD_COUNTS`], and then the problems of `estimate` without
+/// threads, whose lines are printed.
+#[cfg(feature = "fftw_threads")]
+fn case_estimate_after_threads() -> Vec<String> {
+    for threads in THREAD_COUNTS {
+        for rigor in [Rigor::Estimate, Rigor::Measure] {
+            for problem in Problem::estimate() {
+                problem.run(Options { rigor, threads });
+            }
+        }
+    }
+    case_estimate()
+}
+
+/// `planner-thread-safe`: `make_planner_thread_safe`, twice; then 4 threads plan and execute
+/// the problems of `estimate` at once; then the problems of `estimate` once more, whose lines
+/// are printed.
+#[cfg(feature = "fftw_threads")]
+fn case_planner_thread_safe() -> Vec<String> {
+    const PLANNERS: usize = 4;
+
+    rlst::fftw::threads::make_planner_thread_safe();
+    // The second call does nothing.
+    rlst::fftw::threads::make_planner_thread_safe();
+    let barrier = Barrier::new(PLANNERS);
+    thread::scope(|scope| {
+        for _ in 0..PLANNERS {
+            let barrier = &barrier;
+            scope.spawn(move || {
+                barrier.wait();
+                for problem in Problem::estimate() {
+                    problem.run(Rigor::Estimate);
+                }
+            });
+        }
+    });
+    case_estimate()
+}
+
 /// A case: its name and what a child runs, printing the lines it returns.
 type Case = (&'static str, fn() -> Vec<String>);
 
@@ -1435,6 +1547,18 @@ const CASES: &[Case] = &[
     ("wisdom-concurrent", case_wisdom_concurrent),
     ("system-wisdom", case_system_wisdom),
 ];
+
+/// The cases of threaded plans, which need `fftw_threads`.
+#[cfg(feature = "fftw_threads")]
+const THREADED_CASES: &[Case] = &[
+    ("estimate-threads", case_estimate_threads),
+    ("estimate-after-threads", case_estimate_after_threads),
+    ("planner-thread-safe", case_planner_thread_safe),
+];
+
+/// The cases of threaded plans, which need `fftw_threads`.
+#[cfg(not(feature = "fftw_threads"))]
+const THREADED_CASES: &[Case] = &[];
 
 // Scenarios, run by the parent.
 
@@ -1568,6 +1692,35 @@ fn check_system_wisdom(runs: &Runs) -> Result<Vec<String>, String> {
     Ok(runs.lines("system-wisdom", 0).to_vec())
 }
 
+#[cfg(feature = "fftw_threads")]
+fn check_threaded_fresh_processes(runs: &Runs) -> Result<Vec<String>, String> {
+    // DC42: a failure is raised as a design question, not relaxed.
+    compare(
+        runs.lines("estimate-threads", 0),
+        runs.lines("estimate-threads", 1),
+        "two fresh processes with threaded plans (a failure is a design question, DC42)",
+    )
+}
+
+#[cfg(feature = "fftw_threads")]
+fn check_threads_leave_no_trace(runs: &Runs) -> Result<Vec<String>, String> {
+    // DC42: a failure is raised as a design question, not relaxed.
+    compare(
+        runs.lines("estimate", 0),
+        runs.lines("estimate-after-threads", 0),
+        "`estimate-after-threads` against `estimate` (a failure is a design question, DC42)",
+    )
+}
+
+#[cfg(feature = "fftw_threads")]
+fn check_planner_thread_safe(runs: &Runs) -> Result<Vec<String>, String> {
+    compare(
+        runs.lines("estimate", 0),
+        runs.lines("planner-thread-safe", 0),
+        "`planner-thread-safe` against `estimate`",
+    )
+}
+
 fn check_estimate_after_measure(runs: &Runs) -> Result<Vec<String>, String> {
     let lines = runs.lines("estimate-after-measure", 0);
     let fingerprint = |name: &str| {
@@ -1648,6 +1801,30 @@ const SCENARIOS: &[Scenario] = &[
     },
 ];
 
+/// The scenarios of threaded plans, which need `fftw_threads` (DC42).
+#[cfg(feature = "fftw_threads")]
+const THREADED_SCENARIOS: &[Scenario] = &[
+    Scenario {
+        name: "threaded fresh processes agree",
+        runs: &[("estimate-threads", 2)],
+        check: check_threaded_fresh_processes,
+    },
+    Scenario {
+        name: "threads leave no trace",
+        runs: &[("estimate", 1), ("estimate-after-threads", 1)],
+        check: check_threads_leave_no_trace,
+    },
+    Scenario {
+        name: "thread-safe planner",
+        runs: &[("estimate", 1), ("planner-thread-safe", 1)],
+        check: check_planner_thread_safe,
+    },
+];
+
+/// The scenarios of threaded plans, which need `fftw_threads` (DC42).
+#[cfg(not(feature = "fftw_threads"))]
+const THREADED_SCENARIOS: &[Scenario] = &[];
+
 // Children.
 
 /// How a child ended.
@@ -1716,7 +1893,8 @@ fn parent() -> ExitCode {
     let start = Instant::now();
     let mut children: BTreeMap<&'static str, Vec<Child>> = BTreeMap::new();
     let mut failures = Vec::new();
-    for scenario in SCENARIOS {
+    let scenarios = SCENARIOS.iter().chain(THREADED_SCENARIOS);
+    for scenario in scenarios.clone() {
         for &(case, count) in scenario.runs {
             let runs = children.entry(case).or_default();
             while runs.len() < count {
@@ -1778,7 +1956,7 @@ fn parent() -> ExitCode {
     }
     println!(
         "fftw_determinism: {} scenarios, {} failed, {:.2} s",
-        SCENARIOS.len(),
+        scenarios.count(),
         failures.len(),
         start.elapsed().as_secs_f64()
     );
@@ -1799,6 +1977,7 @@ fn main() -> ExitCode {
     };
     let (_, run) = CASES
         .iter()
+        .chain(THREADED_CASES)
         .find(|(name, _)| *name == case)
         .unwrap_or_else(|| panic!("unknown case `{case}`"));
     for line in run() {

@@ -3,6 +3,7 @@
 use std::ffi::{c_int, c_uint};
 use std::marker::PhantomData;
 use std::mem::{align_of, size_of};
+use std::num::NonZeroUsize;
 use std::ptr::NonNull;
 
 use aligned_vec::{AVec, ConstAlign};
@@ -14,7 +15,7 @@ use super::error::{FftwError, Side};
 use super::execute::check_overlap;
 use super::kind::{Direction, R2rKind};
 use super::layout::{Dim, Layout, LayoutFamily, Placement};
-use super::lock::{SettingsGuard, with_fftw};
+use super::lock::{FftwState, SettingsGuard, with_fftw};
 use super::options::sealed::PolicyFor;
 use super::options::{DefaultRequest, DestroyRequest, PreserveRequest, Rigor};
 use super::plan::{
@@ -93,6 +94,7 @@ pub struct Planner<T: FftwReal, S = DefaultRequest> {
     wisdom_only: bool,
     unaligned: bool,
     time_limit: Option<f64>,
+    threads: NonZeroUsize,
     alignment: (AlignmentClass, AlignmentClass),
     max_scratch: usize,
     _marker: PhantomData<(T, S)>,
@@ -115,6 +117,7 @@ impl<T: FftwReal> Planner<T, DefaultRequest> {
             wisdom_only: false,
             unaligned: false,
             time_limit: None,
+            threads: NonZeroUsize::MIN,
             alignment: (AlignmentClass::default(), AlignmentClass::default()),
             max_scratch: DEFAULT_MAX_SCRATCH,
             _marker: PhantomData,
@@ -233,6 +236,39 @@ impl<T: FftwReal, S> Planner<T, S> {
         }
     }
 
+    /// Make plans for `threads` threads (`fftw_plan_with_nthreads`); the default is 1.
+    ///
+    /// Present only with the feature `fftw_threads`. Every planner method applies it, and
+    /// [`Plan::threads`] returns it. A plan for more than one thread is another plan than a
+    /// single-threaded one: FFTW divides the work between threads even for problems as small
+    /// as nd-fmm's unit of 9 transforms of length 140, so the plan has another
+    /// [`fingerprint`](Plan::fingerprint), and it can round differently. FFTW keeps its wisdom
+    /// per thread count, so a threaded plan does not change later single-threaded plans.
+    /// Executing a threaded plan from several threads at once is allowed but oversubscribes
+    /// the machine, notably under rayon.
+    ///
+    /// The count applies only to the planner's own calls, and is reset to 1 before RLST's
+    /// FFTW lock is released. Planning returns [`FftwError::InvalidThreadCount`] if `threads`
+    /// exceeds FFTW's `int`, and [`FftwError::ThreadsUnavailable`] if it exceeds 1 and FFTW
+    /// could not initialise its threads.
+    ///
+    /// ```
+    /// use std::num::NonZeroUsize;
+    ///
+    /// use rlst::fftw::{Dim, Direction, Layout, Placement, Planner};
+    ///
+    /// let layout = Layout::new(&[Dim { n: 64, is: 1, os: 1 }], &[], Placement::OutOfPlace)?;
+    /// let planner = Planner::<f64>::new().threads(NonZeroUsize::new(2).unwrap());
+    /// let plan = planner.c2c(&layout, Direction::Forward)?;
+    /// assert_eq!(plan.threads(), 2);
+    /// # Ok::<(), rlst::fftw::FftwError>(())
+    /// ```
+    #[cfg(feature = "fftw_threads")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "fftw_threads")))]
+    pub fn threads(self, threads: NonZeroUsize) -> Self {
+        Self { threads, ..self }
+    }
+
     /// Plan for buffers of the given alignment classes; the default is class 0 on both sides.
     ///
     /// The planning methods without `_on` allocate their scratch at these classes. The
@@ -278,10 +314,18 @@ impl<T: FftwReal, S> Planner<T, S> {
             wisdom_only: self.wisdom_only,
             unaligned: self.unaligned,
             time_limit: self.time_limit,
+            threads: self.threads,
             alignment: self.alignment,
             max_scratch: self.max_scratch,
             _marker: PhantomData,
         }
+    }
+
+    /// Check the version, and apply the planner's settings under the FFTW lock until the guard
+    /// is dropped.
+    fn settings<'a>(&self, state: &'a mut FftwState) -> Result<SettingsGuard<'a, T>, FftwError> {
+        state.version_check()?;
+        SettingsGuard::new(state, self.time_limit, self.threads)
     }
 
     /// The FFTW flags of a plan of policy `P`.
@@ -432,8 +476,7 @@ impl<T: FftwReal, S> Planner<T, S> {
         let guru = GuruDims::new(layout)?;
 
         let raw = with_fftw(|state| {
-            state.version_check()?;
-            let _settings = SettingsGuard::<T>::new(state, self.time_limit);
+            let _settings = self.settings(state)?;
             // SAFETY: the FFTW lock is held. `guru` holds `rank` and `howmany_rank`
             // dimensions with non-negative strides, and by this function's contract `input`
             // and `output` cover the spans of these dimensions; they are equal exactly for an
@@ -461,6 +504,7 @@ impl<T: FftwReal, S> Planner<T, S> {
             self.rigor,
             flags,
             alignment,
+            self.threads.get(),
         ))
     }
 
@@ -549,8 +593,7 @@ impl<T: FftwReal, S> Planner<T, S> {
         let (ro, io) = split_offsets(direction, output_gap);
 
         let raw = with_fftw(|state| {
-            state.version_check()?;
-            let _settings = SettingsGuard::<T>::new(state, self.time_limit);
+            let _settings = self.settings(state)?;
             // SAFETY: the FFTW lock is held. `guru` holds `rank` and `howmany_rank`
             // dimensions with non-negative strides, in reals. By this function's contract
             // `input` and `output` cover the spans of these dimensions, which include the gap
@@ -581,6 +624,7 @@ impl<T: FftwReal, S> Planner<T, S> {
             self.rigor,
             flags,
             alignment,
+            self.threads.get(),
         ))
     }
 
@@ -688,8 +732,7 @@ impl<T: FftwReal, S> Planner<T, S> {
         let r2c = F::KIND == LayoutFamily::R2c;
 
         let raw = with_fftw(|state| {
-            state.version_check()?;
-            let _settings = SettingsGuard::<T>::new(state, self.time_limit);
+            let _settings = self.settings(state)?;
             // SAFETY: the FFTW lock is held. `guru` holds `rank` and `howmany_rank`
             // dimensions with non-negative strides, in reals on the real side and in complex
             // elements on the complex side, with the logical real extent n of the last
@@ -740,6 +783,7 @@ impl<T: FftwReal, S> Planner<T, S> {
             self.rigor,
             flags,
             alignment,
+            self.threads.get(),
         ))
     }
 
@@ -833,8 +877,7 @@ impl<T: FftwReal, S> Planner<T, S> {
         );
 
         let raw = with_fftw(|state| {
-            state.version_check()?;
-            let _settings = SettingsGuard::<T>::new(state, self.time_limit);
+            let _settings = self.settings(state)?;
             // SAFETY: the FFTW lock is held. `guru` holds `rank` and `howmany_rank`
             // dimensions with non-negative strides, in reals, and `raw_kinds` holds `rank`
             // kinds, one per transform dimension in the order of `guru.dims`, which outlive
@@ -865,6 +908,7 @@ impl<T: FftwReal, S> Planner<T, S> {
             self.rigor,
             flags,
             alignment,
+            self.threads.get(),
         )
         .with_kinds(kinds))
     }
@@ -952,8 +996,7 @@ impl<T: FftwReal, S> Planner<T, S> {
             .unsigned_abs();
 
         let raw = with_fftw(|state| {
-            state.version_check()?;
-            let _settings = SettingsGuard::<T>::new(state, self.time_limit);
+            let _settings = self.settings(state)?;
             // SAFETY: the FFTW lock is held. `guru` holds `rank` and `howmany_rank`
             // dimensions with non-negative strides, in reals on both sides, with the logical
             // real extent n of the last transform dimension. By this function's contract the
@@ -1002,6 +1045,7 @@ impl<T: FftwReal, S> Planner<T, S> {
             self.rigor,
             flags,
             alignment,
+            self.threads.get(),
         ))
     }
 
