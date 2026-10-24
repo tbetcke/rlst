@@ -15,8 +15,14 @@ You can choose between one of them if you use this work.
 Some optional dependencies of the library have different licenses that
 may change the license of compiled library components. 
 
-Note that when linking against FFTW (with the flag `fftw_system`) the GPL
-license of FFTW needs to be adhered to.
+> **Warning: FFTW is licensed under the GNU General Public License (version 2 or later).**
+> RLST's optional `fftw` feature links FFTW and the GPL-licensed `fftw-sys` bindings. RLST
+> itself is licensed MIT / Apache-2.0, but a program built with this feature links
+> GPL-licensed code, and distributing such a
+> program is subject to the terms of the GPL unless you hold a non-free FFTW licence from
+> MIT's Technology Licensing Office. Cargo enables a feature for the whole build when any crate in the dependency graph requests it,
+> so check your graph (for example with `cargo tree -e features`). The feature is off by
+> default. This note is not legal advice; check the licences that apply to your use.
 
 ## System FFTW
 
@@ -39,6 +45,10 @@ also links FFTW's threads libraries, `fftw3_threads` and `fftw3f_threads`, which
 must be installed beside `fftw3` and `fftw3f` (the Homebrew and Debian/Ubuntu
 packages above include them; a source build needs `--enable-threads`), and it
 needs FFTW 3.3.6 or later. FFTW's OpenMP libraries are not used.
+
+The guide `rlst::doc::optional_integrations` describes the FFTW interface, its versions and
+its rules on threads and determinism; the module documentation of `rlst::fftw` lists its
+parts.
 
 ## Notes
 

@@ -33,12 +33,14 @@ compile_error!("the `fftw` feature needs a back end: enable `fftw_system`");
 
 pub mod base_types;
 #[cfg(feature = "fftw")]
+#[cfg_attr(docsrs, doc(cfg(feature = "fftw")))]
 pub mod chebychev;
 pub mod dense;
 #[cfg(feature = "mpi")]
 pub mod distributed_tools;
 pub mod doc;
 #[cfg(feature = "fftw")]
+#[cfg_attr(docsrs, doc(cfg(feature = "fftw")))]
 pub mod fftw;
 pub mod interface;
 pub mod interpolation;

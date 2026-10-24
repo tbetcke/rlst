@@ -14,6 +14,17 @@
 //! (`fftw3_threads` and `fftw3f_threads`) and needs version 3.3.6 or later. The guide in
 //! [`doc::optional_integrations`](crate::doc::optional_integrations) describes the setup.
 //!
+//! # Licence
+//!
+//! > **Warning: FFTW is licensed under the GNU General Public License (version 2 or later).**
+//! > RLST's optional `fftw` feature links FFTW and the GPL-licensed `fftw-sys` bindings. RLST
+//! > itself is licensed MIT / Apache-2.0, but a program built with this feature links
+//! > GPL-licensed code, and distributing such a
+//! > program is subject to the terms of the GPL unless you hold a non-free FFTW licence from
+//! > MIT's Technology Licensing Office. Cargo enables a feature for the whole build when any crate in the dependency graph requests it,
+//! > so check your graph (for example with `cargo tree -e features`). The feature is off by
+//! > default. This note is not legal advice; check the licences that apply to your use.
+//!
 //! # Parts
 //!
 //! - [`Layout`], made from [`Dim`]s, the [`Storage`] of each side (complex, real or split)
