@@ -1,12 +1,13 @@
-//! Concurrency of complex-to-complex, real-to-complex and real-to-real plans (tasks F4, F3, F5a
-//! and F5b; design Sections 5 and 7.5).
+//! Concurrency of complex-to-complex, real-to-complex and real-to-real plans, and of wisdom
+//! export (tasks F4, F3, F5a, F5b and F6a; design Sections 5 and 7.5).
 //!
 //! The tests run as threads of the test process, beside the other tests, and plan with
 //! `Rigor::Estimate` only, so no wisdom of a greater rigor exists in the process and plans of
 //! one layout made in different threads are the same plan (design, Section 3 item 4). Threads
 //! are started with `std::thread::scope` in fixed numbers and overlap through `Barrier`s;
-//! a panic in a thread fails the test when its scope ends. The tests that need a fresh process
-//! are in the harness-free binary `tests/fftw_determinism.rs`.
+//! a panic in a thread fails the test when its scope ends. No test here imports or forgets
+//! wisdom, which would change the plans of every later test (DC39). The tests that need a
+//! fresh process are in the harness-free binary `tests/fftw_determinism.rs`.
 
 use std::fmt;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -25,7 +26,7 @@ use crate::fftw::test_support::{
 use crate::fftw::{
     AlignmentClass, C2CDirection, C2CPlan, C2c, C2r, Destroying, Direction, FftBufferMut,
     FftPlanInplace, FftwPlanFlags, FftwReal, InPlace, Layout, Plan, Planner, Preserving, R2c, R2r,
-    R2rKind, SplitC2c, SplitC2r, SplitR2c, as_reals_mut,
+    R2rKind, SplitC2c, SplitC2r, SplitR2c, as_reals_mut, wisdom,
 };
 use crate::{
     Array, BaseItem, DynArray, Shape, SliceArray, SliceArrayMut, Stride, StridedRawAccessMut,
@@ -898,7 +899,12 @@ fn test_planning_while_executing() {
             .collect::<Vec<_>>()
     });
 
-    // Plans of the same layout made in different threads are the same plan.
+    assert_same_plans(&fingerprints, "planning while executing");
+}
+
+/// Plans of the same layout made in different threads are the same plan: the labelled
+/// fingerprints of every planning thread equal those of the first.
+fn assert_same_plans(fingerprints: &[Vec<(String, u64)>], test: &str) {
     let (first, others) = fingerprints.split_first().unwrap();
     for (thread, other) in others.iter().enumerate() {
         for ((label, fingerprint), (other_label, other_fingerprint)) in first.iter().zip(other) {
@@ -906,11 +912,68 @@ fn test_planning_while_executing() {
             assert_eq!(
                 fingerprint,
                 other_fingerprint,
-                "planning while executing: {label}: thread {} and thread 0 made different plans",
+                "{test}: {label}: thread {} and thread 0 made different plans",
                 thread + 1
             );
         }
     }
+}
+
+#[test]
+fn test_wisdom_export_during_planning() {
+    const EXPORTERS: usize = 4;
+    const PLANNERS: usize = 4;
+    // At least this many exports per exporting thread, and more until every planning thread
+    // has finished.
+    const MIN_ITERATIONS: usize = 4;
+
+    let finished = AtomicUsize::new(0);
+    let barrier = Barrier::new(EXPORTERS + PLANNERS);
+    let fingerprints = std::thread::scope(|scope| {
+        for thread in 0..EXPORTERS {
+            let (barrier, finished) = (&barrier, &finished);
+            scope.spawn(move || {
+                barrier.wait();
+                let mut iteration = 0;
+                while iteration < MIN_ITERATIONS || finished.load(Ordering::SeqCst) < PLANNERS {
+                    let exports = [
+                        ("f64", wisdom::export::<f64>(), " fftw_wisdom "),
+                        ("f32", wisdom::export::<f32>(), " fftwf_wisdom "),
+                    ];
+                    for (precision, exported, header) in exports {
+                        assert!(
+                            exported.starts_with("(fftw-3.") && exported.contains(header),
+                            "wisdom export during planning: thread {thread}, iteration \
+                             {iteration}, {precision}: {exported}"
+                        );
+                    }
+                    iteration += 1;
+                    // Paces the exports: the FFTW lock is not fair, and exporters that take it
+                    // again at once starve the planners (80 s instead of 0.03 s on macOS).
+                    // Nothing is synchronised by it.
+                    std::thread::sleep(Duration::from_micros(200));
+                }
+            });
+        }
+        let planners: Vec<_> = (0..PLANNERS)
+            .map(|thread| {
+                let (barrier, finished) = (&barrier, &finished);
+                scope.spawn(move || {
+                    let _finished = Finished(finished);
+                    barrier.wait();
+                    let mut fingerprints = plan_orders::<f64>(thread);
+                    fingerprints.extend(plan_orders::<f32>(thread));
+                    fingerprints
+                })
+            })
+            .collect();
+        planners
+            .into_iter()
+            .map(|planner| planner.join().unwrap())
+            .collect::<Vec<_>>()
+    });
+
+    assert_same_plans(&fingerprints, "wisdom export during planning");
 }
 
 #[test]

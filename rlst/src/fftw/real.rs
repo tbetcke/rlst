@@ -4,7 +4,7 @@ use super::element::FftElement;
 use crate::{RlstScalar, c32, c64};
 
 pub(crate) mod sealed {
-    use std::ffi::{c_char, c_int, c_uint};
+    use std::ffi::{c_char, c_int, c_uint, c_void};
 
     use num::Complex;
 
@@ -15,6 +15,9 @@ pub(crate) mod sealed {
     pub trait Sealed: Sized {
         /// FFTW's opaque plan type of this precision, `fftw_plan_s` or `fftwf_plan_s`.
         type RawPlan;
+
+        /// The name of the precision, `f64` or `f32`, for messages.
+        const PRECISION_NAME: &'static str;
 
         /// `fftw_plan_guru64_dft` or `fftwf_plan_guru64_dft`.
         ///
@@ -266,6 +269,43 @@ pub(crate) mod sealed {
         ///
         /// The caller holds the FFTW lock.
         unsafe fn set_timelimit(seconds: f64);
+
+        /// `fftw_export_wisdom` or `fftwf_export_wisdom`: FFTW calls `write_char` with `data`
+        /// for each character of its wisdom, during the call only.
+        ///
+        /// # Safety
+        ///
+        /// `write_char` may be called with `data` for the duration of the call, and must not
+        /// unwind. The caller holds the FFTW lock.
+        unsafe fn export_wisdom(write_char: fftw_sys::fftw_write_char_func, data: *mut c_void);
+
+        /// `fftw_import_wisdom` or `fftwf_import_wisdom`: FFTW calls `read_char` with `data`
+        /// for each character of the wisdom, during the call only, until it returns `EOF`.
+        /// Returns 0 if FFTW did not accept the wisdom.
+        ///
+        /// # Safety
+        ///
+        /// `read_char` may be called with `data` for the duration of the call, and must not
+        /// unwind. The caller holds the FFTW lock.
+        unsafe fn import_wisdom(
+            read_char: fftw_sys::fftw_read_char_func,
+            data: *mut c_void,
+        ) -> c_int;
+
+        /// `fftw_forget_wisdom` or `fftwf_forget_wisdom`.
+        ///
+        /// # Safety
+        ///
+        /// The caller holds the FFTW lock.
+        unsafe fn forget_wisdom();
+
+        /// `fftw_import_system_wisdom` or `fftwf_import_system_wisdom`. Returns 0 if there is no
+        /// system wisdom or FFTW did not accept it.
+        ///
+        /// # Safety
+        ///
+        /// The caller holds the FFTW lock.
+        unsafe fn import_system_wisdom() -> c_int;
     }
 
     macro_rules! impl_sealed {
@@ -273,6 +313,8 @@ pub(crate) mod sealed {
             paste::paste! {
                 impl Sealed for $real {
                     type RawPlan = fftw_sys::[<$prefix plan_s>];
+
+                    const PRECISION_NAME: &'static str = stringify!($real);
 
                     unsafe fn plan_guru64_dft(
                         rank: c_int,
@@ -527,6 +569,32 @@ pub(crate) mod sealed {
                     unsafe fn set_timelimit(seconds: f64) {
                         // SAFETY: forwarded from the caller, see the trait's contract.
                         unsafe { fftw_sys::[<$prefix set_timelimit>](seconds) }
+                    }
+
+                    unsafe fn export_wisdom(
+                        write_char: fftw_sys::fftw_write_char_func,
+                        data: *mut c_void,
+                    ) {
+                        // SAFETY: forwarded from the caller, see the trait's contract.
+                        unsafe { fftw_sys::[<$prefix export_wisdom>](write_char, data) }
+                    }
+
+                    unsafe fn import_wisdom(
+                        read_char: fftw_sys::fftw_read_char_func,
+                        data: *mut c_void,
+                    ) -> c_int {
+                        // SAFETY: forwarded from the caller, see the trait's contract.
+                        unsafe { fftw_sys::[<$prefix import_wisdom>](read_char, data) }
+                    }
+
+                    unsafe fn forget_wisdom() {
+                        // SAFETY: forwarded from the caller, see the trait's contract.
+                        unsafe { fftw_sys::[<$prefix forget_wisdom>]() }
+                    }
+
+                    unsafe fn import_system_wisdom() -> c_int {
+                        // SAFETY: forwarded from the caller, see the trait's contract.
+                        unsafe { fftw_sys::[<$prefix import_system_wisdom>]() }
                     }
                 }
             }

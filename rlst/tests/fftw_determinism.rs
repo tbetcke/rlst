@@ -1,5 +1,5 @@
-//! Determinism of FFTW plans across fresh processes (tasks F4, F3, F5a and F5b; design
-//! Sections 5 and 7.6).
+//! Determinism of FFTW plans across fresh processes, and FFTW's wisdom (tasks F4, F3, F5a,
+//! F5b and F6a; design Sections 5, 7.5 and 7.6).
 //!
 //! FFTW's wisdom is global to the process, so these tests cannot run as threads of one test
 //! process. This executable has `harness = false` and is both parent and child:
@@ -22,7 +22,10 @@ use std::collections::BTreeMap;
 use std::env;
 use std::fmt;
 use std::io::Read;
+use std::path::PathBuf;
 use std::process::{Command, ExitCode, ExitStatus, Stdio};
+use std::sync::Barrier;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -32,7 +35,7 @@ use rand_chacha::ChaCha8Rng;
 use rlst::dense::array::{AlignedDynArray, StridedSliceArrayMut};
 use rlst::fftw::{
     C2CDirection, C2CPlan, Direction, FftBufferMut, FftPlanInplace, FftwError, FftwPlanFlags,
-    FftwReal, Layout, Planner, R2rKind, Rigor, as_reals, as_reals_mut,
+    FftwReal, Layout, Planner, R2rKind, Rigor, as_reals, as_reals_mut, wisdom,
 };
 use rlst::{DynArray, SliceArray, SliceArrayMut, c32, c64};
 
@@ -476,13 +479,25 @@ impl Problem {
                 double: true,
                 direction,
                 policy,
-            } => unit::<f64>(&label, n_phi, direction, policy, rigor),
+            } => unit::<f64>(
+                &label,
+                n_phi,
+                direction,
+                policy,
+                &Planner::new().rigor(rigor),
+            ),
             Problem::Unit {
                 n_phi,
                 double: false,
                 direction,
                 policy,
-            } => unit::<f32>(&label, n_phi, direction, policy, rigor),
+            } => unit::<f32>(
+                &label,
+                n_phi,
+                direction,
+                policy,
+                &Planner::new().rigor(rigor),
+            ),
             Problem::ColumnMajor => {
                 let shape = [8, 6, 4];
                 let mut input = Aligned::<f64, 3>::from_shape(shape);
@@ -579,6 +594,28 @@ impl Problem {
                 );
                 line(&label, fingerprint, output)
             }
+        }
+    }
+
+    /// As [`Problem::run`], planning from wisdom only, for nd-fmm's units: the line equals
+    /// that of `run` when the wisdom holds the plan `run` made with `rigor`.
+    fn run_from_wisdom(self, rigor: Rigor) -> String {
+        let label = self.to_string();
+        let Problem::Unit {
+            n_phi,
+            double,
+            direction,
+            policy,
+        } = self
+        else {
+            panic!("`run_from_wisdom` plans nd-fmm's units only, not {self}");
+        };
+        if double {
+            let planner = Planner::<f64>::new().rigor(rigor).wisdom_only();
+            unit(&label, n_phi, direction, policy, &planner)
+        } else {
+            let planner = Planner::<f32>::new().rigor(rigor).wisdom_only();
+            unit(&label, n_phi, direction, policy, &planner)
         }
     }
 }
@@ -711,28 +748,21 @@ fn split<T: Precision>(
     line(label, fingerprint, split_values(&output, part, n_phi))
 }
 
-/// Plan nd-fmm's unit `[n_phi, RINGS]` along axis 0 and execute it once.
+/// Plan nd-fmm's unit `[n_phi, RINGS]` along axis 0 with `planner` and execute it once.
 fn unit<T: Precision>(
     label: &str,
     n_phi: usize,
     direction: Direction,
     policy: Policy,
-    rigor: Rigor,
+    planner: &Planner<T>,
 ) -> String {
     let shape = [n_phi, RINGS];
     let mut input = Aligned::<T, 2>::from_shape(shape);
     let mut output = Aligned::<T, 2>::from_shape(shape);
     input.fill_from_iter(values::<T>(label, n_phi * RINGS).into_iter());
     let layout = layout(policy, &input, &output, &[0]);
-    let planner = Planner::new().rigor(rigor);
-    let fingerprint = plan_and_execute(
-        &planner,
-        policy,
-        &layout,
-        direction,
-        &mut input,
-        &mut output,
-    );
+    let fingerprint =
+        plan_and_execute(planner, policy, &layout, direction, &mut input, &mut output);
     match policy {
         Policy::InPlace => line(label, fingerprint, input.iter_value()),
         _ => line(label, fingerprint, output.iter_value()),
@@ -1179,6 +1209,209 @@ fn case_estimate_after_measure() -> Vec<String> {
     .collect()
 }
 
+// Wisdom (task F6a).
+
+/// The problems of the wisdom cases: nd-fmm's unit `[588, RINGS]`, forward, f64, and
+/// `[140, RINGS]`, forward, f32, both `Preserving`.
+fn wisdom_problems() -> [Problem; 2] {
+    [
+        unit_f64_forward(588),
+        Problem::Unit {
+            n_phi: 140,
+            double: false,
+            direction: Direction::Forward,
+            policy: Policy::Preserving,
+        },
+    ]
+}
+
+/// The outcome of a wisdom-only `Measure` plan of `problem`, one of [`wisdom_problems`],
+/// without executing it.
+fn plan_from_wisdom(problem: Problem) -> Result<(), FftwError> {
+    let Problem::Unit {
+        n_phi,
+        double,
+        direction,
+        ..
+    } = problem
+    else {
+        unreachable!("the wisdom problems are units");
+    };
+    let shape = [n_phi, RINGS];
+    if double {
+        let input = Aligned::<f64, 2>::from_shape(shape);
+        let output = Aligned::<f64, 2>::from_shape(shape);
+        let layout = Layout::along_axis(&input, &output, 0).unwrap();
+        let planner = Planner::<f64>::new().rigor(Rigor::Measure).wisdom_only();
+        planner.c2c(&layout, direction).map(drop)
+    } else {
+        let input = Aligned::<f32, 2>::from_shape(shape);
+        let output = Aligned::<f32, 2>::from_shape(shape);
+        let layout = Layout::along_axis(&input, &output, 0).unwrap();
+        let planner = Planner::<f32>::new().rigor(Rigor::Measure).wisdom_only();
+        planner.c2c(&layout, direction).map(drop)
+    }
+}
+
+/// `wisdom-round-trip` (design Section 7.6): `Measure` plans A of the wisdom problems; their
+/// wisdom exported and forgotten, after which wisdom-only plans fail; the wisdom imported
+/// again, after which wisdom-only plans B have the lines of A. Also: f64 wisdom is refused as
+/// f32, and whether a failed import of text that is not wisdom left the wisdom unchanged is
+/// reported.
+fn case_wisdom_round_trip() -> Vec<String> {
+    let problems = wisdom_problems();
+    let measured: Vec<String> = problems
+        .iter()
+        .map(|problem| problem.run(Rigor::Measure))
+        .collect();
+    let (double, single) = (wisdom::export::<f64>(), wisdom::export::<f32>());
+    wisdom::forget::<f64>();
+    wisdom::forget::<f32>();
+    for problem in problems {
+        let result = plan_from_wisdom(problem);
+        assert!(
+            matches!(result, Err(FftwError::PlanCreationFailed { .. })),
+            "{problem}: a wisdom-only plan after `forget`: expected PlanCreationFailed, found \
+             {result:?}"
+        );
+    }
+
+    let result = wisdom::import::<f32>(&double);
+    assert_eq!(
+        result,
+        Err(FftwError::WisdomImportFailed { precision: "f32" }),
+        "f64 wisdom imported as f32"
+    );
+    let mut lines = vec!["f64 wisdom imported as f32: WisdomImportFailed".to_string()];
+    let before = wisdom::export::<f64>();
+    let result = wisdom::import::<f64>("(not wisdom");
+    assert_eq!(
+        result,
+        Err(FftwError::WisdomImportFailed { precision: "f64" }),
+        "text that is not wisdom imported as f64"
+    );
+    // FFTW does not document what a failed import leaves; reported only.
+    lines.push(format!(
+        "a failed import left the wisdom unchanged: {}",
+        wisdom::export::<f64>() == before
+    ));
+
+    wisdom::import::<f64>(&double).unwrap();
+    wisdom::import::<f32>(&single).unwrap();
+    for (problem, measured) in problems.into_iter().zip(measured) {
+        let from_wisdom = problem.run_from_wisdom(Rigor::Measure);
+        assert_eq!(
+            from_wisdom, measured,
+            "the wisdom-only plan after export, forget and import differs from the measured plan"
+        );
+        lines.push(format!("A {measured}"));
+        lines.push(format!("B {from_wisdom}"));
+    }
+    lines
+}
+
+/// The file of the wisdom of `precision` that `wisdom-export` writes and `wisdom-import`
+/// reads: named by the parent's process id, which the two children share, so that
+/// concurrent runs of this binary do not collide.
+fn wisdom_file(precision: &str) -> PathBuf {
+    let parent = std::os::unix::process::parent_id();
+    PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
+        .join(format!("fftw-determinism-{parent}-{precision}.wisdom"))
+}
+
+/// `wisdom-export` (DC40): `Measure` plans of the wisdom problems, whose wisdom is written to
+/// [`wisdom_file`]s.
+fn case_wisdom_export() -> Vec<String> {
+    let lines = wisdom_problems()
+        .into_iter()
+        .map(|problem| problem.run(Rigor::Measure))
+        .collect();
+    wisdom::export_to_file::<f64>(wisdom_file("f64")).unwrap();
+    wisdom::export_to_file::<f32>(wisdom_file("f32")).unwrap();
+    lines
+}
+
+/// `wisdom-import` (DC40): as its first FFTW work, imports the [`wisdom_file`]s of
+/// `wisdom-export`, removes them, and plans the wisdom problems from wisdom only.
+fn case_wisdom_import() -> Vec<String> {
+    let imported = [
+        ("f64", wisdom::import_from_file::<f64>(wisdom_file("f64"))),
+        ("f32", wisdom::import_from_file::<f32>(wisdom_file("f32"))),
+    ];
+    for precision in ["f64", "f32"] {
+        let _ = std::fs::remove_file(wisdom_file(precision));
+    }
+    for (precision, result) in imported {
+        assert_eq!(result, Ok(()), "importing the {precision} wisdom file");
+    }
+    wisdom_problems()
+        .into_iter()
+        .map(|problem| problem.run_from_wisdom(Rigor::Measure))
+        .collect()
+}
+
+/// `wisdom-concurrent` (DC39, design Section 7.5): 4 threads plan and execute the problems of
+/// `estimate` while 2 threads export, forget and import the wisdom of both precisions; then
+/// the problems of `estimate` once more, whose lines are printed.
+fn case_wisdom_concurrent() -> Vec<String> {
+    const PLANNERS: usize = 4;
+    const WISDOM: usize = 2;
+    // At least this many rounds per wisdom thread, and more until every planner finished.
+    const MIN_ROUNDS: usize = 4;
+
+    let finished = AtomicUsize::new(0);
+    let barrier = Barrier::new(PLANNERS + WISDOM);
+    thread::scope(|scope| {
+        for _ in 0..PLANNERS {
+            let (barrier, finished) = (&barrier, &finished);
+            scope.spawn(move || {
+                barrier.wait();
+                for problem in Problem::estimate() {
+                    problem.run(Rigor::Estimate);
+                }
+                finished.fetch_add(1, Ordering::SeqCst);
+            });
+        }
+        for _ in 0..WISDOM {
+            let (barrier, finished) = (&barrier, &finished);
+            scope.spawn(move || {
+                barrier.wait();
+                let mut round = 0;
+                while round < MIN_ROUNDS || finished.load(Ordering::SeqCst) < PLANNERS {
+                    let (double, single) = (wisdom::export::<f64>(), wisdom::export::<f32>());
+                    wisdom::forget::<f64>();
+                    wisdom::forget::<f32>();
+                    wisdom::import::<f64>(&double).unwrap();
+                    wisdom::import::<f32>(&single).unwrap();
+                    round += 1;
+                    // Paces the rounds: the FFTW lock is not fair, and importing a few
+                    // kilobytes of wisdom holds it for milliseconds, so rounds back to back
+                    // starve the planners (6 s instead of 0.2 s on macOS). Nothing is
+                    // synchronised by it.
+                    thread::sleep(Duration::from_millis(1));
+                }
+            });
+        }
+    });
+    case_estimate()
+}
+
+/// `system-wisdom`: imports the system's wisdom of both precisions and reports whether each
+/// was imported. Nothing else plans in this process.
+fn case_system_wisdom() -> Vec<String> {
+    let outcome = |result: Result<(), FftwError>, precision: &str| match result {
+        Ok(()) => format!("system wisdom, {precision}: imported"),
+        Err(FftwError::WisdomImportFailed { .. }) => {
+            format!("system wisdom, {precision}: WisdomImportFailed")
+        }
+        Err(error) => panic!("system wisdom, {precision}: unexpected error {error:?}"),
+    };
+    vec![
+        outcome(wisdom::import_system_wisdom::<f64>(), "f64"),
+        outcome(wisdom::import_system_wisdom::<f32>(), "f32"),
+    ]
+}
+
 /// A case: its name and what a child runs, printing the lines it returns.
 type Case = (&'static str, fn() -> Vec<String>);
 
@@ -1196,6 +1429,11 @@ const CASES: &[Case] = &[
         case_wisdom_only_without_wisdom,
     ),
     ("estimate-after-measure", case_estimate_after_measure),
+    ("wisdom-round-trip", case_wisdom_round_trip),
+    ("wisdom-export", case_wisdom_export),
+    ("wisdom-import", case_wisdom_import),
+    ("wisdom-concurrent", case_wisdom_concurrent),
+    ("system-wisdom", case_system_wisdom),
 ];
 
 // Scenarios, run by the parent.
@@ -1306,8 +1544,28 @@ fn check_split_fixed_batch_units(runs: &Runs) -> Result<Vec<String>, String> {
     check_units(runs, "split-fixed-batch-units", split_box_f64_forward(140))
 }
 
-fn check_wisdom_only(_: &Runs) -> Result<Vec<String>, String> {
+fn check_child_assertions(_: &Runs) -> Result<Vec<String>, String> {
     Ok(vec!["the child's assertions hold".to_string()])
+}
+
+fn check_shared_wisdom(runs: &Runs) -> Result<Vec<String>, String> {
+    compare(
+        runs.lines("wisdom-export", 0),
+        runs.lines("wisdom-import", 0),
+        "`wisdom-import` against `wisdom-export` (a failure is a design question, DC40)",
+    )
+}
+
+fn check_wisdom_during_planning(runs: &Runs) -> Result<Vec<String>, String> {
+    compare(
+        runs.lines("estimate", 0),
+        runs.lines("wisdom-concurrent", 0),
+        "`wisdom-concurrent` against `estimate`",
+    )
+}
+
+fn check_system_wisdom(runs: &Runs) -> Result<Vec<String>, String> {
+    Ok(runs.lines("system-wisdom", 0).to_vec())
 }
 
 fn check_estimate_after_measure(runs: &Runs) -> Result<Vec<String>, String> {
@@ -1361,12 +1619,32 @@ const SCENARIOS: &[Scenario] = &[
     Scenario {
         name: "wisdom-only",
         runs: &[("wisdom-only-without-wisdom", 1)],
-        check: check_wisdom_only,
+        check: check_child_assertions,
     },
     Scenario {
         name: "estimate after measure",
         runs: &[("estimate", 1), ("estimate-after-measure", 1)],
         check: check_estimate_after_measure,
+    },
+    Scenario {
+        name: "wisdom round trip",
+        runs: &[("wisdom-round-trip", 1)],
+        check: check_child_assertions,
+    },
+    Scenario {
+        name: "shared wisdom",
+        runs: &[("wisdom-export", 1), ("wisdom-import", 1)],
+        check: check_shared_wisdom,
+    },
+    Scenario {
+        name: "wisdom during planning",
+        runs: &[("estimate", 1), ("wisdom-concurrent", 1)],
+        check: check_wisdom_during_planning,
+    },
+    Scenario {
+        name: "system wisdom",
+        runs: &[("system-wisdom", 1)],
+        check: check_system_wisdom,
     },
 ];
 

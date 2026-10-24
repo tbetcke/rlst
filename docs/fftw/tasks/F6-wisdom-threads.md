@@ -475,3 +475,27 @@ work items follow these answers.
    lists them; F8a reviews the matrix as a whole; (b) F8a adds them, and F6b reports local
    runs on macOS only.
    *Decided: (a), DC43.*
+
+Raised during F6a. None needs a design change; they are recorded for review and for F6b and
+F7.
+
+7. **The FFTW lock is not fair.** A thread that takes the lock again as soon as it released
+   it can starve the others: with 4 threads exporting wisdom back to back, F4's planning
+   threads took 80 s instead of 0.03 s on macOS, and with 2 threads forgetting and importing
+   a few kilobytes of wisdom back to back, which holds the lock for milliseconds, the
+   `wisdom-concurrent` child took 6 s instead of 0.13 s. The tests pace their wisdom loops
+   (200 µs between exports, 1 ms between import rounds); nothing is synchronised by the
+   pauses, and every round still overlaps planning. Ordinary programs do not call wisdom
+   functions in a loop, so the lock stays a `Mutex`; F7's guide could say that wisdom calls
+   hold the lock that planning needs.
+8. **`import_from_file` reads bytes.** The file is read as bytes and given to FFTW as they
+   are, so a file that is not UTF-8 is FFTW's `WisdomImportFailed`, not an I/O error.
+9. **The `WisdomFile` message** names the path and the I/O error, and says that the file
+   "could not be read or written": the variant records the path, kind and message of DC38,
+   not the operation, which the caller knows from the function it called.
+10. **The binary's helpers.** `unit` takes a planner instead of a rigor, so that
+    `Problem::run_from_wisdom` plans nd-fmm's units wisdom-only with the line labels of
+    `Problem::run`; `check_wisdom_only` became `check_child_assertions`, shared by the
+    `wisdom-only` and `wisdom round trip` scenarios. On macOS a failed import of text that
+    is not wisdom left the wisdom unchanged (fact 2), and `system-wisdom` reports
+    `WisdomImportFailed` for both precisions (fact 5).

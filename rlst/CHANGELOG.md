@@ -129,6 +129,16 @@ views. Split c2r destroys its input by default, as c2r does, and `preserve_input
 preserving one over one transform dimension only. There are no in-place split r2c or c2r
 plans.
 
+Wisdom. The new module `rlst::fftw::wisdom` exports the wisdom of one precision to a string
+(`export`) or a file (`export_to_file`), imports it (`import`, `import_from_file`), forgets it
+(`forget`), and imports the system's wisdom on request (`import_system_wisdom`), each under the
+FFTW lock. FFTW's refusal of wisdom, wisdom of the other precision included, is
+`WisdomImportFailed`; a file that cannot be read or written is the new `FftwError::WisdomFile`,
+with the path and the kind and message of the I/O error. As tested, wisdom exported, forgotten
+and imported again, or imported in another process, gives wisdom-only plans with the
+fingerprints and bits of the plans it came from; the module documentation states what wisdom
+means for determinism.
+
 ### New traits `StridedRawAccess` and `StridedRawAccessMut`
 
 `rlst::StridedRawAccess::storage` and `StridedRawAccessMut::storage_mut` return the backing

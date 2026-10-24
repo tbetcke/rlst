@@ -236,8 +236,10 @@ workflow and tracks the status of every task; `docs/fftw/tasks/` holds one brief
     (design, Section 3 item 4). Tests that need other rigor, or that depend on the wisdom
     present, belong in the harness-free binary `rlst/tests/fftw_determinism.rs`, as a case
     run in a fresh child process (a row of its `CASES`) and a scenario comparing the
-    children's outputs (a row of its `SCENARIOS`). Concurrency tests, which need no fresh
-    process, are in `rlst/src/fftw/concurrency_tests.rs`;
+    children's outputs (a row of its `SCENARIOS`). Tests that import or forget wisdom belong
+    there too: in the test process they would change every later test's plans (DC39). Only
+    exporting wisdom, which reads it, is allowed in unit tests. Concurrency tests, which need
+    no fresh process, are in `rlst/src/fftw/concurrency_tests.rs`;
   - no new dependencies beyond those the design names (`libc`, from F1).
 - Section 11 of the design lists open points for nd-fmm, the first user of the new
   interface. They are not RLST tasks and are not decided in this repository.
