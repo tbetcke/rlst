@@ -256,6 +256,16 @@ no build script used; `pkg-config`, optional with `fftw_system`, is its only one
 without `mpi` therefore no longer compiles `bindgen`, `libgit2` or `libz`, and no longer needs
 `libclang`. With `mpi`, `mpi-sys` still uses `bindgen` and needs `libclang`.
 
+### FFTW benchmarks
+
+The example `fftw_bench` (`cargo run --release --example fftw_bench --features fftw_system`)
+times `Estimate` plans at the sizes of nd-fmm's φ transforms. It compares a batched plan with a
+loop of single transforms, split with interleaved storage and with a copy into interleaved
+scratch, aligned with unaligned plans, and r2c and c2r plans that halve the contiguous axis
+with plans that halve a strided one. Its results for 0.11 are recorded in the repository's
+`docs/fftw/F8b-benchmarks.md`. Halving the contiguous axis was not faster on every machine
+measured, so the documentation recommends no order of `axes` for r2c and c2r.
+
 ## v0.10.3
 
 Changes since [v0.10.2](https://github.com/tbetcke/rlst/releases/tag/v0.10.2).

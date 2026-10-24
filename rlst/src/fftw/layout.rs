@@ -985,7 +985,10 @@ impl Layout {
     /// complex-to-real one. Real-to-complex and complex-to-real transforms halve the axis
     /// given last in `axes`, whatever the memory order (DC2): along it the complex array has
     /// `n / 2 + 1` elements for the real array's `n`, and the layout's dimension records `n`.
-    /// Strides count elements of each array, reals or complex values.
+    /// Which axis to halve is the caller's choice: RLST 0.11's benchmarks timed halving the
+    /// contiguous axis against halving a strided one, and neither order was faster on every
+    /// machine measured, so RLST recommends neither. Strides count elements of each array,
+    /// reals or complex values.
     ///
     /// The checks, in this order, each returning [`FftwError::InvalidLayout`] that names
     /// `axes` or the axis concerned (`axis 1`):
@@ -1703,7 +1706,8 @@ impl Layout {
     /// the imaginary parts at index 1, the part axis's stride, its gap, apart. Its other axes
     /// are its logical axes, which `axes` counts (DC26), and which pair with the input's axes
     /// in order. The halved axis is the last entry of `axes` (DC2): along it the output has
-    /// `n / 2 + 1` complex values for the input's `n` reals. Both arrays are real (DC29), of
+    /// `n / 2 + 1` complex values for the input's `n` reals; as for
+    /// [`over_axes`](Layout::over_axes), no order is recommended. Both arrays are real (DC29), of
     /// one precision. There is no in-place variant: RLST has no in-place split
     /// real-to-complex plans (DC33).
     ///

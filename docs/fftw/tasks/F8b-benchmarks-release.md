@@ -274,3 +274,36 @@ Raised while writing this brief, and **settled by the maintainer before the task
    they are; (b) as (a), and `docs/fftw/` moves to an archive directory; (c) the design is
    removed from the repository after the release.
    *Decided: (a), DC60.*
+
+Raised during F8b-1. None needs a design change; they are recorded for review. The numbers
+are in `docs/fftw/F8b-benchmarks.md`.
+
+9. **Checking arrays at execution costs about 0.6–0.85 µs per call.** Executing the batched
+   plan of the box `[N, 9]` on the arrays' data as slices is faster than executing it on
+   the arrays by a constant 0.85 µs on macOS (Apple M3 Max) and 0.6 µs on Linux (AMD EPYC
+   9V74), at every N. That is a quarter of the time at N = 140 and 2–3 % at N = 1080. The
+   difference is RLST's check of the arrays' shapes, strides and storage against the
+   layout. Per the brief, F8b reports this and does not tune it. A later change could make
+   the check cheaper; it would not change the API. Options: (a) leave it, since nd-fmm's
+   boxes at N ≥ 216 lose 2–15 %; (b) an issue to profile the array check after the
+   release. Proposed: (b).
+10. **c2r halving the contiguous axis on Linux.** On the Linux runner, c2r over both axes
+    with the contiguous axis halved is 21–50 % faster at four of the five sizes. r2c is
+    faster at two of the five, and on macOS without SIMD neither is faster below
+    N = 1080. Under DC55 the documentation therefore recommends no order (work item 2).
+    Recording a narrower statement, for example "on SIMD builds of FFTW, c2r was faster with
+    the contiguous axis halved", would be a design change to DC55. Options: (a) keep DC55's
+    outcome as it stands; (b) a design change that lets the guide report the c2r result on
+    SIMD builds, without a recommendation. Proposed: (a); the findings are in
+    `F8b-benchmarks.md` for anyone who needs them.
+11. **Split storage and alignment, measured.** On Linux with SIMD:
+    - split plans take 1.5–2.8× the interleaved time;
+    - copying the planes into interleaved scratch costs only 1–8 % above the interleaved
+      plan;
+    - `.unaligned()` plans take 1.6–3.7× the time;
+    - a plan for a view's alignment class costs 3–6 % more.
+
+    Without SIMD (macOS) none of these differ. The documentation's notes are confirmed, so by
+    work item 2 they do not change. The guide could quote the magnitudes, which nd-fmm's
+    choice of design Section 11 item 2 depends on; it is left as it is unless the
+    maintainer asks.

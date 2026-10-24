@@ -129,3 +129,7 @@ required-features = ["mpi"]
 [[example]]
 name = "distributed_array_operations"
 required-features = ["mpi"]
+
+[[example]]
+name = "fftw_bench"
+required-features = ["fftw"]
