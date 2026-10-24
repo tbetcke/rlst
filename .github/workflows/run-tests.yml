@@ -46,6 +46,11 @@ jobs:
           cc "$RUNNER_TEMP/fv.c" $(pkg-config --cflags --libs fftw3) -o "$RUNNER_TEMP/fv"
           "$RUNNER_TEMP/fv"
 
+      - name: FFTW benchmarks (temporary)
+        run: |
+          lscpu | grep -E 'Model name|^CPU\(s\)|Flags' | sed -E 's/(Flags:).*( avx512f| avx2).*/\1 ...\2 .../' || true
+          cargo run --release --example fftw_bench --features fftw_system
+
       - name: Format
         run: cargo fmt -- --check
 
