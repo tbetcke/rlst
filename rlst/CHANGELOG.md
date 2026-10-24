@@ -153,6 +153,25 @@ released. Planning returns the new `FftwError::InvalidThreadCount` for a count a
 initialise its threads. As tested, threaded `Estimate` plans are the same in fresh processes,
 and threaded planning leaves single-threaded plans unchanged.
 
+### Chebyshev conversions on the new FFTW interface — migration required
+
+The conversions of `rlst::chebychev::ChebychevCoefficientsToData`,
+`chebychev_coeffs_from_data_second_kind` and `chebychev_data_from_coeffs_second_kind`, use the
+new FFTW interface and return `Result<DynArray<Item, NDIM>, FftwError>` instead of panicking
+when FFTW refuses a plan. They apply one DCT-I plan (`R2rKind::Redft00`) per axis, along that
+axis and batched over the others, instead of one multidimensional plan, and so take any number
+of dimensions; 0.10.3 had `unimplemented!()` above three. An axis of extent 1, on which 0.10.3
+panicked, is handled: one Chebychev point gives a constant interpolant, so data and
+coefficients are equal along that axis. An axis of extent 0 gives an empty result of the same
+shape without calling FFTW. The results agree with 0.10.3's to round-off, and were bit-equal
+on the FFTW build tested without SIMD; on builds with SIMD the last bits may differ, since
+one-dimensional plans in turn are not the same plans as one multidimensional plan.
+
+**Migration:** add `?` or `.unwrap()` to calls of the two conversions:
+`data.chebychev_coeffs_from_data_second_kind()` becomes
+`data.chebychev_coeffs_from_data_second_kind()?` in a function that returns a `Result` whose
+error converts from `FftwError`.
+
 ### New traits `StridedRawAccess` and `StridedRawAccessMut`
 
 `rlst::StridedRawAccess::storage` and `StridedRawAccessMut::storage_mut` return the backing
