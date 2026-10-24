@@ -1,7 +1,7 @@
 # FFTW interfaces for RLST: design proposal
 
-Draft 0.19, 2026-10-24. A proposal for the RLST maintainers, not a plan until it is signed
-off. It records the decisions taken from 2026-10-21 to 2026-10-24. It replaces RLST's FFTW interface
+Implemented in RLST 0.11.0 (draft 0.19, 2026-10-24); kept as the record of the rework (DC60).
+It records the decisions taken from 2026-10-21 to 2026-10-24. It replaces RLST's FFTW interface
 completely: every transform family of FFTW 3.3's serial interface, plans that are
 independent of the arrays they run on, checked and sound execution, wisdom, threads,
 alignment classes, determinism with stated preconditions, a test suite sized for CI, and
@@ -1403,6 +1403,11 @@ review.
   release by the agent after confirmation (DC56, DC57); `fftw-0.11` deleted after the merge
   (DC58); `main` at 0.11.0 until the next release (DC59); this design kept as the record
   (DC60).
+- **Implemented in 0.11.0** (2026-10-24): tasks F0 to F8b are done, and this design is the
+  record of the interface as released (DC60). The text above the line is draft 0.19's,
+  unchanged except for its first line; Section 11 stays as nd-fmm's open points. The
+  benchmarks of F8b (`docs/fftw/F8b-benchmarks.md`) found no order of `axes` faster on every
+  machine measured, so DC2's recommendation is none (DC55).
 
 ## Appendix B. Migration from 0.10
 

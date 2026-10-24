@@ -1,9 +1,9 @@
 # Changelog
 
-## v0.11.0 (unreleased)
+## v0.11.0
 
-Changes since [v0.10.3](https://github.com/tbetcke/rlst/releases/tag/v0.10.3), on the
-`fftw-0.11` integration branch. All workspace crates use version 0.11.0-dev until the release.
+Changes since [v0.10.3](https://github.com/tbetcke/rlst/releases/tag/v0.10.3).
+All workspace crates (`rlst`, `rlst-proc-macro`, and `rlst-suitesparse`) use version 0.11.0.
 
 ### FFTW: `fftw_system` is the only back end
 
