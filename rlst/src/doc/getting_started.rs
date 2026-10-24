@@ -73,7 +73,7 @@
 //!
 //! ```toml
 //! [dependencies]
-//! rlst = "0.10"
+//! rlst = "0.11"
 //! blas-src = { version = "0.14", features = ["accelerate"] }
 //! lapack-src = { version = "0.13", features = ["accelerate"] }
 //! ```

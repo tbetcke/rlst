@@ -1,10 +1,12 @@
 # FFTW rework for RLST 0.11
 
-This directory holds everything needed to implement the new FFTW interface of RLST 0.11.
+This directory is the record of the FFTW rework, implemented in RLST 0.11.0: the design, one
+brief per task, and the findings the tasks wrote. The rework is complete; FFTW work now goes
+to `main` like any other change.
 
 | File | What it is |
 | --- | --- |
-| `rlst-fftw-design.md` | The design, draft 0.19. Authoritative for the new interface; its Section 10 records the settled decisions and design choices. |
+| `rlst-fftw-design.md` | The design, implemented in 0.11.0. It describes the interface as released; its Section 10 records the settled decisions and design choices, and Section 11 the open points for nd-fmm. |
 | `tasks/F0-baseline.md` | Brief for task F0: integration branch, baseline, CI version reports, a macOS job. |
 | `tasks/F1-core.md` | Brief for task F1: the core of the new interface, with c2c plans on raw layouts and slices. |
 | `tasks/F2-layouts.md` | Brief for task F2: strided storage of RLST arrays and views, layouts from them, and execution on them. |
@@ -23,9 +25,13 @@ and from what the earlier tasks found.
 
 ## Workflow
 
-1. **Branch.** All work goes into the `fftw-0.11` branch, created by F0. `main` keeps
-   receiving 0.10.x patch releases. `fftw-0.11` is merged into `main` only for the 0.11.0
-   release, once every task below is done (design, Section 9, DC10).
+The workflow below is how the rework was run, from F0 to F8b; it is complete. `fftw-0.11` was
+merged into `main` for the 0.11.0 release and then deleted (DC58), and later changes to the
+FFTW interface go to `main` as ordinary pull requests.
+
+1. **Branch.** All work went into the `fftw-0.11` branch, created by F0. `main` kept
+   receiving 0.10.x patch releases. `fftw-0.11` was merged into `main` only for the 0.11.0
+   release, once every task below was done (design, Section 9, DC10).
 2. **One brief per task.** A task starts from its brief in `tasks/`. The brief lists the
    design sections to read, the scope, the files to touch, the work items and the
    acceptance checks.
@@ -57,7 +63,7 @@ so that every later family is written against the separate-process determinism t
 | F6 | Wisdom; `fftw_threads` | `tasks/F6-wisdom-threads.md` | done | [#24](https://github.com/tbetcke/rlst/pull/24) (F6a), [#25](https://github.com/tbetcke/rlst/pull/25) (F6b) |
 | F7 | Removal of the 0.10 module; Chebyshev port; documentation; licence warning; CHANGELOG | `tasks/F7-removal-docs.md` | done | [#30](https://github.com/tbetcke/rlst/pull/30) (F7a), [#32](https://github.com/tbetcke/rlst/pull/32) (F7b), [#33](https://github.com/tbetcke/rlst/pull/33) (F7c) |
 | F8a | CI on Linux and macOS, default-build check, docs | `tasks/F8a-ci.md` | done | [#36](https://github.com/tbetcke/rlst/pull/36) |
-| F8b | Benchmarks; release 0.11.0 | `tasks/F8b-benchmarks-release.md` | not started | |
+| F8b | Benchmarks; release 0.11.0 | `tasks/F8b-benchmarks-release.md` | in progress | [#40](https://github.com/tbetcke/rlst/pull/40) (F8b-1) |
 
 ## Local setup
 

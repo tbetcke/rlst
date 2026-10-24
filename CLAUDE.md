@@ -49,9 +49,10 @@ The repository uses the Rust 2024 edition for `rlst` and `rlst-suitesparse`, and
   and tests; `build.rs` discovers native SuiteSparse.
 - `scripts/run_mpi_tests.py` — bounded MPI regression runner; `scripts/test_run_mpi_tests.py`
   tests runner process cleanup without requiring MPI.
-- `docs/fftw/` — the FFTW rework for 0.11: the design (`rlst-fftw-design.md`), the workflow
-  and task status (`README.md`), and one brief per task (`tasks/`). See "FFTW rework (0.11)"
-  below.
+- `docs/fftw/` — the record of the FFTW rework of 0.11: the design as implemented
+  (`rlst-fftw-design.md`), one brief per task (`tasks/`), the tasks' findings
+  (`F0-findings.md`, `F8b-benchmarks.md`), and the task status (`README.md`). See "FFTW
+  interface (0.11)" below.
 - `.github/workflows/` — GitHub Actions CI on hosted runners. `run-tests.yml` is the
   authoritative validation matrix and the only workflow. It runs on pushes and pull requests to
   `main` and `fftw-0.11`, with three jobs:
@@ -84,7 +85,7 @@ changes:
 | Spaces, operators, elements, frames, solvers | `doc/abstract_linear_algebra.rs` |
 | MPI | `doc/distributed_computations.rs` |
 | FFTW, Burn | `doc/optional_integrations.rs` |
-| FFTW rework for 0.11 (in progress) | `docs/fftw/rlst-fftw-design.md`, `docs/fftw/tasks/` |
+| FFTW design and rework record (0.11) | `docs/fftw/rlst-fftw-design.md`, `docs/fftw/tasks/` |
 
 ## Features and native dependencies
 
@@ -98,9 +99,9 @@ changes:
   macOS Homebrew fallback, and rejects a pkg-config version below 3.3.4 (the Homebrew fallback
   has no version; the crate checks `fftw_version` at the first planner call). With `DOCS_RS`
   set, `build.rs` skips discovery. Set `PKG_CONFIG_PATH` for custom installations;
-  cross-compilation must use target libraries, not host Homebrew paths. The interface is being
-  rewritten for 0.11 on the `fftw-0.11` branch (see "FFTW rework (0.11)" below); `fftw_source`
-  and `fftw_mkl` were removed by task F1. docs.rs builds with `fftw`, `fftw_system` and
+  cross-compilation must use target libraries, not host Homebrew paths. The interface was
+  rewritten for 0.11 (see "FFTW interface (0.11)" below); `fftw_source` and `fftw_mkl` were
+  removed. docs.rs builds with `fftw`, `fftw_system` and
   `fftw_threads` and `--cfg docsrs` (`[package.metadata.docs.rs]` in `rlst/Cargo.toml`), and
   `pub mod fftw` and `pub mod chebychev` carry `doc(cfg(feature = "fftw"))` there. `rlst`'s
   only build dependency is `pkg-config`, with `fftw_system`; task F7c removed the unused
@@ -230,28 +231,19 @@ that file.
   two-pass Gram-Schmidt step shared by GMRES and the generic QR is `orthogonalize_twice` in
   `operator/frame/mod.rs`.
 
-## FFTW rework (0.11)
+## FFTW interface (0.11)
 
-RLST's FFTW interface is being rewritten for 0.11. `docs/fftw/rlst-fftw-design.md` is the
-design and is authoritative for the new interface; `docs/fftw/README.md` describes the
-workflow and tracks the status of every task; `docs/fftw/tasks/` holds one brief per task
-(F0, F1, …), written before the task starts.
+RLST's FFTW interface was rewritten for 0.11.0, in tasks F0 to F8b on the integration branch
+`fftw-0.11`, which was merged into `main` for the release and deleted. `docs/fftw/` keeps the
+record: `docs/fftw/rlst-fftw-design.md` describes the interface as released, and the briefs in
+`docs/fftw/tasks/` and the findings beside them say how each part was built and checked. FFTW
+changes now go to `main` as ordinary pull requests.
 
-- Work happens on the `fftw-0.11` branch, one pull request per task (or the few pull
-  requests its brief lists) into that branch. `main` keeps receiving 0.10.x patch
-  releases; `fftw-0.11` is merged into `main` only for the 0.11.0 release, once every task
-  is done (design, Section 9).
-- Start a task by reading its brief and the design sections the brief lists. The brief's
-  acceptance list is the definition of done; copy it into the pull request description and
-  tick it.
-- The decisions and design choices of the design's Section 10 are settled; do not reopen
-  them in code. If the implementation shows that the design is wrong, unclear or
-  incomplete, stop and report it, and record it under "Open questions" in the brief, rather
-  than deviating silently. Design changes go into the design document, with an entry in its
-  Appendix A.
-- No compatibility with the 0.10 FFTW API is required. Task F7b removed the 0.10 module
-  (`into_fft`, `Fft`, `PlanInplace`, `C2CPlan`, `R2RPlan` and their companions); `rlst::fftw`
-  holds only the new interface, and `rlst::chebychev` uses it.
+- The decisions and design choices of the design's Section 10 are settled. A change that
+  departs from one is a design change: describe it in the design document, with an entry in
+  its Appendix A, rather than deviating silently in code.
+- No compatibility with the 0.10 FFTW API exists. `rlst::fftw` holds only the new interface,
+  and `rlst::chebychev` uses it.
 - Rules for all new FFTW code:
   - every FFTW call other than plan execution goes through the FFTW lock (design,
     Section 4.7);
@@ -271,9 +263,6 @@ workflow and tracks the status of every task; `docs/fftw/tasks/` holds one brief
   - no new dependencies beyond those the design names (`libc`, from F1).
 - Section 11 of the design lists open points for nd-fmm, the first user of the new
   interface. They are not RLST tasks and are not decided in this repository.
-- When a task's pull request merges, update its row in the status table of
-  `docs/fftw/README.md`, and keep this file's feature and validation sections in step with
-  what the task changed.
 
 ## Tests and documentation
 
@@ -368,5 +357,3 @@ Use `cargo fmt --all` to apply formatting after Rust changes.
 4. Inspect `git diff --check` and `git status`; ensure generated artifacts and `Cargo.lock` are not
    included.
 5. Use a small, descriptive commit message (for example, `fix(sparse): validate CSR row offsets`).
-6. For an FFTW rework task, name the task in the pull request title (for example,
-   `feat(fftw): F1b core types and FFTW lock`) and include the brief's ticked acceptance list.

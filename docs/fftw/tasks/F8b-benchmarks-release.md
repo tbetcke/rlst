@@ -307,3 +307,15 @@ are in `docs/fftw/F8b-benchmarks.md`.
     work item 2 they do not change. The guide could quote the magnitudes, which nd-fmm's
     choice of design Section 11 item 2 depends on; it is left as it is unless the
     maintainer asks.
+
+Raised during F8b-2.
+
+12. **When the `fftw-0.11` triggers leave `run-tests.yml`.** Work item 3 removes them in
+    F8b-2 (DC58). F8b-2 is itself a pull request into `fftw-0.11`, and GitHub takes the
+    workflow from the pull request's merge commit, so F8b-2 would run no CI, and neither
+    would its push to `fftw-0.11`. Options: (a) *proposed*: keep the triggers through the
+    release, and remove them, with `CLAUDE.md`'s description of the triggers, in the last
+    small pull request into `main` that marks F8b done, after `fftw-0.11` is deleted; DC58
+    holds, in a later pull request; (b) remove them in F8b-2 as briefed, which leaves F8b-2
+    without CI until the release pull request into `main`. *Decided: (a), by the
+    maintainer.*
