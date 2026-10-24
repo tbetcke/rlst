@@ -3,7 +3,7 @@
 | | |
 | --- | --- |
 | Task | F6 (design, Section 9) |
-| Status | not started |
+| Status | done |
 | Depends on | F1, F4, F5 |
 | Pull requests | two, into `fftw-0.11`, in this order: F6a (wisdom: export, import, files, forgetting, system wisdom, and their tests), F6b (the `fftw_threads` feature: linking, thread initialisation, `Planner::threads`, `make_planner_thread_safe`, and their tests and CI) |
 | Read first | design: Section 1.2 (the functions not wrapped), Section 3 items 2–4, 9 and 12, Sections 4.7, 4.10 and 4.12–4.15, Section 5 (rules 1, 3, 6 and 7), Sections 7.5–7.7, Section 9 (F6 row), Section 10, in particular DF7, DF8, DC13, DC22–DC24 and DC38–DC43, Section 11 items 3 and 4, Appendix A (drafts 0.12 and 0.16); `docs/fftw/tasks/F1-core.md` (the lock and the settings guard) and `F4-determinism.md` (the binary), including their "Open questions"; `docs/fftw/F0-findings.md` (the threads libraries on the runners); `CLAUDE.md` |
