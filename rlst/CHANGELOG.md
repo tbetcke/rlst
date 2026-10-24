@@ -34,10 +34,18 @@ relied on its value being 16 must use 16 directly.
 
 A new FFTW interface replaces the 0.10 one: plans independent of the arrays they run on,
 checked and sound execution, input policies in the type of a plan, alignment classes and plan
-fingerprints. This entry is completed, with migration notes, at the release. So far it
-provides complex-to-complex plans on slices (`Layout`, `Planner`, `Plan` and their companions
-in `rlst::fftw`); the 0.10 types stay beside them, unchanged, until the new interface is
-complete.
+fingerprints. This entry is completed, with migration notes, at the release. It provides
+complex-to-complex plans on slices (`Layout`, `Planner`, `Plan` and their companions in
+`rlst::fftw`), and the families and buffers described below.
+
+The 0.10 interface is removed: `Array::into_fft`, `Fft`, `FftMutGuard`, `PlanInplace`,
+`FftPlanInplace`, `C2CPlan`, `C2CDirection`, `R2RPlan`, `R2RPlanKind`, `FftwPlanFlags` and
+`FftPrecision`, with the modules `rlst::fftw::c2c_inplace` and `rlst::fftw::r2r_inplace`.
+`Planner` and `Plan` replace them: `C2CDirection` becomes `Direction`, `R2RPlanKind`
+(fftw-sys's `fftw_r2r_kind`) becomes RLST's own `R2rKind`, and `FftwPlanFlags` becomes
+`Rigor` and the planner's options. Every FFTW call RLST makes other than plan execution,
+planning, plan destruction, wisdom and FFTW's global settings included, runs under one
+process-wide lock.
 
 Plans also run on RLST arrays and views. `Layout::along_axis`, `Layout::over_axes` and their
 in-place variants build layouts from arrays of any memory order, column-major, row-major and
@@ -194,12 +202,6 @@ without elements can have, returns `None`.
 
 New inherent methods `Array::storage()` and `Array::storage_mut()`, beside `data()` and
 `data_mut()`, give the same access without naming the implementation type.
-
-### FFTW: one lock for all FFTW calls
-
-The 0.10 FFTW module now plans and destroys its plans under the same process-wide lock as the
-new interface, which serialises every FFTW call RLST makes other than plan execution. Its API
-and results do not change.
 
 ## v0.10.3
 

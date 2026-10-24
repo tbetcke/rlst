@@ -20,17 +20,15 @@ use crate::dense::array::StridedSliceArrayMut;
 use crate::fftw::lock::with_fftw;
 use crate::fftw::test_support::{
     PolicyKind, SEED, TestReal, aligned, assert_matches_reference, fill_view, logical_reference,
-    multi_indices, random_reals, random_values, real_sentinel, real_sentinel_parent, sentinel,
-    sentinel_parent,
+    random_reals, random_values, real_sentinel, real_sentinel_parent, sentinel, sentinel_parent,
 };
 use crate::fftw::{
-    AlignmentClass, C2CDirection, C2CPlan, C2c, C2r, Destroying, Direction, FftBufferMut,
-    FftPlanInplace, FftwPlanFlags, FftwReal, InPlace, Layout, Plan, Planner, Preserving, R2c, R2r,
-    R2rKind, SplitC2c, SplitC2r, SplitR2c, as_reals_mut, wisdom,
+    AlignmentClass, C2c, C2r, Destroying, Direction, FftBufferMut, FftwReal, InPlace, Layout, Plan,
+    Planner, Preserving, R2c, R2r, R2rKind, SplitC2c, SplitC2r, SplitR2c, as_reals_mut, wisdom,
 };
 use crate::{
-    Array, BaseItem, DynArray, Shape, SliceArray, SliceArrayMut, Stride, StridedRawAccessMut,
-    UnsafeRandomAccessByRef, UnsafeRandomAccessMut, c64,
+    Array, BaseItem, Shape, SliceArray, SliceArrayMut, Stride, StridedRawAccessMut,
+    UnsafeRandomAccessByRef, UnsafeRandomAccessMut,
 };
 
 /// nd-fmm's unit: `N_PHI` points on each of `RINGS` rings (design, Section 2.5).
@@ -802,25 +800,6 @@ fn plan_orders<T: TestReal>(thread: usize) -> Vec<(String, u64)> {
     fingerprints
 }
 
-/// Plan and execute with the 0.10 module, which shares the FFTW lock, and assert the results.
-fn plan_with_the_old_module() {
-    for k in 0..4 {
-        let shape = [16, 3 + k];
-        let mut array = DynArray::<c64, 2>::from_shape(shape);
-        let values = random_values::<f64>(SEED + k as u64, shape[0] * shape[1]);
-        for (index, &value) in multi_indices(shape).zip(&values) {
-            array[index] = value;
-        }
-        let fft = array.into_fft();
-        fft.c2c_fft(FftwPlanFlags::Estimate, C2CDirection::Forward)
-            .unwrap()
-            .execute();
-        let reference = logical_reference(shape, &values, &[0, 1], Direction::Forward);
-        let context = format!("planning while executing: the 0.10 module, shape {shape:?}");
-        assert_matches_reference(&fft.borrow().unwrap().r(), &reference, &[0, 1], &context);
-    }
-}
-
 /// Counts a finished planning thread when dropped, during unwinding as well, so that the
 /// executing threads stop even if a planning thread panics.
 struct Finished<'a>(&'a AtomicUsize);
@@ -849,17 +828,15 @@ fn test_planning_while_executing() {
         output.data_mut().unwrap(),
         THREADS,
     );
-    // The planning threads and the thread of the 0.10 module.
-    let planning = PLANNERS + 1;
     let finished = AtomicUsize::new(0);
-    let barrier = Barrier::new(EXECUTORS + planning);
+    let barrier = Barrier::new(EXECUTORS + PLANNERS);
     let fingerprints = std::thread::scope(|scope| {
         for (thread, mut unit) in units.into_iter().enumerate() {
             let (plan, barrier, finished) = (&plan, &barrier, &finished);
             scope.spawn(move || {
                 barrier.wait();
                 let mut iteration = 0;
-                while iteration < MIN_ITERATIONS || finished.load(Ordering::SeqCst) < planning {
+                while iteration < MIN_ITERATIONS || finished.load(Ordering::SeqCst) < PLANNERS {
                     let context = Context {
                         precision: f64::NAME,
                         policy,
@@ -885,14 +862,6 @@ fn test_planning_while_executing() {
                 })
             })
             .collect();
-        {
-            let (barrier, finished) = (&barrier, &finished);
-            scope.spawn(move || {
-                let _finished = Finished(finished);
-                barrier.wait();
-                plan_with_the_old_module();
-            });
-        }
         planners
             .into_iter()
             .map(|planner| planner.join().unwrap())
