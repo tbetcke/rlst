@@ -1,6 +1,6 @@
 # FFTW interfaces for RLST: design proposal
 
-Draft 0.18, 2026-10-24. A proposal for the RLST maintainers, not a plan until it is signed
+Draft 0.19, 2026-10-24. A proposal for the RLST maintainers, not a plan until it is signed
 off. It records the decisions taken from 2026-10-21 to 2026-10-24. It replaces RLST's FFTW interface
 completely: every transform family of FFTW 3.3's serial interface, plans that are
 independent of the arrays they run on, checked and sound execution, wisdom, threads,
@@ -18,7 +18,7 @@ for nd-fmm: Section 11 lists open points and options for nd-fmm's own review.
 In the RLST repository this document is `docs/fftw/rlst-fftw-design.md`; the task briefs
 are in `docs/fftw/tasks/` and the workflow in `docs/fftw/README.md`.
 
-What drafts 0.6 to 0.17 change, for the start of the implementation:
+What drafts 0.6 to 0.19 change, for the start of the implementation:
 
 - **Work plan** (Section 9): the removal of `fftw_source` and `fftw_mkl` moves from F7 to
   F1; the 0.10 module coexists with the new types until F7 and shares the new FFTW lock;
@@ -77,6 +77,12 @@ What drafts 0.6 to 0.17 change, for the start of the implementation:
   extent 0 (Section 8, DC44); the comparison with 0.10.3 runs while the 0.10 module exists
   (Sections 7.3 and 8, DC45); docs.rs builds with `fftw_threads` (Section 6, DC46); F7
   removes `rlst`'s unused build dependencies (Sections 4.10 and 9, DC47).
+- **CI, benchmarks and the release** (draft 0.19, from the F8a and F8b briefs): the docs.rs
+  build runs in a CI job of its own on the current nightly, the default configuration is
+  tested on Linux, CMake leaves the install line, and F8a recommends further required
+  checks for `main` (Section 7.7, DC48 to DC52); the benchmarks' machines, method and the
+  rule for DC2's recommendation (Section 7.7, DC53 to DC55); the release's merge, tag,
+  publication, branch, version and the design's status after it (Section 9, DC56 to DC60).
 
 Every decision for the RLST maintainers and every design choice is settled (Section 10).
 This document makes no decisions for nd-fmm (Section 11). Earlier drafts' changes are
@@ -1088,6 +1094,19 @@ waits for is the complete one. When that release comes is Helmholtz decision D14
 | DC45 | The comparison of the Chebyshev port with 0.10.3 is a test of F7a, run while the 0.10 module exists and removed with it; the analytic and extent-1 tests are the lasting regressions (Sections 7.3 and 8) | accepted (F7 brief) |
 | DC46 | docs.rs builds with `features = ["fftw", "fftw_system", "fftw_threads"]` (Section 6) | accepted (F7 brief) |
 | DC47 | F7 removes the build dependencies `bindgen`, `cc`, `cmake` and `git2`, which no build script of `rlst` uses (Sections 4.10 and 9) | accepted (F7 brief) |
+| DC48 | The docs.rs build runs in a third CI job, `docs`, on `ubuntu-24.04` with nightly and `DOCS_RS=1`, without native packages (Section 7.7) | accepted (F8a brief) |
+| DC49 | That job uses the current nightly, as docs.rs does; a failure caused by the nightly is fixed or raised when it occurs (Section 7.7) | accepted (F8a brief) |
+| DC50 | The default configuration (`cargo test` without features, and the check that its graph has no fftw-sys) runs in the Linux job only (Section 7.7) | accepted (F8a brief) |
+| DC51 | `cmake` leaves the Linux job's install line if the job passes without it; `libclang-dev` stays for `mpi-sys` (Section 7.7) | accepted (F8a brief) |
+| DC52 | F8a recommends that the maintainer also require `run-tests-macos` and `docs` on `main` before the release merge (Section 7.7) | accepted (F8a brief) |
+| DC53 | The benchmarks run on macOS (Homebrew's FFTW, no SIMD) locally and on a Linux CI runner (Ubuntu's FFTW, SIMD) through a temporary step; both are indicative (Section 7.7) | accepted (F8b brief) |
+| DC54 | Each benchmark case warms up, then times 7 rounds of at least 0.2 s each and reports the median and the range; `Estimate` plans only (Section 7.7) | accepted (F8b brief) |
+| DC55 | The documentation recommends listing the contiguous axis last for r2c and c2r only if that is faster by more than the spread and by at least 10 % at most sizes on every machine measured; otherwise it says that the order was measured and recommends nothing (Sections 4.3 and 7.7) | accepted (F8b brief) |
+| DC56 | `fftw-0.11` is merged into `main` by a pull request with a merge commit once CI passes; the tag `v0.11.0` goes on that commit (Section 9) | accepted (F8b brief) |
+| DC57 | The maintainer publishes the crates; after the maintainer's confirmation the agent pushes the tag and creates the GitHub release (Section 9) | accepted (F8b brief) |
+| DC58 | `fftw-0.11` is deleted after the merge, and CI no longer triggers on it; FFTW work then goes to `main` (Section 9) | accepted (F8b brief) |
+| DC59 | `main` stays at 0.11.0 until the next release is prepared (Section 9) | accepted (F8b brief) |
+| DC60 | After the release this design stays in `docs/fftw/` as the record, marked as implemented in 0.11.0; Section 11 stays as nd-fmm's open points (Section 9) | accepted (F8b brief) |
 
 ### 10.2 DF6: why `fftw_source` is dropped
 
@@ -1372,6 +1391,18 @@ review.
   conversions take any number of dimensions from 1, and the clause that they return a copy
   for none is dropped, since RLST's arrays have no rank 0 (`BaseArray` and
   `StridedBaseArray` reject it, and `ZeroDimArray` has no array access) (Section 8, DC44).
+
+- **Draft 0.19** (2026-10-24), from the open questions of the F8a and F8b briefs
+  (`docs/fftw/tasks/F8a-ci.md`, `docs/fftw/tasks/F8b-benchmarks-release.md`), settled by the
+  maintainer before the tasks started, each with the proposed option: the docs.rs build in
+  a CI job of its own on the current nightly (DC48, DC49); the default configuration tested
+  on Linux (DC50); CMake removed from the install line if CI passes without it (DC51);
+  further required checks on `main` recommended (DC52); the benchmarks' machines, method
+  and the rule for DC2's recommendation (DC53 to DC55); the release merged into `main` with
+  a merge commit and tagged there, published by the maintainer, with the tag and GitHub
+  release by the agent after confirmation (DC56, DC57); `fftw-0.11` deleted after the merge
+  (DC58); `main` at 0.11.0 until the next release (DC59); this design kept as the record
+  (DC60).
 
 ## Appendix B. Migration from 0.10
 
