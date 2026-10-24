@@ -33,8 +33,8 @@ pub(crate) mod sealed {
     }
 }
 
-/// The transform family of a [`Plan`]: [`C2c`], [`SplitC2c`], [`R2c`], [`C2r`] or [`R2r`] (the
-/// split real families follow).
+/// The transform family of a [`Plan`]: [`C2c`], [`SplitC2c`], [`R2c`], [`C2r`], [`R2r`],
+/// [`SplitR2c`] or [`SplitC2r`].
 ///
 /// A family needs layouts of its [`Storage`](super::Storage) on each side, and every planner
 /// method rejects a layout of another family. The trait is sealed.
@@ -48,6 +48,8 @@ pub(crate) mod sealed {
 /// family::<R2c>();
 /// family::<C2r>();
 /// family::<R2r>();
+/// family::<rlst::fftw::SplitR2c>();
+/// family::<rlst::fftw::SplitC2r>();
 /// ```
 pub trait Family: sealed::Family {}
 
@@ -327,6 +329,62 @@ pub enum C2r {}
 #[derive(Clone, Copy, Debug)]
 pub enum R2r {}
 
+/// Real-to-complex transforms into split complex storage: real input, the half spectrum
+/// with its real and imaginary parts a fixed gap apart, always forward.
+///
+/// [`R2c`] with the split storage of [`SplitC2c`] on the output side only (DC25): layouts
+/// of real input and split output storage ([`Layout::split_r2c_along_axis`],
+/// [`Layout::split_r2c_over_axes`], [`Layout::with_storage`]), planned by
+/// [`Planner::split_r2c`](super::Planner::split_r2c) and its companion, executing on buffers
+/// of reals on both sides. There are no in-place split r2c plans (DC33). Like split c2c plans,
+/// they can use fewer of FFTW's SIMD stages than interleaved ones. A type-level marker; it is
+/// never constructed.
+///
+/// ```
+/// use rlst::rlst_dynamic_array;
+/// use rlst::fftw::{Layout, Plan, Planner, Preserving, SplitR2c};
+///
+/// let mut input = rlst_dynamic_array!(f64, [8] | rlst::FFTW_ALIGNED);
+/// let mut output = rlst_dynamic_array!(f64, [5, 2] | rlst::FFTW_ALIGNED);
+/// input[[0]] = 1.0;
+/// let layout = Layout::split_r2c_along_axis(&input, &output, 1, 0)?;
+/// let plan: Plan<f64, SplitR2c, Preserving> = Planner::new().split_r2c(&layout)?;
+/// plan.execute(&input, &mut output)?;
+/// // The transform of a unit impulse is constant, with no imaginary part.
+/// assert!((0..5).all(|k| output[[k, 0]] == 1.0 && output[[k, 1]] == 0.0));
+/// # Ok::<(), rlst::fftw::FftwError>(())
+/// ```
+#[derive(Clone, Copy, Debug)]
+pub enum SplitR2c {}
+
+/// Complex-to-real transforms from split complex storage: the half spectrum with its real and
+/// imaginary parts a fixed gap apart, real output, always backward.
+///
+/// [`C2r`] with the split storage of [`SplitC2c`] on the input side only (DC25): layouts of
+/// split input and real output storage ([`Layout::split_c2r_along_axis`],
+/// [`Layout::split_c2r_over_axes`], [`Layout::with_storage`]), planned by
+/// [`Planner::split_c2r`](super::Planner::split_c2r) and its companion. As for [`C2r`], **a
+/// split complex-to-real plan destroys its input by default**: the default plan is
+/// [`Destroying`], and [`Planner::preserve_input`](super::Planner::preserve_input) makes a
+/// [`Preserving`] one over one transform dimension only. There are no in-place split c2r
+/// plans (DC33). A type-level marker; it is never constructed.
+///
+/// ```
+/// use rlst::rlst_dynamic_array;
+/// use rlst::fftw::{Destroying, Layout, Plan, Planner, SplitC2r};
+///
+/// let mut input = rlst_dynamic_array!(f64, [2, 5] | rlst::FFTW_ALIGNED);
+/// let mut output = rlst_dynamic_array!(f64, [8] | rlst::FFTW_ALIGNED);
+/// input[[0, 0]] = 8.0;
+/// let layout = Layout::split_c2r_along_axis(&input, 0, &output, 0)?;
+/// let plan: Plan<f64, SplitC2r, Destroying> = Planner::new().split_c2r(&layout)?;
+/// plan.execute(&mut input, &mut output)?;
+/// assert!((0..8).all(|i| (output[[i]] - 8.0).abs() < 1e-12));
+/// # Ok::<(), rlst::fftw::FftwError>(())
+/// ```
+#[derive(Clone, Copy, Debug)]
+pub enum SplitC2r {}
+
 impl sealed::Family for C2c {
     const KIND: LayoutFamily = LayoutFamily::C2c;
 }
@@ -351,6 +409,16 @@ impl sealed::Family for R2r {
     const KIND: LayoutFamily = LayoutFamily::R2r;
 }
 impl Family for R2r {}
+
+impl sealed::Family for SplitR2c {
+    const KIND: LayoutFamily = LayoutFamily::SplitR2c;
+}
+impl Family for SplitR2c {}
+
+impl sealed::Family for SplitC2r {
+    const KIND: LayoutFamily = LayoutFamily::SplitC2r;
+}
+impl Family for SplitC2r {}
 
 impl sealed::Policy for Preserving {
     const FLAGS: c_uint = fftw_sys::FFTW_PRESERVE_INPUT;

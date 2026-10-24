@@ -3,7 +3,7 @@
 | | |
 | --- | --- |
 | Task | F5 (design, Section 9) |
-| Status | in progress: F5a done, F5b |
+| Status | in progress: F5a and F5b done, F5c |
 | Depends on | F1, F2, F3, F4 |
 | Pull requests | three, into `fftw-0.11`, in this order: F5a (the storage of each side in `Layout`, the element types of the layout functions, r2c and c2r out of place and in place, `Plan::logical_size`, `Scale`), F5b (r2r with `R2rKind` and kinds per axis), F5c (split r2c and c2r) |
 | Read first | design: Section 2.2 item 9, Section 3 items 1, 5, 7, 8 and 11, Sections 4.1–4.9 and 4.15, Section 5, Sections 7.1–7.6, Section 9 (F5 row), Section 10, in particular DC1, DC2, DC3, DC5, DC12, DC14–DC16, DC21, DC25–DC29, Appendix A (drafts 0.8 to 0.13), Appendix B; `docs/fftw/tasks/F1-core.md`, `F2-layouts.md`, `F3-split.md` and `F4-determinism.md`, including their "Open questions"; `docs/fftw/F0-findings.md`; `CLAUDE.md` |
@@ -501,8 +501,20 @@ Raised during F5b. None needs a design change.
     bit. The `hint` of `PlanCreationFailed` is set for every preserving plan with an HC2R
     kind that FFTW refuses, which this FFTW never did; its message is tested directly, and
     the HC2R test accepts either outcome, as work item 7 says. CI on Linux shows whether
-    Ubuntu's FFTW 3.3.10 refuses any of them.
+    Ubuntu's FFTW 3.3.10 refuses any of them. *Signed off by the maintainer.*
 13. **The direction of a real-to-real plan.** `Plan` records a direction for every family;
     a real-to-real plan has none, and records `Forward`, which only its `Debug` output shows,
     beside its kinds. Its kinds say what it computes; `Plan::<_, R2r, _>` has no
-    `direction()`.
+    `direction()`. *Signed off by the maintainer.*
+
+Raised during F5c. None needs a design change.
+
+14. **The ranks of the split real layout functions.** The real array has rank `N` and the split
+    array, with its part axis, rank `N + 1`. Stable Rust cannot state `M = N + 1` in a
+    signature, so the functions take two const ranks, `N` for the real array and `M` for the
+    split one, and a split array that is not one axis longer is an `InvalidLayout` naming the
+    part axis, the first of the part-axis checks.
+15. **Pairing by logical rank.** Design Section 4.8 and DC27 pair input and output arrays
+    "of the same rank", without their part axes. A real array and its split partner differ in
+    rank by one, so execution pairs arrays whose ranks without their part axes are equal,
+    which for every earlier family is the same rule as before.

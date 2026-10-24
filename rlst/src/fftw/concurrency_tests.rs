@@ -25,7 +25,7 @@ use crate::fftw::test_support::{
 use crate::fftw::{
     AlignmentClass, C2CDirection, C2CPlan, C2c, C2r, Destroying, Direction, FftBufferMut,
     FftPlanInplace, FftwPlanFlags, FftwReal, InPlace, Layout, Plan, Planner, Preserving, R2c, R2r,
-    R2rKind, SplitC2c, as_reals_mut,
+    R2rKind, SplitC2c, SplitC2r, SplitR2c, as_reals_mut,
 };
 use crate::{
     Array, BaseItem, DynArray, Shape, SliceArray, SliceArrayMut, Stride, StridedRawAccessMut,
@@ -255,6 +255,10 @@ fn test_plans_are_send_and_sync() {
     send_and_sync::<Plan<f64, R2r, Preserving>>();
     send_and_sync::<Plan<f32, R2r, Destroying>>();
     send_and_sync::<Plan<f64, R2r, InPlace>>();
+    send_and_sync::<Plan<f64, SplitR2c, Preserving>>();
+    send_and_sync::<Plan<f32, SplitR2c, Destroying>>();
+    send_and_sync::<Plan<f64, SplitC2r, Preserving>>();
+    send_and_sync::<Plan<f32, SplitC2r, Destroying>>();
 }
 
 /// One plan of `policy` executed by `THREADS` threads at once, `ITERATIONS` times each, on
