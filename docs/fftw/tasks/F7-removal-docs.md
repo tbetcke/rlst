@@ -369,8 +369,10 @@ Raised during F7a.
 7. **The comparison with 0.10.3** (DC45), `test_compare_with_v0_10`, for the shapes `[2]`,
    `[9]`, `[17]`, `[5, 7]`, `[9, 9]`, `[2, 33]`, `[4, 6, 3]`, `[9, 9, 9]` and `[16, 5, 2]`, both
    conversions, `f64`, `f32`, `c64` and `c32`, seeded data: on macOS (Homebrew FFTW 3.3.11,
-   no SIMD), every result is bit-equal to 0.10.3's. The results of the Linux job, whose FFTW
-   has SIMD, are in the pull request.
+   no SIMD), and on the Linux runner (Ubuntu 24.04, FFTW `fftw-3.3.10-sse2-avx`, AMD EPYC
+   9V74 with AVX2), every result is bit-equal to 0.10.3's. On Linux the table came from a
+   temporary CI step (draft pull request #31, closed), since `cargo test` hides the output
+   of passing tests.
 8. **`Linspace::linspace` rejects arrays of length 2.** It asserts `self.len() - 1 > 1`, so
    an array of two points panics, with a message that names `1 = self.len() > 1`. Found
    while writing the examples, which avoid it; it does not concern FFTW, and is recorded for
