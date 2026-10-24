@@ -343,3 +343,37 @@ Raised while writing this brief:
    concern every build and not FFTW; (b) F7c removes them; (c) they stay. *Decided: (b),
    DC47: F7c removes them (work item 4), and design Section 4.10 no longer says that docs.rs
    must provide `libclang` for them. They reach `main` with the 0.11.0 release.*
+
+Raised during F7a.
+
+5. **Rank 0 does not exist in RLST's arrays.** DC44 and design Section 8 say that the
+   conversions return a copy for `NDIM = 0`. RLST has no array of rank 0 that the conversions
+   could take or return: `BaseArray::new` and `StridedBaseArray::new` panic for rank 0, so
+   `DynArray<T, 0>` cannot be made, and `ZeroDimArray`, the scalar type, implements none of
+   the access traits the conversions need. The port needs no code for rank 0 (its loop over
+   the axes is empty, so it would return a copy if such an array existed), and no test can
+   reach it; the rustdoc does not promise it. Options: (a) *proposed*: drop the rank-0
+   clause from DC44 and Section 8, with an Appendix A entry: the conversions take any rank
+   from 1, which are the ranks RLST's arrays have; (b) keep the clause as it is, untested.
+   *Decided: (a), design draft 0.18.* Better handling of rank 0 in RLST's arrays is a
+   separate feature request, outside the FFTW rework: issue #29.
+6. **The coefficient scale is applied once.** Work item 1 makes the scale `1 / ∏(n − 1)`
+   a per-axis step. The port transforms along every axis of extent above 1 first and then
+   multiplies once by `1 / ∏(n − 1)` over those axes, as 0.10.3 multiplies, and halves the
+   boundary values of each such axis; the inverse conversion halves the interior values of
+   each such axis before its transforms. The result is the same to round-off, axes of
+   extent 1 are still skipped one by one, and the halvings are exact, so only the single
+   product differs from a per-axis factor; with it the comparison of DC45 gives 0.10.3's
+   bits (note 7). Not a design change: design Section 8 does not order the scaling.
+   *Accepted by the maintainer.*
+7. **The comparison with 0.10.3** (DC45), `test_compare_with_v0_10`, for the shapes `[2]`,
+   `[9]`, `[17]`, `[5, 7]`, `[9, 9]`, `[2, 33]`, `[4, 6, 3]`, `[9, 9, 9]` and `[16, 5, 2]`, both
+   conversions, `f64`, `f32`, `c64` and `c32`, seeded data: on macOS (Homebrew FFTW 3.3.11,
+   no SIMD), and on the Linux runner (Ubuntu 24.04, FFTW `fftw-3.3.10-sse2-avx`, AMD EPYC
+   9V74 with AVX2), every result is bit-equal to 0.10.3's. On Linux the table came from a
+   temporary CI step (draft pull request #31, closed), since `cargo test` hides the output
+   of passing tests.
+8. **`Linspace::linspace` rejects arrays of length 2.** It asserts `self.len() - 1 > 1`, so
+   an array of two points panics, with a message that names `1 = self.len() > 1`. Found
+   while writing the examples, which avoid it; it does not concern FFTW, and is recorded for
+   a separate fix into `main`: issue #28.

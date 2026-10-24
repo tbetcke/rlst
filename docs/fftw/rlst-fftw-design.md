@@ -1,6 +1,6 @@
 # FFTW interfaces for RLST: design proposal
 
-Draft 0.17, 2026-10-24. A proposal for the RLST maintainers, not a plan until it is signed
+Draft 0.18, 2026-10-24. A proposal for the RLST maintainers, not a plan until it is signed
 off. It records the decisions taken from 2026-10-21 to 2026-10-24. It replaces RLST's FFTW interface
 completely: every transform family of FFTW 3.3's serial interface, plans that are
 independent of the arrays they run on, checked and sound execution, wisdom, threads,
@@ -981,8 +981,9 @@ GitHub Actions, in `run-tests.yml`, with `CLAUDE.md`'s validation list updated t
   data and coefficient are equal along that axis;
 - the conversion functions return `Result<DynArray<…>, FftwError>` instead of
   unwrapping;
-- they take any number of dimensions, since the per-axis steps need nothing per dimension
-  (0.10.3 has `unimplemented!()` above three; with none they return a copy), and an extent
+- they take any number of dimensions from 1, the ranks RLST's arrays have, since the
+  per-axis steps need nothing per dimension (0.10.3 has `unimplemented!()` above three),
+  and an extent
   of 0 along any axis gives an empty result of the same shape without planning, where
   0.10.3 panics (DC44);
 - results are compared with 0.10.3's to round-off (Section 7.3) by a test that exists
@@ -1083,7 +1084,7 @@ waits for is the complete one. When that release comes is Helmholtz decision D14
 | DC41 | `Planner::threads(n: NonZeroUsize)` exists only with `fftw_threads`; `Plan::threads() -> usize` on every plan, 1 without the feature; `InvalidThreadCount` above FFTW's `int`, `ThreadsUnavailable` when n > 1 and thread initialisation failed; `make_planner_thread_safe()` returns `()` (Sections 4.14 and 4.15) | accepted (F6 brief) |
 | DC42 | With `fftw_threads`, the determinism tests assert that threaded `Estimate` plans agree across fresh processes and that threaded planning leaves no trace on single-threaded plans; failures are design questions (Section 7.6) | accepted (F6 brief) |
 | DC43 | F6 adds Clippy and tests with `fftw_threads` to both CI jobs, beside those without it; F8a reviews the matrix (Sections 7.7 and 9) | accepted (F6 brief) |
-| DC44 | The Chebyshev conversions take any number of dimensions (none: a copy), and an extent 0 along any axis gives an empty result without planning (Section 8) | accepted (F7 brief) |
+| DC44 | The Chebyshev conversions take any number of dimensions from 1 (RLST has no arrays of rank 0; draft 0.18), and an extent 0 along any axis gives an empty result without planning (Section 8) | accepted (F7 brief) |
 | DC45 | The comparison of the Chebyshev port with 0.10.3 is a test of F7a, run while the 0.10 module exists and removed with it; the analytic and extent-1 tests are the lasting regressions (Sections 7.3 and 8) | accepted (F7 brief) |
 | DC46 | docs.rs builds with `features = ["fftw", "fftw_system", "fftw_threads"]` (Section 6) | accepted (F7 brief) |
 | DC47 | F7 removes the build dependencies `bindgen`, `cc`, `cmake` and `git2`, which no build script of `rlst` uses (Sections 4.10 and 9) | accepted (F7 brief) |
@@ -1365,6 +1366,12 @@ review.
   4.10 no longer says that docs.rs must provide `libclang` for them (Sections 4.10 and 9,
   DC47). The first three take the proposed options; the last takes the brief's option (b)
   instead of the proposed separate pull request into `main`.
+
+- **Draft 0.18** (2026-10-24), from the open questions raised during F7a
+  (`docs/fftw/tasks/F7-removal-docs.md`, note 5), settled by the maintainer: the Chebyshev
+  conversions take any number of dimensions from 1, and the clause that they return a copy
+  for none is dropped, since RLST's arrays have no rank 0 (`BaseArray` and
+  `StridedBaseArray` reject it, and `ZeroDimArray` has no array access) (Section 8, DC44).
 
 ## Appendix B. Migration from 0.10
 
