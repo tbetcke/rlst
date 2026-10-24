@@ -5,42 +5,166 @@
 //! - Convert between data at Chebychev points and series coefficients
 //! - Take the derivative of Chebychev expansions
 //!
-//! All routines are available for 1, 2, or 3-dimensional Chebychev expansions.
-//! In 2 and 3 dimensions the Chebychev expansions are assumed to be defined as tensors
-//! of direct products of 1-dimensional expansions.
-
-use std::ops::{DivAssign, MulAssign};
+//! Evaluation and derivatives are available for 1, 2, or 3-dimensional Chebychev expansions,
+//! the conversions of [`ChebychevCoefficientsToData`] for any number of dimensions. In more
+//! than one dimension the Chebychev expansions are assumed to be defined as tensors of direct
+//! products of 1-dimensional expansions.
+//!
+//! The conversions use FFTW's DCT-I through [`rlst::fftw`](crate::fftw), which is why this
+//! module needs the feature `fftw`.
+//!
+//! ```
+//! use rlst::chebychev::{
+//!     ChebychevCoefficientsToData, DerivativeOfChebychevSeries1d, EvaluateChebychevCoefficients1d,
+//! };
+//! use rlst::interpolation::{Kind, chebychev_points};
+//! use rlst::rlst_dynamic_array;
+//!
+//! // Sample p(x) = x^3 at 4 Chebychev points of the second kind.
+//! let points = chebychev_points::<f64>(Kind::Second, 4);
+//! let mut data = rlst_dynamic_array!(f64, [4]);
+//! for (value, x) in data.iter_mut().zip(points.iter_value()) {
+//!     *value = x * x * x;
+//! }
+//!
+//! // The coefficients of p' = 3 x^2, evaluated at x = 0.5.
+//! let mut coeffs = data.chebychev_coeffs_from_data_second_kind()?;
+//! coeffs.chebychev_derivative_second_kind(1);
+//! let mut x = rlst_dynamic_array!(f64, [1]);
+//! x[[0]] = 0.5;
+//! let mut value = rlst_dynamic_array!(f64, [1]);
+//! coeffs.evaluate_chebychev_series_second_kind(&x, &mut value);
+//! assert!((value[[0]] - 0.75).abs() < 1e-12);
+//! # Ok::<(), rlst::fftw::FftwError>(())
+//! ```
 
 use itertools::izip;
-use num::PrimInt;
 
 use crate::dense::base_array::BaseArray;
 use crate::dense::data_container::ArrayContainer;
-use crate::fftw::{FftPlanInplace, R2RPlanKind};
-use crate::{Array, fftw::R2RPlan};
-use crate::{DynArray, MutableArrayImpl, RlstScalar, ValueArrayImpl};
+use crate::fftw::{FftwError, FftwReal, Layout, Planner, R2rKind};
+use crate::{Array, DynArray, MutableArrayImpl, RlstScalar, ValueArrayImpl};
 use crate::{c32, c64};
 
 /// Convert between tensor-grid data and Chebychev coefficients.
 ///
-/// Implemented for one-, two-, and three-dimensional arrays. Every axis uses
-/// second-kind points and its array extent determines the number of points.
+/// Implemented for arrays of `f32`, `f64`, `c32` and `c64` of any number of dimensions. Every
+/// axis uses second-kind points and its array extent determines the number of points.
+///
+/// Along each axis of extent `n > 1` the conversion is one DCT-I, FFTW's
+/// [`R2rKind::Redft00`], along that axis and batched over the others, applied axis by axis,
+/// and scaled. Along an axis of extent 1, one Chebychev point gives a constant interpolant, so
+/// data and coefficients are equal along that axis. An array with an axis of extent 0 gives an
+/// empty array of the same shape without calling FFTW. Complex arrays are converted as their
+/// real and imaginary parts.
+///
+/// Each call plans its transforms with [`Rigor::Estimate`](crate::fftw::Rigor::Estimate), on
+/// the array it returns, which FFTW then leaves untouched. The results agree with those of
+/// RLST 0.10 to round-off; one-dimensional plans in turn are not the same plans as one
+/// multidimensional plan, so the last bits can differ.
+///
+/// # Errors
+///
+/// Both methods return the [`FftwError`] of a plan that FFTW refuses or of its execution
+/// instead of panicking. None is expected: the one that a working installation can return is
+/// [`FftwError::VersionTooOld`], when the FFTW linked at run time is older than 3.3.4 (3.3.6
+/// with the feature `fftw_threads`).
+///
+/// ```
+/// use rlst::chebychev::ChebychevCoefficientsToData;
+/// use rlst::rlst_dynamic_array;
+///
+/// // The constant 1 on a 3 x 4 grid has the single coefficient 1.
+/// let mut data = rlst_dynamic_array!(f64, [3, 4]);
+/// data.fill_with_value(1.0);
+/// let coeffs = data.chebychev_coeffs_from_data_second_kind()?;
+/// assert!((coeffs[[0, 0]] - 1.0).abs() < 1e-14);
+/// assert!(coeffs.iter_value().skip(1).all(|c| c.abs() < 1e-14));
+///
+/// // And back to the data.
+/// let back = coeffs.chebychev_data_from_coeffs_second_kind()?;
+/// assert!(back.iter_value().all(|v| (v - 1.0).abs() < 1e-14));
+/// # Ok::<(), rlst::fftw::FftwError>(())
+/// ```
 pub trait ChebychevCoefficientsToData<Item, const NDIM: usize> {
     /// Compute Chebychev coefficients from values at Chebychev points
     ///
-    /// Given a 1, 2, or 3-dimensional array `arr`. This function interprets
-    /// the contents of the array as data at Chebychev points of the second kind
-    /// and computes the associated series expansion coefficients.
-    fn chebychev_coeffs_from_data_second_kind(&self) -> DynArray<Item, NDIM>;
+    /// This function interprets the contents of the array as data at Chebychev points of the
+    /// second kind, `cos(π j / (n - 1))` for `j = 0, …, n - 1` along an axis of extent `n`, as
+    /// [`chebychev_points`](crate::interpolation::chebychev_points) returns them, and computes
+    /// the associated series expansion coefficients. See the
+    /// [trait](ChebychevCoefficientsToData) for the extents 1 and 0 and for the errors.
+    ///
+    /// ```
+    /// use rlst::chebychev::ChebychevCoefficientsToData;
+    /// use rlst::interpolation::{Kind, chebychev_points};
+    /// use rlst::rlst_dynamic_array;
+    ///
+    /// // p(x) = 2 x^2 + x = T_0(x) + T_1(x) + T_2(x).
+    /// let points = chebychev_points::<f64>(Kind::Second, 3);
+    /// let mut data = rlst_dynamic_array!(f64, [3]);
+    /// for (value, x) in data.iter_mut().zip(points.iter_value()) {
+    ///     *value = 2.0 * x * x + x;
+    /// }
+    /// let coeffs = data.chebychev_coeffs_from_data_second_kind()?;
+    /// assert!(coeffs.iter_value().all(|c| (c - 1.0).abs() < 1e-14));
+    ///
+    /// // One point along the first axis: the data are constant along it.
+    /// let mut row = rlst_dynamic_array!(f64, [1, 3]);
+    /// row.fill_from_iter(data.iter_value());
+    /// let coeffs = row.chebychev_coeffs_from_data_second_kind()?;
+    /// assert!(coeffs.iter_value().all(|c| (c - 1.0).abs() < 1e-14));
+    /// # Ok::<(), rlst::fftw::FftwError>(())
+    /// ```
+    fn chebychev_coeffs_from_data_second_kind(&self) -> Result<DynArray<Item, NDIM>, FftwError>;
     /// Compute data at Chebychev points from series coefficients
     ///
-    /// Given a 1, 2, or 3-dimensional array `arr`. This function interprets
-    /// the contents of the array as Chebychev expansion coefficients and
-    /// computes the associated values at Chebychev points of the second kind.
-    fn chebychev_data_from_coeffs_second_kind(&self) -> DynArray<Item, NDIM>;
+    /// This function interprets the contents of the array as Chebychev expansion coefficients
+    /// and computes the associated values at Chebychev points of the second kind, in the
+    /// order of [`chebychev_coeffs_from_data_second_kind`](Self::chebychev_coeffs_from_data_second_kind),
+    /// whose inverse it is. See the [trait](ChebychevCoefficientsToData) for the extents 1
+    /// and 0 and for the errors.
+    ///
+    /// ```
+    /// use rlst::chebychev::ChebychevCoefficientsToData;
+    /// use rlst::interpolation::{Kind, chebychev_points};
+    /// use rlst::{c64, rlst_dynamic_array};
+    ///
+    /// // p(x) = T_0(x) + i T_2(x) = 1 + i (2 x^2 - 1).
+    /// let mut coeffs = rlst_dynamic_array!(c64, [3]);
+    /// coeffs[[0]] = c64::new(1.0, 0.0);
+    /// coeffs[[2]] = c64::new(0.0, 1.0);
+    /// let data = coeffs.chebychev_data_from_coeffs_second_kind()?;
+    ///
+    /// let points = chebychev_points::<f64>(Kind::Second, 3);
+    /// for (value, x) in data.iter_value().zip(points.iter_value()) {
+    ///     assert!((value - c64::new(1.0, 2.0 * x * x - 1.0)).norm() < 1e-14);
+    /// }
+    /// # Ok::<(), rlst::fftw::FftwError>(())
+    /// ```
+    fn chebychev_data_from_coeffs_second_kind(&self) -> Result<DynArray<Item, NDIM>, FftwError>;
 }
 
 /// Evaluation of Chebychev Coefficients in one dimension
+///
+/// ```
+/// use rlst::chebychev::EvaluateChebychevCoefficients1d;
+/// use rlst::{Linspace, rlst_dynamic_array};
+///
+/// // p(x) = T_0(x) + 2 T_1(x) + 2.5 T_2(x) = 5 x^2 + 2 x - 1.5.
+/// let mut coeffs = rlst_dynamic_array!(f64, [3]);
+/// coeffs[[0]] = 1.0;
+/// coeffs[[1]] = 2.0;
+/// coeffs[[2]] = 2.5;
+///
+/// let mut points = rlst_dynamic_array!(f64, [5]);
+/// points.linspace(-1.0, 1.0);
+/// let mut values = rlst_dynamic_array!(f64, [5]);
+/// coeffs.evaluate_chebychev_series_second_kind(&points, &mut values);
+/// for (value, x) in values.iter_value().zip(points.iter_value()) {
+///     assert!((value - (5.0 * x * x + 2.0 * x - 1.5)).abs() < 1e-13);
+/// }
+/// ```
 pub trait EvaluateChebychevCoefficients1d<Item>
 where
     Item: RlstScalar,
@@ -48,6 +172,23 @@ where
     /// Evaluate a 1d array assuming that its entries are Chebychev coefficients
     ///
     /// The implementation uses the [Clenshaw algorithm](https://en.wikipedia.org/wiki/Clenshaw_algorithm).
+    ///
+    /// ```
+    /// use rlst::chebychev::EvaluateChebychevCoefficients1d;
+    /// use rlst::{c64, rlst_dynamic_array};
+    ///
+    /// // p(x) = i T_1(x) = i x, with complex coefficients and real points.
+    /// let mut coeffs = rlst_dynamic_array!(c64, [2]);
+    /// coeffs[[1]] = c64::new(0.0, 1.0);
+    ///
+    /// let mut points = rlst_dynamic_array!(f64, [2]);
+    /// points[[0]] = 0.25;
+    /// points[[1]] = -0.5;
+    /// let mut values = rlst_dynamic_array!(c64, [2]);
+    /// coeffs.evaluate_chebychev_series_second_kind(&points, &mut values);
+    /// assert!((values[[0]] - c64::new(0.0, 0.25)).norm() < 1e-15);
+    /// assert!((values[[1]] - c64::new(0.0, -0.5)).norm() < 1e-15);
+    /// ```
     fn evaluate_chebychev_series_second_kind<ArrayImplPoints, ArrayImplResult>(
         &self,
         eval_points: &Array<ArrayImplPoints, 1>,
@@ -58,6 +199,23 @@ where
 }
 
 /// Evaluation of Chebychev Coefficients in two dimensions
+///
+/// ```
+/// use rlst::chebychev::EvaluateChebychevCoefficients2d;
+/// use rlst::rlst_dynamic_array;
+///
+/// // p(x, y) = T_1(x) T_1(y) = x y.
+/// let mut coeffs = rlst_dynamic_array!(f64, [2, 2]);
+/// coeffs[[1, 1]] = 1.0;
+///
+/// // The points (0.5, 0.5) and (-0.25, 1.0), as columns.
+/// let mut points = rlst_dynamic_array!(f64, [2, 2]);
+/// points.fill_from_iter([0.5, 0.5, -0.25, 1.0].into_iter());
+/// let mut values = rlst_dynamic_array!(f64, [2]);
+/// coeffs.evaluate_chebychev_series_second_kind(&points, &mut values);
+/// assert!((values[[0]] - 0.25).abs() < 1e-15);
+/// assert!((values[[1]] + 0.25).abs() < 1e-15);
+/// ```
 pub trait EvaluateChebychevCoefficients2d<Item>
 where
     Item: RlstScalar,
@@ -66,6 +224,23 @@ where
     ///
     /// The points are stored as columns of the `(2, npts)` array `eval_points`.
     /// The output array is a one-dimensional array of length `npts`.
+    ///
+    /// ```
+    /// use rlst::chebychev::EvaluateChebychevCoefficients2d;
+    /// use rlst::rlst_dynamic_array;
+    ///
+    /// // p(x, y) = T_0(x) T_0(y) + T_2(x) T_0(y) = 2 x^2.
+    /// let mut coeffs = rlst_dynamic_array!(f64, [3, 1]);
+    /// coeffs[[0, 0]] = 1.0;
+    /// coeffs[[2, 0]] = 1.0;
+    ///
+    /// // The point (0.5, -0.75).
+    /// let mut points = rlst_dynamic_array!(f64, [2, 1]);
+    /// points.fill_from_iter([0.5, -0.75].into_iter());
+    /// let mut values = rlst_dynamic_array!(f64, [1]);
+    /// coeffs.evaluate_chebychev_series_second_kind(&points, &mut values);
+    /// assert!((values[[0]] - 0.5).abs() < 1e-15);
+    /// ```
     fn evaluate_chebychev_series_second_kind<ArrayImplPoints, ArrayImplResult>(
         &self,
         eval_points: &Array<ArrayImplPoints, 2>,
@@ -78,6 +253,27 @@ where
     /// The evaluation points are assumed to be direct products of the points `eval_points_x` and
     /// `eval_points_y` in the x and y directions.
     /// The implementation uses the [Clenshaw algorithm](https://en.wikipedia.org/wiki/Clenshaw_algorithm).
+    ///
+    /// ```
+    /// use rlst::chebychev::EvaluateChebychevCoefficients2d;
+    /// use rlst::{Linspace, rlst_dynamic_array};
+    ///
+    /// // p(x, y) = T_1(x) T_1(y) = x y.
+    /// let mut coeffs = rlst_dynamic_array!(f64, [2, 2]);
+    /// coeffs[[1, 1]] = 1.0;
+    ///
+    /// let mut x = rlst_dynamic_array!(f64, [3]);
+    /// let mut y = rlst_dynamic_array!(f64, [4]);
+    /// x.linspace(-1.0, 1.0);
+    /// y.linspace(0.0, 1.0);
+    /// let mut values = rlst_dynamic_array!(f64, [3, 4]);
+    /// coeffs.tensor_evaluate_chebychev_series_second_kind(&x, &y, &mut values);
+    /// for (i, xi) in x.iter_value().enumerate() {
+    ///     for (j, yj) in y.iter_value().enumerate() {
+    ///         assert!((values[[i, j]] - xi * yj).abs() < 1e-15);
+    ///     }
+    /// }
+    /// ```
     fn tensor_evaluate_chebychev_series_second_kind<
         ArrayImplPointsX,
         ArrayImplPointsY,
@@ -94,6 +290,22 @@ where
 }
 
 /// Evaluation of Chebychev coefficients in three dimensions
+///
+/// ```
+/// use rlst::chebychev::EvaluateChebychevCoefficients3d;
+/// use rlst::rlst_dynamic_array;
+///
+/// // p(x, y, z) = T_1(x) T_0(y) T_1(z) = x z.
+/// let mut coeffs = rlst_dynamic_array!(f64, [2, 1, 2]);
+/// coeffs[[1, 0, 1]] = 1.0;
+///
+/// // The point (0.5, 0.1, -0.5), as a column.
+/// let mut points = rlst_dynamic_array!(f64, [3, 1]);
+/// points.fill_from_iter([0.5, 0.1, -0.5].into_iter());
+/// let mut values = rlst_dynamic_array!(f64, [1]);
+/// coeffs.evaluate_chebychev_series_second_kind(&points, &mut values);
+/// assert!((values[[0]] + 0.25).abs() < 1e-15);
+/// ```
 pub trait EvaluateChebychevCoefficients3d<Item>
 where
     Item: RlstScalar,
@@ -102,6 +314,23 @@ where
     ///
     /// The points are stored as columns of the `(3, npts)` array `eval_points`.
     /// The output array is a one-dimensional array of length `npts`.
+    ///
+    /// ```
+    /// use rlst::chebychev::EvaluateChebychevCoefficients3d;
+    /// use rlst::rlst_dynamic_array;
+    ///
+    /// // p(x, y, z) = T_1(x) T_1(y) T_1(z) = x y z.
+    /// let mut coeffs = rlst_dynamic_array!(f64, [2, 2, 2]);
+    /// coeffs[[1, 1, 1]] = 1.0;
+    ///
+    /// // The points (0.5, 0.5, 0.5) and (1, -1, 0.25), as columns.
+    /// let mut points = rlst_dynamic_array!(f64, [3, 2]);
+    /// points.fill_from_iter([0.5, 0.5, 0.5, 1.0, -1.0, 0.25].into_iter());
+    /// let mut values = rlst_dynamic_array!(f64, [2]);
+    /// coeffs.evaluate_chebychev_series_second_kind(&points, &mut values);
+    /// assert!((values[[0]] - 0.125).abs() < 1e-15);
+    /// assert!((values[[1]] + 0.25).abs() < 1e-15);
+    /// ```
     fn evaluate_chebychev_series_second_kind<ArrayImplPoints, ArrayImplResult>(
         &self,
         eval_points: &Array<ArrayImplPoints, 2>,
@@ -113,6 +342,26 @@ where
     /// Evaluate a 3d Chebychev expansion at the three-dimensional tensor product of 1d coordinates
     ///
     /// The implementation uses the [Clenshaw algorithm](https://en.wikipedia.org/wiki/Clenshaw_algorithm).
+    ///
+    /// ```
+    /// use rlst::chebychev::EvaluateChebychevCoefficients3d;
+    /// use rlst::{Linspace, rlst_dynamic_array};
+    ///
+    /// // p(x, y, z) = T_1(x) T_1(y) T_1(z) = x y z.
+    /// let mut coeffs = rlst_dynamic_array!(f64, [2, 2, 2]);
+    /// coeffs[[1, 1, 1]] = 1.0;
+    ///
+    /// let mut x = rlst_dynamic_array!(f64, [3]);
+    /// let mut y = rlst_dynamic_array!(f64, [3]);
+    /// let mut z = rlst_dynamic_array!(f64, [4]);
+    /// x.linspace(-1.0, 1.0);
+    /// y.linspace(-0.5, 0.5);
+    /// z.linspace(0.0, 1.0);
+    /// let mut values = rlst_dynamic_array!(f64, [3, 3, 4]);
+    /// coeffs.tensor_evaluate_chebychev_series_second_kind(&x, &y, &z, &mut values);
+    /// assert!((values[[2, 2, 3]] - 0.5).abs() < 1e-15);
+    /// assert!((values[[0, 0, 2]] - 1.0 / 3.0).abs() < 1e-15);
+    /// ```
     fn tensor_evaluate_chebychev_series_second_kind<
         ArrayImplPointsX,
         ArrayImplPointsY,
@@ -132,6 +381,19 @@ where
 }
 
 /// Compute the series coefficients of the derivative of a Chebychev series
+///
+/// ```
+/// use rlst::chebychev::DerivativeOfChebychevSeries1d;
+/// use rlst::rlst_dynamic_array;
+///
+/// // x^2 = (T_0(x) + T_2(x)) / 2, whose derivative is 2 x = 2 T_1(x).
+/// let mut coeffs = rlst_dynamic_array!(f64, [3]);
+/// coeffs.fill_from_iter([0.5, 0.0, 0.5].into_iter());
+/// coeffs.chebychev_derivative_second_kind(1);
+/// for (c, expected) in coeffs.iter_value().zip([0.0, 2.0, 0.0]) {
+///     assert!((c - expected).abs() < 1e-15);
+/// }
+/// ```
 pub trait DerivativeOfChebychevSeries1d<Item> {
     /// Compute the series coefficients of the derivative of a chebychev series of the second kind.
     ///
@@ -139,10 +401,37 @@ pub trait DerivativeOfChebychevSeries1d<Item> {
     /// Coefficients above the differentiated polynomial's degree become zero.
     /// The parameter `order` determines how many derivatives are taken. `order=1` computes
     /// the first derivative and `order=0` leaves the coefficients unchanged.
+    ///
+    /// ```
+    /// use rlst::chebychev::DerivativeOfChebychevSeries1d;
+    /// use rlst::rlst_dynamic_array;
+    ///
+    /// // The second derivative of x^2 = (T_0(x) + T_2(x)) / 2 is 2 = 2 T_0(x).
+    /// let mut coeffs = rlst_dynamic_array!(f64, [3]);
+    /// coeffs.fill_from_iter([0.5, 0.0, 0.5].into_iter());
+    /// coeffs.chebychev_derivative_second_kind(2);
+    /// for (c, expected) in coeffs.iter_value().zip([2.0, 0.0, 0.0]) {
+    ///     assert!((c - expected).abs() < 1e-15);
+    /// }
+    /// ```
     fn chebychev_derivative_second_kind(&mut self, order: usize);
 }
 
 /// Compute the series coefficients of the derivative of a two-dimensional Chebychev series
+///
+/// ```
+/// use rlst::chebychev::DerivativeOfChebychevSeries2d;
+/// use rlst::rlst_dynamic_array;
+///
+/// // x y^2 = T_1(x) (T_0(y) + T_2(y)) / 2; its derivative in x is y^2.
+/// let mut coeffs = rlst_dynamic_array!(f64, [2, 3]);
+/// coeffs[[1, 0]] = 0.5;
+/// coeffs[[1, 2]] = 0.5;
+/// coeffs.chebychev_derivative_second_kind([1, 0]);
+/// assert!((coeffs[[0, 0]] - 0.5).abs() < 1e-15);
+/// assert!((coeffs[[0, 2]] - 0.5).abs() < 1e-15);
+/// assert!((coeffs.iter_value().map(f64::abs).sum::<f64>() - 1.0).abs() < 1e-15);
+/// ```
 pub trait DerivativeOfChebychevSeries2d<Item> {
     /// Compute the series coefficients of the derivative of a two dimensional Chebychev series of the second kind.
     ///
@@ -150,10 +439,35 @@ pub trait DerivativeOfChebychevSeries2d<Item> {
     /// The parameter `order` determines how many derivatives are taken. `order=[0, 2]` means
     /// that the output has no derivative along the x-axis and two derivatives
     /// along the y-axis.
+    ///
+    /// ```
+    /// use rlst::chebychev::DerivativeOfChebychevSeries2d;
+    /// use rlst::rlst_dynamic_array;
+    ///
+    /// // The derivative in x and y of x y^2 = T_1(x) (T_0(y) + T_2(y)) / 2 is 2 y = 2 T_1(y).
+    /// let mut coeffs = rlst_dynamic_array!(f64, [2, 3]);
+    /// coeffs[[1, 0]] = 0.5;
+    /// coeffs[[1, 2]] = 0.5;
+    /// coeffs.chebychev_derivative_second_kind([1, 1]);
+    /// assert!((coeffs[[0, 1]] - 2.0).abs() < 1e-15);
+    /// assert!((coeffs.iter_value().map(f64::abs).sum::<f64>() - 2.0).abs() < 1e-15);
+    /// ```
     fn chebychev_derivative_second_kind(&mut self, order: [usize; 2]);
 }
 
 /// Compute the series coefficients of the derivative of a three-dimensional Chebychev series
+///
+/// ```
+/// use rlst::chebychev::DerivativeOfChebychevSeries3d;
+/// use rlst::rlst_dynamic_array;
+///
+/// // The derivative in z of x y z = T_1(x) T_1(y) T_1(z) is x y.
+/// let mut coeffs = rlst_dynamic_array!(f64, [2, 2, 2]);
+/// coeffs[[1, 1, 1]] = 1.0;
+/// coeffs.chebychev_derivative_second_kind([0, 0, 1]);
+/// assert!((coeffs[[1, 1, 0]] - 1.0).abs() < 1e-15);
+/// assert!((coeffs.iter_value().map(f64::abs).sum::<f64>() - 1.0).abs() < 1e-15);
+/// ```
 pub trait DerivativeOfChebychevSeries3d<Item> {
     /// Compute the series coefficients of the derivative of a three-dimensional Chebychev series of the second kind.
     ///
@@ -161,6 +475,18 @@ pub trait DerivativeOfChebychevSeries3d<Item> {
     /// The parameter `order` determines how many derivatives are taken. `order=[0, 2, 1]` means
     /// that the output has no derivative along the x-axis, two derivatives
     /// along the y-axis and one derivative along the z axis.
+    ///
+    /// ```
+    /// use rlst::chebychev::DerivativeOfChebychevSeries3d;
+    /// use rlst::rlst_dynamic_array;
+    ///
+    /// // The derivative in x, y and z of x y z = T_1(x) T_1(y) T_1(z) is 1.
+    /// let mut coeffs = rlst_dynamic_array!(f64, [2, 2, 2]);
+    /// coeffs[[1, 1, 1]] = 1.0;
+    /// coeffs.chebychev_derivative_second_kind([1, 1, 1]);
+    /// assert!((coeffs[[0, 0, 0]] - 1.0).abs() < 1e-15);
+    /// assert!((coeffs.iter_value().map(f64::abs).sum::<f64>() - 1.0).abs() < 1e-15);
+    /// ```
     fn chebychev_derivative_second_kind(&mut self, order: [usize; 3]);
 }
 
@@ -489,7 +815,9 @@ macro_rules! impl_cheb_coeffs_complex {
         where
             ArrayImpl: ValueArrayImpl<$dtype, NDIM>,
         {
-            fn chebychev_coeffs_from_data_second_kind(&self) -> DynArray<$dtype, NDIM> {
+            fn chebychev_coeffs_from_data_second_kind(
+                &self,
+            ) -> Result<DynArray<$dtype, NDIM>, FftwError> {
                 let shape = self.shape();
                 let mut re = DynArray::<<$dtype as RlstScalar>::Real, NDIM>::from_shape(shape);
                 let mut im = DynArray::<<$dtype as RlstScalar>::Real, NDIM>::from_shape(shape);
@@ -497,8 +825,8 @@ macro_rules! impl_cheb_coeffs_complex {
                 re.fill_from(&self.r().unary_op(|elem: $dtype| elem.re()));
                 im.fill_from(&self.r().unary_op(|elem: $dtype| elem.im()));
 
-                let re_coeffs = re.chebychev_coeffs_from_data_second_kind();
-                let im_coeffs = im.chebychev_coeffs_from_data_second_kind();
+                let re_coeffs = re.chebychev_coeffs_from_data_second_kind()?;
+                let im_coeffs = im.chebychev_coeffs_from_data_second_kind()?;
 
                 let mut out = DynArray::<$dtype, NDIM>::from_shape(shape);
                 for (o, r, i) in izip!(
@@ -508,10 +836,12 @@ macro_rules! impl_cheb_coeffs_complex {
                 ) {
                     *o = <$dtype>::new(r, i);
                 }
-                out
+                Ok(out)
             }
 
-            fn chebychev_data_from_coeffs_second_kind(&self) -> DynArray<$dtype, NDIM> {
+            fn chebychev_data_from_coeffs_second_kind(
+                &self,
+            ) -> Result<DynArray<$dtype, NDIM>, FftwError> {
                 let shape = self.shape();
                 let mut re = DynArray::<<$dtype as RlstScalar>::Real, NDIM>::from_shape(shape);
                 let mut im = DynArray::<<$dtype as RlstScalar>::Real, NDIM>::from_shape(shape);
@@ -519,14 +849,14 @@ macro_rules! impl_cheb_coeffs_complex {
                 re.fill_from(&self.r().unary_op(|elem: $dtype| elem.re()));
                 im.fill_from(&self.r().unary_op(|elem: $dtype| elem.im()));
 
-                let re_data = re.chebychev_data_from_coeffs_second_kind();
-                let im_data = im.chebychev_data_from_coeffs_second_kind();
+                let re_data = re.chebychev_data_from_coeffs_second_kind()?;
+                let im_data = im.chebychev_data_from_coeffs_second_kind()?;
 
                 let mut out = DynArray::<$dtype, NDIM>::from_shape(shape);
                 for (o, r, i) in izip!(out.iter_mut(), re_data.iter_value(), im_data.iter_value()) {
                     *o = <$dtype>::new(r, i);
                 }
-                out
+                Ok(out)
             }
         }
     };
@@ -535,6 +865,40 @@ macro_rules! impl_cheb_coeffs_complex {
 impl_cheb_coeffs_complex!(c64);
 impl_cheb_coeffs_complex!(c32);
 
+/// A DCT-I (`REDFT00`) along `axis` of `data`, in place, batched over the other axes.
+///
+/// The plan is made on `data` with `Rigor::Estimate`, the planner's default, so FFTW does not
+/// write `data` while planning, and the plan is made for the alignment class of its buffer,
+/// which a `DynArray` does not fix. `axis` has an extent above 1: REDFT00 is not defined for
+/// one point.
+fn redft00_along_axis<T: FftwReal, const NDIM: usize>(
+    data: &mut DynArray<T, NDIM>,
+    axis: usize,
+) -> Result<(), FftwError> {
+    let layout = Layout::along_axis_inplace(data, axis)?;
+    let plan = Planner::<T>::new().r2r_inplace_on(data, &layout, &[R2rKind::Redft00])?;
+    plan.execute(data)
+}
+
+/// For each element of a column-major array of `shape`, in memory order, the number of axes of
+/// extent above 1 along which it is at the first or the last index.
+///
+/// `shape` has no extent 0.
+fn boundary_counts<const NDIM: usize>(shape: [usize; NDIM]) -> impl Iterator<Item = usize> {
+    (0..shape.iter().product()).map(move |linear| {
+        let mut rest = linear;
+        let mut count = 0;
+        for n in shape {
+            let index = rest % n;
+            rest /= n;
+            if n > 1 && (index == 0 || index == n - 1) {
+                count += 1;
+            }
+        }
+        count
+    })
+}
+
 macro_rules! impl_cheb_coeffs {
     ($dtype:ty) => {
         impl<ArrayImpl, const NDIM: usize> ChebychevCoefficientsToData<$dtype, NDIM>
@@ -542,124 +906,75 @@ macro_rules! impl_cheb_coeffs {
         where
             ArrayImpl: ValueArrayImpl<$dtype, NDIM>,
         {
-            fn chebychev_coeffs_from_data_second_kind(&self) -> DynArray<$dtype, NDIM> {
-                if NDIM > 3 {
-                    unimplemented!();
-                }
-
+            fn chebychev_coeffs_from_data_second_kind(
+                &self,
+            ) -> Result<DynArray<$dtype, NDIM>, FftwError> {
                 let mut result = DynArray::<$dtype, NDIM>::from_shape(self.shape());
                 result.fill_from(self);
 
                 let shape = result.shape();
 
-                // Compute the discrete cosine transform of the data
+                // An empty array has nothing to transform.
+                if shape.contains(&0) {
+                    return Ok(result);
+                }
 
-                let kind = vec![R2RPlanKind::FFTW_REDFT00; NDIM];
-
-                result
-                    .r_mut()
-                    .into_fft()
-                    .r2r_fft(crate::fftw::FftwPlanFlags::Estimate, &kind)
-                    .unwrap()
-                    .execute();
-
-                // We scale all values.
-                let n_recip =
-                    (shape.iter().map(|elem| elem - 1).product::<usize>() as $dtype).recip();
-                result *= n_recip;
-
-                // We now have to deal with the boundary data
-
-                // For NDIM = 1 we just need to adjust the single boundary points
-                // For NDIM = 2 and NDIM = 3 we need to adjust the boundary values of the hypercube
-                // formed by the values.
-
-                if NDIM == 1 {
-                    *result.data_mut().unwrap().first_mut().unwrap() /= 2.0;
-                    *result.data_mut().unwrap().last_mut().unwrap() /= 2.0;
-                } else if NDIM == 2 {
-                    for (axis, dim) in shape.iter().enumerate() {
-                        for index in [0, dim - 1] {
-                            result
-                                .r_mut()
-                                .coerce_dim::<2>()
-                                .unwrap()
-                                .slice::<1>(axis, index)
-                                .div_assign(2.0);
-                        }
-                    }
-                } else if NDIM == 3 {
-                    for (axis, dim) in shape.iter().enumerate() {
-                        for index in [0, dim - 1] {
-                            result
-                                .r_mut()
-                                .coerce_dim::<3>()
-                                .unwrap()
-                                .slice::<2>(axis, index)
-                                .div_assign(2.0);
-                        }
+                // Compute the discrete cosine transform of the data along each axis. An axis of
+                // extent 1 is left as it is: one Chebychev point gives a constant interpolant.
+                let mut denominator = 1;
+                for (axis, &n) in shape.iter().enumerate() {
+                    if n > 1 {
+                        redft00_along_axis(&mut result, axis)?;
+                        denominator *= n - 1;
                     }
                 }
 
-                result
+                // We scale all values by 1 / ∏(n - 1) over the axes of extent above 1, and
+                // halve the boundary values of each such axis.
+                let n_recip = (denominator as $dtype).recip();
+                for (value, count) in izip!(result.data_mut().unwrap(), boundary_counts(shape)) {
+                    *value *= n_recip;
+                    for _ in 0..count {
+                        *value /= 2.0;
+                    }
+                }
+
+                Ok(result)
             }
 
-            fn chebychev_data_from_coeffs_second_kind(&self) -> DynArray<$dtype, NDIM> {
-                if NDIM > 3 {
-                    unimplemented!();
-                }
-
+            fn chebychev_data_from_coeffs_second_kind(
+                &self,
+            ) -> Result<DynArray<$dtype, NDIM>, FftwError> {
                 let mut result = DynArray::<$dtype, NDIM>::from_shape(self.shape());
                 result.fill_from(self);
 
                 let shape = result.shape();
 
-                // Rescale the values.
+                // An empty array has nothing to transform.
+                if shape.contains(&0) {
+                    return Ok(result);
+                }
 
-                result *= (2.pow(NDIM as u32) as $dtype).recip();
-
-                if NDIM == 1 {
-                    *result.data_mut().unwrap().first_mut().unwrap() *= 2.0;
-                    *result.data_mut().unwrap().last_mut().unwrap() *= 2.0;
-                } else if NDIM == 2 {
-                    for (axis, dim) in shape.iter().enumerate() {
-                        for index in [0, dim - 1] {
-                            result
-                                .r_mut()
-                                .coerce_dim::<2>()
-                                .unwrap()
-                                .slice::<1>(axis, index)
-                                .mul_assign(2.0);
-                        }
-                    }
-                } else if NDIM == 3 {
-                    for (axis, dim) in shape.iter().enumerate() {
-                        for index in [0, dim - 1] {
-                            result
-                                .r_mut()
-                                .coerce_dim::<3>()
-                                .unwrap()
-                                .slice::<2>(axis, index)
-                                .mul_assign(2.0);
-                        }
+                // Halve the interior values along each axis of extent above 1. The discrete
+                // cosine transform then gives the boundary values once and the interior ones
+                // twice, which the halving neutralises. This is easier than trying to scale
+                // only the transform's interior terms.
+                let axes = shape.iter().filter(|&&n| n > 1).count();
+                for (value, count) in izip!(result.data_mut().unwrap(), boundary_counts(shape)) {
+                    for _ in count..axes {
+                        *value /= 2.0;
                     }
                 }
 
-                // Compute the discrete cosine transform of the data
+                // Compute the discrete cosine transform of the data along each axis of extent
+                // above 1; along an axis of extent 1, data and coefficient are equal.
+                for (axis, &n) in shape.iter().enumerate() {
+                    if n > 1 {
+                        redft00_along_axis(&mut result, axis)?;
+                    }
+                }
 
-                let kind = vec![R2RPlanKind::FFTW_REDFT00; NDIM];
-
-                result
-                    .r_mut()
-                    .into_fft()
-                    .r2r_fft(crate::fftw::FftwPlanFlags::Estimate, &kind)
-                    .unwrap()
-                    .execute();
-
-                // This neutralises the boundary scaling and leaves only the interior values divided by two.
-                // This is easier than trying to scale only interior values.
-
-                result
+                Ok(result)
             }
         }
     };
@@ -671,9 +986,10 @@ impl_cheb_coeffs!(f32);
 #[cfg(test)]
 mod test {
     use num::Complex;
+    use rand_distr::{Distribution, StandardNormal, StandardUniform};
 
     use crate::{
-        EvaluateArray, Linspace, assert_array_relative_eq,
+        EvaluateArray, Linspace, RandScalar, assert_array_relative_eq,
         dense::tools::PrettyPrint,
         interpolation::{
             Kind, barycentric_chebychev_weights, barycentric_evaluate_2d, barycentric_evaluate_3d,
@@ -693,9 +1009,9 @@ mod test {
 
         let data = 2.0_f64 * points.r() * points.r() + points.r();
 
-        let coeffs = data.chebychev_coeffs_from_data_second_kind();
+        let coeffs = data.chebychev_coeffs_from_data_second_kind().unwrap();
 
-        let data_out = coeffs.chebychev_data_from_coeffs_second_kind();
+        let data_out = coeffs.chebychev_data_from_coeffs_second_kind().unwrap();
 
         crate::assert_array_relative_eq!(coeffs, one, 1E-10);
         crate::assert_array_relative_eq!(data, data_out, 1E-10);
@@ -711,9 +1027,9 @@ mod test {
 
         let data = 2.0_f32 * points.r() * points.r() + points.r();
 
-        let coeffs = data.chebychev_coeffs_from_data_second_kind();
+        let coeffs = data.chebychev_coeffs_from_data_second_kind().unwrap();
 
-        let data_out = coeffs.chebychev_data_from_coeffs_second_kind();
+        let data_out = coeffs.chebychev_data_from_coeffs_second_kind().unwrap();
 
         crate::assert_array_relative_eq!(coeffs, one, 1E-5);
         crate::assert_array_relative_eq!(data, data_out, 1E-5);
@@ -741,13 +1057,13 @@ mod test {
         coeffs_expected[[1, 1]] = 1.0;
         coeffs_expected[[0, 2]] = 1.0;
 
-        let coeffs = data.chebychev_coeffs_from_data_second_kind();
+        let coeffs = data.chebychev_coeffs_from_data_second_kind().unwrap();
 
         coeffs.pretty_print();
 
         crate::assert_array_relative_eq!(coeffs_expected, coeffs, 1E-10);
 
-        let data_out = coeffs.chebychev_data_from_coeffs_second_kind();
+        let data_out = coeffs.chebychev_data_from_coeffs_second_kind().unwrap();
 
         crate::assert_array_abs_diff_eq!(data, data_out, 1E-10);
     }
@@ -778,11 +1094,11 @@ mod test {
         coeffs_expected[[0, 2, 0]] = 1.0;
         coeffs_expected[[0, 0, 1]] = 3.0;
 
-        let coeffs = data.chebychev_coeffs_from_data_second_kind();
+        let coeffs = data.chebychev_coeffs_from_data_second_kind().unwrap();
 
         crate::assert_array_relative_eq!(coeffs_expected, coeffs, 1E-10);
 
-        let data_out = coeffs.chebychev_data_from_coeffs_second_kind();
+        let data_out = coeffs.chebychev_data_from_coeffs_second_kind().unwrap();
 
         crate::assert_array_abs_diff_eq!(data, data_out, 1E-10);
     }
@@ -794,9 +1110,9 @@ mod test {
         let mut expected = DynArray::<f64, _>::from_shape([n]);
         expected.fill_from_seed_normally_distributed(0);
 
-        let coeffs = expected.chebychev_coeffs_from_data_second_kind();
+        let coeffs = expected.chebychev_coeffs_from_data_second_kind().unwrap();
 
-        let actual = coeffs.chebychev_data_from_coeffs_second_kind();
+        let actual = coeffs.chebychev_data_from_coeffs_second_kind().unwrap();
 
         crate::assert_array_relative_eq!(actual, expected, 1E-10);
     }
@@ -808,9 +1124,9 @@ mod test {
         let mut expected = DynArray::<c64, _>::from_shape([n]);
         expected.fill_from_seed_normally_distributed(0);
 
-        let coeffs = expected.chebychev_coeffs_from_data_second_kind();
+        let coeffs = expected.chebychev_coeffs_from_data_second_kind().unwrap();
 
-        let actual = coeffs.chebychev_data_from_coeffs_second_kind();
+        let actual = coeffs.chebychev_data_from_coeffs_second_kind().unwrap();
 
         crate::assert_array_relative_eq!(actual, expected, 1E-10);
     }
@@ -823,9 +1139,9 @@ mod test {
         let mut expected = DynArray::<f64, _>::from_shape([m, n]);
         expected.fill_from_seed_normally_distributed(0);
 
-        let coeffs = expected.chebychev_coeffs_from_data_second_kind();
+        let coeffs = expected.chebychev_coeffs_from_data_second_kind().unwrap();
 
-        let actual = coeffs.chebychev_data_from_coeffs_second_kind();
+        let actual = coeffs.chebychev_data_from_coeffs_second_kind().unwrap();
 
         crate::assert_array_relative_eq!(actual, expected, 1E-10);
     }
@@ -839,9 +1155,9 @@ mod test {
         let mut expected = DynArray::<f64, _>::from_shape([m, n, k]);
         expected.fill_from_seed_normally_distributed(0);
 
-        let coeffs = expected.chebychev_coeffs_from_data_second_kind();
+        let coeffs = expected.chebychev_coeffs_from_data_second_kind().unwrap();
 
-        let actual = coeffs.chebychev_data_from_coeffs_second_kind();
+        let actual = coeffs.chebychev_data_from_coeffs_second_kind().unwrap();
 
         crate::assert_array_relative_eq!(actual, expected, 1E-10);
     }
@@ -899,7 +1215,7 @@ mod test {
 
         // we now compute the same by doing a dft followed by barycentric evaluation.
 
-        let data = coeffs.chebychev_data_from_coeffs_second_kind();
+        let data = coeffs.chebychev_data_from_coeffs_second_kind().unwrap();
 
         let mut expected = DynArray::<f64, 2>::from_shape([mx, my]);
 
@@ -943,7 +1259,7 @@ mod test {
 
         let mut actual = DynArray::<f64, 1>::from_shape([m]);
         coeffs.evaluate_chebychev_series_second_kind(&eval_points, &mut actual);
-        let data = coeffs.chebychev_data_from_coeffs_second_kind();
+        let data = coeffs.chebychev_data_from_coeffs_second_kind().unwrap();
 
         let mut expected = DynArray::<f64, 1>::from_shape([m]);
 
@@ -997,7 +1313,7 @@ mod test {
 
         // We now compute the same by doing a DFT followed by barycentric evaluation.
 
-        let data = coeffs.chebychev_data_from_coeffs_second_kind();
+        let data = coeffs.chebychev_data_from_coeffs_second_kind().unwrap();
 
         let mut expected = DynArray::<f64, 3>::from_shape([mx, my, mz]);
 
@@ -1047,7 +1363,7 @@ mod test {
 
         let mut actual = DynArray::<f64, 1>::from_shape([m]);
         coeffs.evaluate_chebychev_series_second_kind(&eval_points, &mut actual);
-        let data = coeffs.chebychev_data_from_coeffs_second_kind();
+        let data = coeffs.chebychev_data_from_coeffs_second_kind().unwrap();
 
         let mut expected = DynArray::<f64, 1>::from_shape([m]);
 
@@ -1091,14 +1407,14 @@ mod test {
         expected.iter_mut().for_each(|elem| *elem = elem.cos());
 
         // We compute the coefficients of the expansion
-        let coeffs = values.chebychev_coeffs_from_data_second_kind();
+        let coeffs = values.chebychev_coeffs_from_data_second_kind().unwrap();
 
         // Now compute the derivative of the coefficients
         let mut deriv = coeffs.eval();
         deriv.chebychev_derivative_second_kind(1);
 
         // We transform back
-        let values_deriv = deriv.chebychev_data_from_coeffs_second_kind();
+        let values_deriv = deriv.chebychev_data_from_coeffs_second_kind().unwrap();
 
         // We compare with the sine of the original values.
 
@@ -1108,7 +1424,7 @@ mod test {
         let mut deriv_2 = coeffs.eval();
         deriv_2.chebychev_derivative_second_kind(2);
 
-        let values_deriv_2 = deriv_2.chebychev_data_from_coeffs_second_kind();
+        let values_deriv_2 = deriv_2.chebychev_data_from_coeffs_second_kind().unwrap();
 
         // The result should be close to -sin(x)
         let mut expected = points.eval();
@@ -1139,14 +1455,14 @@ mod test {
         });
 
         // We compute the coefficients of the expansion
-        let coeffs = values.chebychev_coeffs_from_data_second_kind();
+        let coeffs = values.chebychev_coeffs_from_data_second_kind().unwrap();
 
         // Now compute the derivative of the coefficients
         let mut deriv = coeffs.eval();
         deriv.chebychev_derivative_second_kind(1);
 
         // We transform back
-        let values_deriv = deriv.chebychev_data_from_coeffs_second_kind();
+        let values_deriv = deriv.chebychev_data_from_coeffs_second_kind().unwrap();
 
         // We compare with the sine of the original values.
 
@@ -1184,14 +1500,14 @@ mod test {
         }
 
         // We compute the coefficients of the expansion
-        let coeffs = values.chebychev_coeffs_from_data_second_kind();
+        let coeffs = values.chebychev_coeffs_from_data_second_kind().unwrap();
 
         // Now compute the derivative of the coefficients
         let mut deriv = coeffs.eval();
         deriv.chebychev_derivative_second_kind([1, 2]);
 
         // We transform back
-        let values_deriv = deriv.chebychev_data_from_coeffs_second_kind();
+        let values_deriv = deriv.chebychev_data_from_coeffs_second_kind().unwrap();
 
         // We compare with the sine of the original values.
 
@@ -1257,17 +1573,201 @@ mod test {
         }
 
         // We compute the coefficients of the expansion
-        let coeffs = values.chebychev_coeffs_from_data_second_kind();
+        let coeffs = values.chebychev_coeffs_from_data_second_kind().unwrap();
 
         // Now compute the derivative of the coefficients
         let mut deriv = coeffs.eval();
         deriv.chebychev_derivative_second_kind([1, 2, 3]);
 
         // We transform back
-        let values_deriv = deriv.chebychev_data_from_coeffs_second_kind();
+        let values_deriv = deriv.chebychev_data_from_coeffs_second_kind().unwrap();
 
         // We compare with the sine of the original values.
 
         crate::assert_array_abs_diff_eq!(values_deriv, expected, 1E-4);
+    }
+
+    /// The largest absolute difference of two arrays, relative to the largest absolute value
+    /// of `expected`.
+    fn relative_difference<T: RlstScalar, const NDIM: usize>(
+        actual: &DynArray<T, NDIM>,
+        expected: &DynArray<T, NDIM>,
+    ) -> T::Real {
+        assert_eq!(actual.shape(), expected.shape());
+        let mut difference = T::Real::default();
+        let mut scale = T::Real::default();
+        for (a, e) in izip!(actual.iter_value(), expected.iter_value()) {
+            if (a - e).abs() > difference {
+                difference = (a - e).abs();
+            }
+            if e.abs() > scale {
+                scale = e.abs();
+            }
+        }
+        difference / scale
+    }
+
+    /// Both conversions of an array with an axis of extent 1 equal those of the array without
+    /// that axis, `squeezed`, which has the same elements in the same order.
+    fn check_extent_one<T, const NDIM: usize, const M: usize>(
+        shape: [usize; NDIM],
+        squeezed: [usize; M],
+        tol: T::Real,
+    ) where
+        T: RlstScalar + RandScalar,
+        StandardNormal: Distribution<T::Real>,
+        StandardUniform: Distribution<T::Real>,
+        DynArray<T, NDIM>: ChebychevCoefficientsToData<T, NDIM>,
+        DynArray<T, M>: ChebychevCoefficientsToData<T, M>,
+    {
+        let mut data = DynArray::<T, NDIM>::from_shape(shape);
+        data.fill_from_seed_normally_distributed(1);
+        let mut data_squeezed = DynArray::<T, M>::from_shape(squeezed);
+        data_squeezed.fill_from_iter(data.iter_value());
+
+        let coeffs = data.chebychev_coeffs_from_data_second_kind().unwrap();
+        let coeffs_squeezed = data_squeezed
+            .chebychev_coeffs_from_data_second_kind()
+            .unwrap();
+        let mut expected = DynArray::<T, NDIM>::from_shape(shape);
+        expected.fill_from_iter(coeffs_squeezed.iter_value());
+        assert!(
+            relative_difference(&coeffs, &expected) <= tol,
+            "coefficients for shape {shape:?}"
+        );
+
+        let back = coeffs.chebychev_data_from_coeffs_second_kind().unwrap();
+        let back_squeezed = coeffs_squeezed
+            .chebychev_data_from_coeffs_second_kind()
+            .unwrap();
+        let mut expected = DynArray::<T, NDIM>::from_shape(shape);
+        expected.fill_from_iter(back_squeezed.iter_value());
+        assert!(
+            relative_difference(&back, &expected) <= tol,
+            "data for shape {shape:?}"
+        );
+        assert!(
+            relative_difference(&back, &data) <= tol,
+            "round trip for shape {shape:?}"
+        );
+    }
+
+    #[test]
+    fn test_extent_one_1d() {
+        // One point: data and coefficient are equal.
+        let mut data = DynArray::<f64, 1>::from_shape([1]);
+        data[[0]] = 0.75;
+        let coeffs = data.chebychev_coeffs_from_data_second_kind().unwrap();
+        assert_eq!(coeffs[[0]], 0.75);
+        let back = coeffs.chebychev_data_from_coeffs_second_kind().unwrap();
+        assert_eq!(back[[0]], 0.75);
+
+        let mut data = DynArray::<c32, 1>::from_shape([1]);
+        data[[0]] = c32::new(0.5, -2.0);
+        let coeffs = data.chebychev_coeffs_from_data_second_kind().unwrap();
+        assert_eq!(coeffs[[0]], c32::new(0.5, -2.0));
+        let back = coeffs.chebychev_data_from_coeffs_second_kind().unwrap();
+        assert_eq!(back[[0]], c32::new(0.5, -2.0));
+    }
+
+    #[test]
+    fn test_extent_one_2d() {
+        // Data constant along the axis of extent 1: the coefficients of the other axis.
+        let points = chebychev_points::<f64>(Kind::Second, 3);
+        let mut data = DynArray::<f64, 2>::from_shape([1, 3]);
+        for (value, x) in izip!(data.iter_mut(), points.iter_value()) {
+            *value = 2.0 * x * x + x;
+        }
+        let coeffs = data.chebychev_coeffs_from_data_second_kind().unwrap();
+        let mut one = DynArray::<f64, 2>::from_shape([1, 3]);
+        one.fill_with_value(1.0);
+        crate::assert_array_relative_eq!(coeffs, one, 1E-14);
+
+        for (shape, squeezed) in [([1, 5], [5]), ([5, 1], [5]), ([1, 1], [1])] {
+            check_extent_one::<f64, 2, 1>(shape, squeezed, 1E-14);
+            check_extent_one::<f32, 2, 1>(shape, squeezed, 1E-6);
+            check_extent_one::<c64, 2, 1>(shape, squeezed, 1E-14);
+            check_extent_one::<c32, 2, 1>(shape, squeezed, 1E-6);
+        }
+    }
+
+    #[test]
+    fn test_extent_one_3d() {
+        for (shape, squeezed) in [
+            ([1, 5, 4], [5, 4]),
+            ([5, 1, 4], [5, 4]),
+            ([5, 4, 1], [5, 4]),
+            ([1, 1, 4], [1, 4]),
+        ] {
+            check_extent_one::<f64, 3, 2>(shape, squeezed, 1E-14);
+            check_extent_one::<f32, 3, 2>(shape, squeezed, 1E-6);
+            check_extent_one::<c64, 3, 2>(shape, squeezed, 1E-14);
+            check_extent_one::<c32, 3, 2>(shape, squeezed, 1E-6);
+        }
+    }
+
+    #[test]
+    fn test_extent_zero() {
+        fn check<T, const NDIM: usize>(shape: [usize; NDIM])
+        where
+            T: RlstScalar,
+            DynArray<T, NDIM>: ChebychevCoefficientsToData<T, NDIM>,
+        {
+            let data = DynArray::<T, NDIM>::from_shape(shape);
+            let coeffs = data.chebychev_coeffs_from_data_second_kind().unwrap();
+            assert_eq!(coeffs.shape(), shape);
+            let back = data.chebychev_data_from_coeffs_second_kind().unwrap();
+            assert_eq!(back.shape(), shape);
+        }
+
+        check::<f64, 1>([0]);
+        check::<f32, 2>([3, 0]);
+        check::<c64, 3>([0, 4, 2]);
+        check::<c32, 3>([1, 0, 1]);
+        check::<f64, 4>([2, 3, 0, 1]);
+    }
+
+    #[test]
+    fn test_data_to_coeffs_4d() {
+        // f = T_2(x_0) + T_1(x_1) T_1(x_2) + 3 T_3(x_3).
+        let shape = [3, 2, 2, 4];
+        let points = shape.map(|n| chebychev_points::<f64>(Kind::Second, n));
+        let mut data = DynArray::<f64, 4>::from_shape(shape);
+        for (i, x0) in points[0].iter_value().enumerate() {
+            for (j, x1) in points[1].iter_value().enumerate() {
+                for (k, x2) in points[2].iter_value().enumerate() {
+                    for (l, x3) in points[3].iter_value().enumerate() {
+                        data[[i, j, k, l]] =
+                            (2.0 * x0 * x0 - 1.0) + x1 * x2 + 3.0 * (4.0 * x3 * x3 * x3 - 3.0 * x3);
+                    }
+                }
+            }
+        }
+
+        let mut coeffs_expected = DynArray::<f64, 4>::from_shape(shape);
+        coeffs_expected[[2, 0, 0, 0]] = 1.0;
+        coeffs_expected[[0, 1, 1, 0]] = 1.0;
+        coeffs_expected[[0, 0, 0, 3]] = 3.0;
+
+        let coeffs = data.chebychev_coeffs_from_data_second_kind().unwrap();
+        crate::assert_array_abs_diff_eq!(coeffs, coeffs_expected, 1E-14);
+
+        let data_out = coeffs.chebychev_data_from_coeffs_second_kind().unwrap();
+        crate::assert_array_abs_diff_eq!(data_out, data, 1E-14);
+    }
+
+    #[test]
+    fn test_random_data_to_coefficients_and_back_4d_and_5d() {
+        let mut expected = DynArray::<f64, 4>::from_shape([4, 1, 5, 3]);
+        expected.fill_from_seed_normally_distributed(0);
+        let coeffs = expected.chebychev_coeffs_from_data_second_kind().unwrap();
+        let actual = coeffs.chebychev_data_from_coeffs_second_kind().unwrap();
+        crate::assert_array_relative_eq!(actual, expected, 1E-10);
+
+        let mut expected = DynArray::<c32, 5>::from_shape([3, 2, 4, 2, 3]);
+        expected.fill_from_seed_normally_distributed(0);
+        let coeffs = expected.chebychev_coeffs_from_data_second_kind().unwrap();
+        let actual = coeffs.chebychev_data_from_coeffs_second_kind().unwrap();
+        assert!(relative_difference(&actual, &expected) < 1E-5);
     }
 }

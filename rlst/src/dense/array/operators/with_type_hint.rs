@@ -5,9 +5,9 @@ use crate::{
     dense::array::Array,
     traits::{
         accessors::{
-            RawAccess, RawAccessMut, UnsafeRandom1DAccessByRef, UnsafeRandom1DAccessByValue,
-            UnsafeRandom1DAccessMut, UnsafeRandomAccessByRef, UnsafeRandomAccessByValue,
-            UnsafeRandomAccessMut,
+            RawAccess, RawAccessMut, StridedRawAccess, StridedRawAccessMut,
+            UnsafeRandom1DAccessByRef, UnsafeRandom1DAccessByValue, UnsafeRandom1DAccessMut,
+            UnsafeRandomAccessByRef, UnsafeRandomAccessByValue, UnsafeRandomAccessMut,
         },
         base_operations::{BaseItem, Shape, Stride},
     },
@@ -110,6 +110,30 @@ where
     }
 }
 
+impl<ArrayImpl, TypeHint, const NDIM: usize> StridedRawAccess
+    for WithEvalType<ArrayImpl, TypeHint, NDIM>
+where
+    ArrayImpl: StridedRawAccess,
+    TypeHint: RowMajorArrayFromContainerType + ArrayFromContainerType + ContainerTypeRepr,
+{
+    #[inline(always)]
+    fn storage(&self) -> Option<(&[Self::Item], usize)> {
+        self.arr.storage()
+    }
+}
+
+impl<ArrayImpl, TypeHint, const NDIM: usize> StridedRawAccessMut
+    for WithEvalType<ArrayImpl, TypeHint, NDIM>
+where
+    ArrayImpl: StridedRawAccessMut,
+    TypeHint: RowMajorArrayFromContainerType + ArrayFromContainerType + ContainerTypeRepr,
+{
+    #[inline(always)]
+    fn storage_mut(&mut self) -> Option<(&mut [Self::Item], usize)> {
+        self.arr.storage_mut()
+    }
+}
+
 impl<ArrayImpl, TypeHint, const NDIM: usize> UnsafeRandomAccessByValue<NDIM>
     for WithEvalType<ArrayImpl, TypeHint, NDIM>
 where
@@ -189,4 +213,37 @@ where
     ArrayImpl: crate::UnsafeDisjointRandom1DAccessMut,
     TypeHint: RowMajorArrayFromContainerType + ArrayFromContainerType + ContainerTypeRepr,
 {
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::{
+        DynArray, Unknown,
+        dense::array::storage_test_support::{
+            assert_storage_addresses_elements, assert_storage_consistent_with_data,
+            assert_storage_mut_writes_elements,
+        },
+    };
+
+    #[test]
+    fn type_hint_forwards_the_storage() {
+        let mut mat = DynArray::<f64, 2>::from_shape([3, 4]);
+        let view = mat.r().with_container_type::<Unknown>();
+        assert_eq!(assert_storage_addresses_elements(&view), (12, 0));
+        assert_eq!(assert_storage_consistent_with_data(&view), (12, 0));
+
+        let view = mat
+            .r()
+            .into_subview([1, 1], [2, 3])
+            .with_container_type::<Unknown>();
+        assert_eq!(assert_storage_addresses_elements(&view), (12, 4));
+
+        assert_storage_mut_writes_elements(&mut mat.r_mut().with_container_type::<Unknown>());
+        assert_storage_mut_writes_elements(
+            &mut mat
+                .r_mut()
+                .into_subview([1, 1], [2, 3])
+                .with_container_type::<Unknown>(),
+        );
+    }
 }

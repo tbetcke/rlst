@@ -1,22 +1,37 @@
 # FFTW rework for RLST 0.11
 
-This directory holds everything needed to implement the new FFTW interface of RLST 0.11.
+This directory is the record of the FFTW rework, implemented in RLST 0.11.0: the design, one
+brief per task, and the findings the tasks wrote. The rework is complete; FFTW work now goes
+to `main` like any other change.
 
 | File | What it is |
 | --- | --- |
-| `rlst-fftw-design.md` | The design, draft 0.6. Authoritative for the new interface; its Section 10 records the settled decisions and design choices. |
+| `rlst-fftw-design.md` | The design, implemented in 0.11.0. It describes the interface as released; its Section 10 records the settled decisions and design choices, and Section 11 the open points for nd-fmm. |
 | `tasks/F0-baseline.md` | Brief for task F0: integration branch, baseline, CI version reports, a macOS job. |
 | `tasks/F1-core.md` | Brief for task F1: the core of the new interface, with c2c plans on raw layouts and slices. |
+| `tasks/F2-layouts.md` | Brief for task F2: strided storage of RLST arrays and views, layouts from them, and execution on them. |
+| `tasks/F4-determinism.md` | Brief for task F4: concurrency tests, and the harness-free binary that tests determinism in fresh processes. |
+| `tasks/F3-split.md` | Brief for task F3: split complex storage with the part axis, split c2c plans, and their tests. |
+| `tasks/F5-real.md` | Brief for task F5: r2c, c2r and r2r plans with kinds per axis, split r2c and c2r, logical sizes and `Scale`, in three pull requests. |
+| `tasks/F6-wisdom-threads.md` | Brief for task F6: wisdom export, import and forgetting, and the `fftw_threads` feature, in two pull requests. |
+| `tasks/F7-removal-docs.md` | Brief for task F7: the Chebyshev port, the removal of the 0.10 module, the user guide, the licence warning, docs.rs, the unused build dependencies and the migration notes, in three pull requests. |
+| `tasks/F8a-ci.md` | Brief for task F8a: the review of the CI matrix, the default-build check, doctests in the default configuration, and the documentation builds, docs.rs's included. |
+| `tasks/F8b-benchmarks-release.md` | Brief for task F8b: the benchmark example and its findings, and the release of 0.11.0, in three pull requests. |
 | `F0-findings.md` | Written by task F0: the baseline and the FFTW found on each CI runner. |
+| `F8b-benchmarks.md` | Written by task F8b: the benchmarks' machines, method and results, and what follows from them for the documentation. |
 
-Briefs for F2 to F8b are written when their task is next, from Section 9 of the design and
-from what the earlier tasks found.
+The briefs of F2 to F8b were written when their task was next, from Section 9 of the design
+and from what the earlier tasks found.
 
 ## Workflow
 
-1. **Branch.** All work goes into the `fftw-0.11` branch, created by F0. `main` keeps
-   receiving 0.10.x patch releases. `fftw-0.11` is merged into `main` only for the 0.11.0
-   release, once every task below is done (design, Section 9, DC10).
+The workflow below is how the rework was run, from F0 to F8b; it is complete. `fftw-0.11` was
+merged into `main` for the 0.11.0 release and then deleted (DC58), and later changes to the
+FFTW interface go to `main` as ordinary pull requests.
+
+1. **Branch.** All work went into the `fftw-0.11` branch, created by F0. `main` kept
+   receiving 0.10.x patch releases. `fftw-0.11` was merged into `main` only for the 0.11.0
+   release, once every task below was done (design, Section 9, DC10).
 2. **One brief per task.** A task starts from its brief in `tasks/`. The brief lists the
    design sections to read, the scope, the files to touch, the work items and the
    acceptance checks.
@@ -39,16 +54,16 @@ so that every later family is written against the separate-process determinism t
 
 | Task | Content (design, Section 9) | Brief | Status | Pull requests |
 | --- | --- | --- | --- | --- |
-| F0 | Baseline, integration branch, CI version reports, macOS job | `tasks/F0-baseline.md` | not started | |
-| F1 | Core: features, types, lock, raw layouts, c2c plans, checked execution on slices, fingerprints | `tasks/F1-core.md` | not started | |
-| F2 | Layouts from RLST arrays and views | to be written | not started | |
-| F4 | Concurrency and determinism, harness-free test binary | to be written | not started | |
-| F3 | Split c2c with the part axis | to be written | not started | |
-| F5 | r2c, c2r, r2r, split r2c and c2r, `Scale` | to be written | not started | |
-| F6 | Wisdom; `fftw_threads` | to be written | not started | |
-| F7 | Removal of the 0.10 module; Chebyshev port; documentation; licence warning; CHANGELOG | to be written | not started | |
-| F8a | CI on Linux and macOS, default-build check, docs | to be written | not started | |
-| F8b | Benchmarks; release 0.11.0 | to be written | not started | |
+| F0 | Baseline, integration branch, CI version reports, macOS job | `tasks/F0-baseline.md` | done | [#2](https://github.com/tbetcke/rlst/pull/2) |
+| F1 | Core: features, types, lock, raw layouts, c2c plans, checked execution on slices, fingerprints | `tasks/F1-core.md` | done | [#3](https://github.com/tbetcke/rlst/pull/3) (F1a), [#4](https://github.com/tbetcke/rlst/pull/4) (F1b), [#5](https://github.com/tbetcke/rlst/pull/5) (F1c) |
+| F2 | Layouts from RLST arrays and views | `tasks/F2-layouts.md` | done | [#8](https://github.com/tbetcke/rlst/pull/8) (F2a), [#9](https://github.com/tbetcke/rlst/pull/9) (F2b) |
+| F4 | Concurrency and determinism, harness-free test binary | `tasks/F4-determinism.md` | done | [#12](https://github.com/tbetcke/rlst/pull/12) |
+| F3 | Split c2c with the part axis | `tasks/F3-split.md` | done | [#15](https://github.com/tbetcke/rlst/pull/15) |
+| F5 | r2c, c2r, r2r, split r2c and c2r, `Scale` | `tasks/F5-real.md` | done | [#18](https://github.com/tbetcke/rlst/pull/18) (F5a), [#20](https://github.com/tbetcke/rlst/pull/20) (F5b), [#21](https://github.com/tbetcke/rlst/pull/21) (F5c) |
+| F6 | Wisdom; `fftw_threads` | `tasks/F6-wisdom-threads.md` | done | [#24](https://github.com/tbetcke/rlst/pull/24) (F6a), [#25](https://github.com/tbetcke/rlst/pull/25) (F6b) |
+| F7 | Removal of the 0.10 module; Chebyshev port; documentation; licence warning; CHANGELOG | `tasks/F7-removal-docs.md` | done | [#30](https://github.com/tbetcke/rlst/pull/30) (F7a), [#32](https://github.com/tbetcke/rlst/pull/32) (F7b), [#33](https://github.com/tbetcke/rlst/pull/33) (F7c) |
+| F8a | CI on Linux and macOS, default-build check, docs | `tasks/F8a-ci.md` | done | [#36](https://github.com/tbetcke/rlst/pull/36) |
+| F8b | Benchmarks; release 0.11.0 | `tasks/F8b-benchmarks-release.md` | in progress | [#40](https://github.com/tbetcke/rlst/pull/40) (F8b-1) |
 
 ## Local setup
 

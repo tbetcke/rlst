@@ -134,3 +134,21 @@ Suggested commit message: `ci(fftw): report FFTW versions and add a macOS job`.
 
 Record here anything the design leaves unclear, and raise it; do not resolve design
 questions in code or CI.
+
+1. **FFTW 3.3.11.** Section 2.4 says Homebrew ships 3.3.10, and Section 4.10 and DF8 call
+   3.3.10 the version that CI tests on Linux and macOS. Homebrew now ships 3.3.11 (see
+   `../F0-findings.md`), so the macOS job tests 3.3.11. Does the design need to change: the
+   version Section 4.10 recommends, Section 3 item 9's list of fixes, and Appendix A?
+   **Resolved** in design draft 0.7: 3.3.10 or later is recommended; CI tests 3.3.10 on Linux
+   and 3.3.11 on macOS.
+2. **Homebrew's FFTW on arm64 has no SIMD**, so `fftw_alignment_of` is always 0 there. Section
+   4.6 is still sufficient. Later briefs must keep tests that depend on SIMD codelets or on
+   `fftw_alignment_of` values off the macOS runner, or gate them. See `../F0-findings.md`.
+   **Resolved** in design draft 0.7: SIMD-dependent tests skip on builds without SIMD, read
+   from the version string (Sections 3 item 6 and 7.7). The documentation tells Apple
+   silicon users how to build FFTW with NEON (Section 4.10).
+3. **Baseline commit.** The design's baseline note gives v0.10.3 as `02eb2ec`, but the tag
+   points to `1f5ab87`. The note should be corrected, with an entry in Appendix A.
+   **Resolved** in design draft 0.7: the baseline is v0.10.3 at `1f5ab87`. `02eb2ec`
+   followed it on `main`, and so did the design and the version 0.11.0-dev. `fftw-0.11`
+   starts from that `main`.

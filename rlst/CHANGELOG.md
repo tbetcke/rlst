@@ -1,5 +1,271 @@
 # Changelog
 
+## v0.11.0
+
+Changes since [v0.10.3](https://github.com/tbetcke/rlst/releases/tag/v0.10.3).
+All workspace crates (`rlst`, `rlst-proc-macro`, and `rlst-suitesparse`) use version 0.11.0.
+
+### FFTW: `fftw_system` is the only back end
+
+The `fftw_source` and `fftw_mkl` features are removed. `fftw_system`, which links the system's
+`libfftw3` and `libfftw3f`, is now the only back end, and it implies `fftw`: enabling `fftw`
+without `fftw_system` is a compile error instead of a link error. `build.rs` rejects an FFTW
+older than 3.3.4 reported by pkg-config, and the crate checks the version of the library linked
+at run time; 3.3.10 or later is recommended. When the `DOCS_RS` environment variable is set,
+`build.rs` skips FFTW discovery, so the documentation builds without FFTW installed.
+
+**Migration:** replace `fftw_source` by `fftw_system` and install FFTW from the system (`brew
+install fftw pkg-config`, `apt install libfftw3-dev pkg-config` or `dnf install fftw-devel
+pkgconf-pkg-config`; set `PKG_CONFIG_PATH` for a custom installation). Intel MKL's FFTW3
+wrappers (`fftw_mkl`) are out of scope for now; a later MKL back end would be an addition.
+`features = ["fftw", "fftw_system"]` keeps working, and `features = ["fftw_system"]` is enough.
+
+### `FFTW_ALIGNED` is 64
+
+`rlst::FFTW_ALIGNED` changes from 16 to 64 bytes, the modulus of the alignment classes of the
+new FFTW plans: buffers allocated with `rlst_dynamic_array!(…, shape | rlst::FFTW_ALIGNED)` or
+as `AlignedDynArray<…, { rlst::FFTW_ALIGNED }>` start at class 0, the class plans are made for
+by default. Equal classes modulo 64 imply equal alignment for FFTW on every build.
+
+**Migration:** none for code that only passes the constant to RLST's allocation; code that
+relied on its value being 16 must use 16 directly.
+
+### New FFTW interface — migration required
+
+`rlst::fftw` is rewritten. Plans are independent of the arrays they run on: a plan is made
+once for a `Layout`, the dimensions and strides of its transforms and their batch, and executes
+on any slices, RLST arrays or views that fit the layout and the plan's alignment classes, from
+any thread. Every transform family of FFTW's serial interface is provided: complex-to-complex,
+real-to-complex and complex-to-real, on interleaved and on split complex storage, and
+real-to-real with all eleven kinds. Execution checks each buffer against the plan before FFTW
+is called; a plan's input policy (`Preserving`, `Destroying` or `InPlace`) is part of its type;
+planning uses scratch buffers, so it never touches user data; plans have fingerprints that
+identify FFTW's algorithm; wisdom can be exported, imported and forgotten; and with the new
+feature `fftw_threads` plans can be threaded. Every FFTW call RLST makes other than plan
+execution, planning, plan destruction, wisdom and FFTW's global settings included, runs under
+one process-wide lock. The guide in `rlst::doc::optional_integrations` covers setup, a worked
+example and seven rules on threads and determinism; the module documentation of `rlst::fftw`
+lists every part.
+
+**Warning: FFTW is licensed under the GNU General Public License (version 2 or later).** The
+`fftw` feature links GPL-licensed code; the README, the guide and the module documentation
+state the full warning.
+
+**Migration** from the 0.10 interface, which is removed (`Array::into_fft`, `Fft`,
+`FftMutGuard`, `PlanInplace`, `FftPlanInplace`, `C2CPlan`, `C2CDirection`, `R2RPlan`,
+`R2RPlanKind`, `FftwPlanFlags` and `FftPrecision`, with the modules `rlst::fftw::c2c_inplace`
+and `rlst::fftw::r2r_inplace`):
+
+- **No more `into_fft`.** `arr.into_fft()`, `Fft`, its `borrow` and `borrow_mut` and
+  `FftMutGuard` are removed: plans hold no array, and arrays stay ordinary RLST arrays.
+- **Complex transforms.** `fft.c2c_fft(flags, direction)` and then `plan.execute()` become
+  `let layout = Layout::over_axes_inplace(&arr, &axes)?;`,
+  `let plan = Planner::<T>::new().c2c_inplace(&layout, direction)?;` and
+  `plan.execute(&mut arr)?;`. `Layout::along_axis` and `Layout::over_axes` give batched and
+  out-of-place layouts, and `Planner::c2c` an out-of-place plan.
+- **Real-to-real transforms.** `fft.r2r_fft(flags, &kinds)` becomes
+  `Planner::<T>::new().r2r_inplace(&layout, &kinds)?`, with `kinds[i]` for `axes[i]`.
+  **Check code written for 0.10 with different kinds on different axes of a column-major
+  array:** 0.10 applied the kinds in reverse order of the axes, so `kinds[0]` acted on the
+  last axis.
+- **Names.** `C2CDirection` becomes `Direction`; `R2RPlanKind`, fftw-sys's enum, becomes
+  RLST's own `R2rKind` (`FFTW_REDFT00` is `R2rKind::Redft00`, and so on); `PlanInplace`,
+  `FftPlanInplace`, `C2CPlan`, `R2RPlan` and `FftPrecision` are replaced by
+  `Plan<T, F, P>`.
+- **Flags.** `FftwPlanFlags` becomes the planner's options: `.rigor(Rigor::…)`,
+  `.wisdom_only()`, `.may_destroy_input()`, `.unaligned()` and `.time_limit(…)`.
+- **Errors.** A plan FFTW cannot make was `None`; every layout function, planner and
+  execution now returns `Result<_, FftwError>`, with the values involved.
+- **Planning no longer overwrites data.** With `Measure` and stronger rigor, 0.10 overwrote
+  the array while planning. Planning now uses scratch (at most `max_scratch`, 1 GiB by
+  default) unless a `*_on` method is chosen.
+- **Alignment.** `FFTW_ALIGNED` is 64 instead of 16 (see "`FFTW_ALIGNED` is 64" above), and
+  a plan runs only on buffers of its alignment class; allocate plan targets with
+  `rlst_dynamic_array!(…, shape | rlst::FFTW_ALIGNED)`.
+- **Chebychev conversions** return `Result` and handle extents 1 and 0 and any number of
+  dimensions (see "Chebyshev conversions on the new FFTW interface" below).
+- **Features.** `fftw_system` implies `fftw`, `fftw` without `fftw_system` is a compile
+  error, and `fftw_mkl` and `fftw_source` are removed (see "FFTW: `fftw_system` is the only
+  back end" above).
+
+The interface in detail, as it was built:
+
+Complex-to-complex plans on slices: `Layout`, `Planner`, `Plan` and their companions in
+`rlst::fftw`.
+
+Plans also run on RLST arrays and views. `Layout::along_axis`, `Layout::over_axes` and their
+in-place variants build layouts from arrays of any memory order, column-major, row-major and
+strided, and from subviews, slices, multislices and nested views; they pass FFTW the
+dimensions in the order of the axes given, each with its own strides, so no shape is reversed
+for column-major arrays, and they reject unequal shapes, repeated or out-of-range axes and
+extents of 0 with `InvalidLayout` naming the axis. Arrays and views are `FftBuffer`s and, when
+mutable, `FftBufferMut`s: execution checks an array's shape and strides against its side of
+the plan, pairs the axes of an input and an output array of the same rank, and checks that
+the array's storage holds the layout's span from its first element on, before FFTW is
+called. FFTW touches only the elements a layout addresses, never the elements of other views
+between them. A plan describes memory, not logical axes: it runs on any arrays of the same
+memory layout and alignment class.
+
+As tested, one plan executes from many threads at once, and `Estimate` plans give the same
+fingerprint and the same bits in every fresh process; the rustdoc of `Plan` and
+`Plan::fingerprint` states the rules on threads and determinism.
+
+Complex-to-complex plans also run on split storage: the real and imaginary parts in one
+buffer of reals, a fixed gap apart, such as a real plane followed by an imaginary plane. A
+split complex array is a real array with a *part axis* of extent 2 (index 0 the real part,
+index 1 the imaginary part) whose stride is the gap. `Layout::split_along_axis`,
+`Layout::split_over_axes` and their in-place variants build split layouts from real arrays and
+views of any memory order, with the part axis anywhere and possibly at different positions on
+input and output; their axes count the logical axes, the axes without the part axis.
+`Layout::new_split` builds split layouts from raw dimensions for slices, and `Layout::gaps`
+returns the gaps. `Planner::split_c2c`, `split_c2c_on`, `split_c2c_inplace` and
+`split_c2c_inplace_on` make `Plan<T, SplitC2c, P>` plans with the three input policies, which
+execute on slices of reals and on real arrays and views, checked as interleaved plans are,
+the part axis and the gap included. FFTW's split planner always plans forward; a backward
+plan swaps the real and imaginary parts on both sides. The interleaved planner methods reject
+a split layout, and the split ones an interleaved layout, with `InvalidLayout` naming the part
+axis. Split plans can use fewer of FFTW's SIMD stages than interleaved ones, so copying into
+interleaved storage can be faster; they agree with interleaved plans to round-off, not bit for
+bit.
+
+Real-to-complex and complex-to-real plans. A `Layout` records the storage of each side,
+`Storage::Complex`, `Storage::Real` or `Storage::Split { gap }`, from which its family follows:
+`Layout::with_storage` builds raw layouts of every family, `Layout::storage` returns the
+storages, and `Layout::new` and `Layout::new_split` are its shorthands for complex-to-complex
+layouts (`Layout::gaps` keeps its meaning). For real-to-complex and complex-to-real layouts the
+dimensions record the logical real extent `n`, and the last transform dimension, the halved
+one, has `n / 2 + 1` elements on the complex side, which the spans and every check use.
+`Layout::along_axis`, `Layout::over_axes` and their in-place variants now require items that
+implement the new sealed trait `FftElement` (`f32`, `f64`, `c32`, `c64`, one precision for both
+arrays), from which they read each side's storage: a real input and a complex output give a
+real-to-complex layout, a complex input and a real output a complex-to-real one, two real
+arrays a real-to-real one, and two complex arrays a complex-to-complex one as before. The
+halved axis is the last entry of `axes`, whatever the memory order, and a complex extent other
+than `n / 2 + 1` along it is an `InvalidLayout` naming the axis. In place, `Layout::r2c_inplace`
+and `Layout::c2r_inplace` take the complex array and the logical real extent of the halved
+axis, which must be contiguous; the real side is the complex storage read as reals, which the
+new functions `as_reals` and `as_reals_mut` give access to. `Planner::r2c`, `r2c_on`,
+`r2c_inplace` and `r2c_inplace_on` make `Plan<T, R2c, P>` plans, and `Planner::c2r` and its
+companions `Plan<T, C2r, P>` plans, with the three input policies, on scratch or on the
+caller's buffers, executing on real and complex slices, arrays and views with the checks of
+the other families. As in FFTW, a complex-to-real plan destroys its input by default: the
+default plan is `Destroying` and executes with `&mut input`; `preserve_input()` makes a
+`Preserving` one over one transform dimension, and returns `PreserveInputUnsupported` over
+more. Every planner method, those of complex-to-complex and split plans included, rejects a
+layout of another family before FFTW is called, with `InvalidLayout` naming the part axis when
+split storage is involved on one side only and the layout otherwise. `Plan::logical_size` and
+`Plan::scale_factor` with the new `Scale` (`None`, `Inverse`, `InverseSqrt`) give the factors 1,
+1/N and 1/√N of the unnormalised transforms, on every plan.
+
+Real-to-real plans. `R2rKind`, RLST's own enum, covers FFTW's eleven kinds (`R2hc`, `Hc2r`,
+`Dht` and the DCT and DST kinds `Redft00` to `Rodft11`), with `Display` and
+`R2rKind::logical_size`. `Planner::r2r`, `r2r_on`, `r2r_inplace` and `r2r_inplace_on` take the
+layout and then one kind per transform dimension, and make `Plan<T, R2r, P>` plans with the
+three input policies, which execute on real slices, arrays and views; `Plan::kinds` returns the
+kinds, and `Plan::logical_size` is the product of each kind's logical size. `kinds[i]` belongs
+to `layout.dims()[i]`, so for a layout from arrays to `axes[i]`, whatever the memory order: the
+0.10 interface applied the kinds of column-major arrays to the axes in reverse order, and code
+with different kinds on different axes must be checked when it moves. A number of kinds other
+than the number of transform dimensions, and `Redft00` on a dimension of extent 1, are an
+`InvalidKind` before FFTW is called. Real-to-real plans preserve their input by default, an
+`Hc2r` kind included, which FFTW destroys by default: they pass `FFTW_PRESERVE_INPUT`, and if
+FFTW returns no plan, `PlanCreationFailed` carries the new field `hint`, shown in its message,
+naming `may_destroy_input()`.
+
+Split real-to-complex and complex-to-real plans, with split storage on the complex side only.
+`Layout::split_r2c_along_axis` and `split_r2c_over_axes` take a real input of rank `N` and a
+split output of rank `N + 1` with its part axis, and `Layout::split_c2r_along_axis` and
+`split_c2r_over_axes` the reverse; both arrays are real, `axes` counts the split array's
+logical axes, and the last entry of `axes` is halved, with `n / 2 + 1` complex values on the
+split side. `Planner::split_r2c`, `split_r2c_on`, `split_c2r` and `split_c2r_on` make
+`Plan<T, SplitR2c, P>` and `Plan<T, SplitC2r, P>` plans, which execute on real slices, arrays and
+views. Split c2r destroys its input by default, as c2r does, and `preserve_input()` makes a
+preserving one over one transform dimension only. There are no in-place split r2c or c2r
+plans.
+
+Wisdom. The new module `rlst::fftw::wisdom` exports the wisdom of one precision to a string
+(`export`) or a file (`export_to_file`), imports it (`import`, `import_from_file`), forgets it
+(`forget`), and imports the system's wisdom on request (`import_system_wisdom`), each under the
+FFTW lock. FFTW's refusal of wisdom, wisdom of the other precision included, is
+`WisdomImportFailed`; a file that cannot be read or written is the new `FftwError::WisdomFile`,
+with the path and the kind and message of the I/O error. As tested, wisdom exported, forgotten
+and imported again, or imported in another process, gives wisdom-only plans with the
+fingerprints and bits of the plans it came from; the module documentation states what wisdom
+means for determinism.
+
+Threads. The new feature `fftw_threads`, which implies `fftw_system`, adds
+`Planner::threads(n: NonZeroUsize)`, which makes plans for `n` threads, and the module
+`rlst::fftw::threads` with `make_planner_thread_safe`, which installs FFTW's own lock around
+plan creation and destruction for processes where another library plans with FFTW. Every plan
+has `Plan::threads()`, the thread count it was made for, 1 without the feature. The feature
+links FFTW's threads libraries, `fftw3_threads` and `fftw3f_threads`, before `fftw3` and
+`fftw3f`, and fails the build if they are missing; it raises the minimum FFTW to 3.3.6, at
+build time and at run time. RLST initialises FFTW's threads under its FFTW lock on its first
+FFTW call; the thread count is set for one planner call and reset to 1 before the lock is
+released. Planning returns the new `FftwError::InvalidThreadCount` for a count above FFTW's
+`int`, and the new `FftwError::ThreadsUnavailable` for more than one thread when FFTW could not
+initialise its threads. As tested, threaded `Estimate` plans are the same in fresh processes,
+and threaded planning leaves single-threaded plans unchanged.
+
+### Chebyshev conversions on the new FFTW interface — migration required
+
+The conversions of `rlst::chebychev::ChebychevCoefficientsToData`,
+`chebychev_coeffs_from_data_second_kind` and `chebychev_data_from_coeffs_second_kind`, use the
+new FFTW interface and return `Result<DynArray<Item, NDIM>, FftwError>` instead of panicking
+when FFTW refuses a plan. They apply one DCT-I plan (`R2rKind::Redft00`) per axis, along that
+axis and batched over the others, instead of one multidimensional plan, and so take any number
+of dimensions; 0.10.3 had `unimplemented!()` above three. An axis of extent 1, on which 0.10.3
+panicked, is handled: one Chebychev point gives a constant interpolant, so data and
+coefficients are equal along that axis. An axis of extent 0 gives an empty result of the same
+shape without calling FFTW. The results agree with 0.10.3's to round-off, and were bit-equal
+on the FFTW build tested without SIMD; on builds with SIMD the last bits may differ, since
+one-dimensional plans in turn are not the same plans as one multidimensional plan.
+
+**Migration:** add `?` or `.unwrap()` to calls of the two conversions:
+`data.chebychev_coeffs_from_data_second_kind()` becomes
+`data.chebychev_coeffs_from_data_second_kind()?` in a function that returns a `Result` whose
+error converts from `FftwError`.
+
+### New traits `StridedRawAccess` and `StridedRawAccessMut`
+
+`rlst::StridedRawAccess::storage` and `StridedRawAccessMut::storage_mut` return the backing
+storage of an array or view and the offset of its first element; with the view's strides,
+element `i` is `storage[offset + Σ i[k] · stride[k]]`. Unlike `RawAccess::data`, which holds
+exactly the array's elements and is `None` for most views, they cover subviews and every
+slice, at the price of a slice that may hold elements of other views. `RawAccess` does not
+change.
+
+They are implemented for the owned and borrowed arrays (`DynArray`, `AlignedDynArray`,
+`StaticArray`, `StridedDynArray`, `SliceArray`, `StridedSliceArray` and their mutable forms,
+at offset 0), for `r()` and `r_mut()`, for `slice`, `row`, `col`, `multislice` and
+`into_subview`, nested and mixed, and for the wrappers of `with_container_type`, `coerce_dim`
+and `insert_empty_axis`; `StridedRawAccessMut` wherever the array or view is mutable, so not
+for `r()`. Lazy expressions, `transpose()`, `permute_axes()`, `reverse_axis()`, `into_flat()`,
+the shared references of `into_shared` and `into_shared_atomic`, and `ZeroDimArray` do not
+implement them. For a view without elements the offset may lie past the end of the slice and
+must not be used to index it; a view whose offset does not fit in `usize`, which only a view
+without elements can have, returns `None`.
+
+New inherent methods `Array::storage()` and `Array::storage_mut()`, beside `data()` and
+`data_mut()`, give the same access without naming the implementation type.
+
+### Unused build dependencies removed
+
+`rlst` no longer declares the build dependencies `bindgen`, `cc`, `cmake` and `git2`, which
+no build script used; `pkg-config`, optional with `fftw_system`, is its only one. A build
+without `mpi` therefore no longer compiles `bindgen`, `libgit2` or `libz`, and no longer needs
+`libclang`. With `mpi`, `mpi-sys` still uses `bindgen` and needs `libclang`.
+
+### FFTW benchmarks
+
+The example `fftw_bench` (`cargo run --release --example fftw_bench --features fftw_system`)
+times `Estimate` plans at the sizes of nd-fmm's φ transforms. It compares a batched plan with a
+loop of single transforms, split with interleaved storage and with a copy into interleaved
+scratch, aligned with unaligned plans, and r2c and c2r plans that halve the contiguous axis
+with plans that halve a strided one. Its results for 0.11 are recorded in the repository's
+`docs/fftw/F8b-benchmarks.md`. Halving the contiguous axis was not faster on every machine
+measured, so the documentation recommends no order of `axes` for r2c and c2r.
+
 ## v0.10.3
 
 Changes since [v0.10.2](https://github.com/tbetcke/rlst/releases/tag/v0.10.2).

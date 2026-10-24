@@ -62,6 +62,24 @@ pub fn convert_nd_raw<const NDIM: usize>(
     acc
 }
 
+/// Add the storage offset of `multi_index` under `stride` to `base`.
+///
+/// Returns `None` if the sum or a product overflows `usize`. Views use it for the offset of
+/// their first element in their parent's storage.
+#[inline(always)]
+pub(crate) fn checked_storage_offset<const NDIM: usize>(
+    base: usize,
+    multi_index: [usize; NDIM],
+    stride: [usize; NDIM],
+) -> Option<usize> {
+    multi_index
+        .iter()
+        .zip(stride)
+        .try_fold(base, |acc, (&index, step)| {
+            acc.checked_add(index.checked_mul(step)?)
+        })
+}
+
 /// Convert a 1d index into a multi-index assuming column major ordering.
 #[inline(always)]
 pub fn convert_1d_nd_from_shape<const NDIM: usize>(

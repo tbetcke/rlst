@@ -3,7 +3,7 @@
 | | |
 | --- | --- |
 | Task | F1 (design, Section 9) |
-| Status | ready once F0 is merged |
+| Status | done |
 | Depends on | F0 |
 | Pull requests | three, into `fftw-0.11`: F1a (API skeleton), F1b (build, features, lock, base types), F1c (layouts, c2c plans, execution, fingerprints) |
 | Read first | design: Section 3 (all items), Sections 4.1–4.8, 4.10–4.12 and 4.15, Section 5, Sections 7.1–7.4, Section 9 (F1 row, Transition), Section 10, Appendix B; `docs/fftw/F0-findings.md`; `CLAUDE.md` |
@@ -181,7 +181,9 @@ remedy where there is one:
   Read them with `CStr::from_ptr`; the `SAFETY:` comment states that FFTW defines them as
   NUL-terminated constant arrays.
 - `pub fn version() -> &'static str` returns the double-precision string, for example
-  `fftw-3.3.10-sse2-avx`. A crate-private parser extracts (major, minor, patch).
+  `fftw-3.3.10-sse2-avx`. A crate-private parser extracts (major, minor, patch) and whether
+  the build has SIMD: a suffix other than `-fma` (design Section 3 item 6). Later tests
+  that depend on SIMD skip on builds without it (design Section 7.7).
 - `#[non_exhaustive] pub enum Backend { System }` and `pub fn backend() -> Backend`.
 
 ### 6. Base types
@@ -205,7 +207,8 @@ remedy where there is one:
 - the lock recovers after a panic inside `with_fftw` (`std::panic::catch_unwind`), and
   planning with the 0.10 module still works afterwards;
 - version parsing of `fftw-3.3.10-sse2-avx`, `fftw-3.3.8` and a string with an unknown
-  suffix; `version()` at run time starts with `fftw-3.`;
+  suffix; SIMD detection for `fftw-3.3.10-sse2-avx` and `fftw-3.3.10-neon` (SIMD) and for
+  `fftw-3.3.11` and `fftw-3.3.10-fma` (none); `version()` at run time starts with `fftw-3.`;
 - `AlignmentClass` of pointers at offsets 0, 8, 16 and 64 bytes from a 64-byte-aligned
   allocation;
 - `PLAN_ALIGNMENT == 64`, as a compile-time assertion;
@@ -434,6 +437,9 @@ All three:
   the planner takes `c_uint` flags and a `c_int` sign.
 - **No `fftw_alignment_of`.** Classes are computed in Rust (design Section 4.6); do not call
   FFTW to check alignment.
+- **No SIMD on the macOS runner.** Homebrew's FFTW on Apple silicon has no SIMD, so
+  `fftw_alignment_of` is always 0 there and plans use scalar codelets. No F1 test may assume
+  SIMD; one that must skips through the SIMD helper (design Section 7.7).
 - **Raw pointers from `&`.** Only `Preserving` plans may receive a pointer derived from a
   shared borrow, and only because `FFTW_PRESERVE_INPUT` was passed.
 - **`compile_fail` tests** pass for any compile error; the passing twin is what makes them
@@ -443,3 +449,29 @@ All three:
 
 Record here anything the design leaves unclear, and raise it; do not resolve design
 questions in code.
+
+Raised by the F1 implementation and **resolved in the F1a review** (design draft 0.8,
+Appendix A):
+
+1. **Raw access of strided views (for F2).** `RawAccess::data` is `None` for most views
+   (`ArraySlice` and `Multislice` only when the view is one contiguous block), and subviews
+   do not implement `RawAccess`, so bounds on `RawAccess` could not reach the strided views
+   of design goal 3. *Resolved (DC11):* new traits `StridedRawAccess` and
+   `StridedRawAccessMut` in `rlst/src/traits/accessors.rs` return the backing storage and
+   the offset of the view's first element. F1a declares them and puts them in the F2
+   signatures; F2 implements them for every array and view type (subviews and nested views
+   included) and tests subviews with sentinels between their elements. `RawAccess` keeps its
+   stricter meaning.
+2. **Input-policy requests in place.** *Resolved (DC12):* the in-place planner methods exist
+   only on `Planner<T, DefaultRequest>`.
+3. **An unparsable run-time version string.** *Resolved (DC13):* it counts as below the
+   minimum, and planning returns `VersionTooOld` carrying the string.
+
+Additions to the design's sketch, accepted in the same review: `AlignmentClass::of` is
+generic over `FftBuffer` (slices now, arrays in F2) in place of a slice-only constructor, and
+`AlignmentClass::from_offset` plans for buffers not yet allocated; `DEFAULT_MAX_SCRATCH`;
+`Display` for `Rigor`, `Placement`, `Side`, `Backend` and `AlignmentClass`; `Debug` for
+`Plan`; the accessors `Plan::layout`, `rigor`, `alignment` and, for c2c, `direction`.
+`InvalidLayout` names the dimension as text (`transform dimension 0`, `batch dimension 1`,
+`layout`, `alignment`), and `LayoutMismatch` carries the expected and found values as text,
+so that F2 can use both for arrays.

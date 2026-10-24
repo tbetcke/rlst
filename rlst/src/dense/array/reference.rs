@@ -8,9 +8,10 @@ use crate::{
     dense::array::Array,
     traits::{
         accessors::{
-            RawAccess, RawAccessMut, StableRawAccessMut, UnsafeDisjointRandom1DAccessMut,
-            UnsafeRandom1DAccessByRef, UnsafeRandom1DAccessByValue, UnsafeRandom1DAccessMut,
-            UnsafeRandomAccessByRef, UnsafeRandomAccessByValue, UnsafeRandomAccessMut,
+            RawAccess, RawAccessMut, StableRawAccessMut, StridedRawAccess, StridedRawAccessMut,
+            UnsafeDisjointRandom1DAccessMut, UnsafeRandom1DAccessByRef,
+            UnsafeRandom1DAccessByValue, UnsafeRandom1DAccessMut, UnsafeRandomAccessByRef,
+            UnsafeRandomAccessByValue, UnsafeRandomAccessMut,
         },
         base_operations::{BaseItem, ResizeInPlace, Shape, Stride},
     },
@@ -58,6 +59,15 @@ impl<ArrayImpl: RawAccess, const NDIM: usize> RawAccess for ArrayRef<'_, ArrayIm
     #[inline(always)]
     fn data(&self) -> Option<&[Self::Item]> {
         self.0.data()
+    }
+}
+
+impl<ArrayImpl: StridedRawAccess, const NDIM: usize> StridedRawAccess
+    for ArrayRef<'_, ArrayImpl, NDIM>
+{
+    #[inline(always)]
+    fn storage(&self) -> Option<(&[Self::Item], usize)> {
+        self.0.imp().storage()
     }
 }
 
@@ -164,6 +174,24 @@ impl<ArrayImpl: RawAccessMut, const NDIM: usize> RawAccessMut for ArrayRefMut<'_
     }
 }
 
+impl<ArrayImpl: StridedRawAccess, const NDIM: usize> StridedRawAccess
+    for ArrayRefMut<'_, ArrayImpl, NDIM>
+{
+    #[inline(always)]
+    fn storage(&self) -> Option<(&[Self::Item], usize)> {
+        self.0.imp().storage()
+    }
+}
+
+impl<ArrayImpl: StridedRawAccessMut, const NDIM: usize> StridedRawAccessMut
+    for ArrayRefMut<'_, ArrayImpl, NDIM>
+{
+    #[inline(always)]
+    fn storage_mut(&mut self) -> Option<(&mut [Self::Item], usize)> {
+        self.0.imp_mut().storage_mut()
+    }
+}
+
 impl<ArrayImpl: UnsafeRandomAccessByValue<NDIM>, const NDIM: usize> UnsafeRandomAccessByValue<NDIM>
     for ArrayRefMut<'_, ArrayImpl, NDIM>
 {
@@ -231,5 +259,58 @@ impl<ArrayImpl: ResizeInPlace<NDIM>, const NDIM: usize> ResizeInPlace<NDIM>
     #[inline(always)]
     fn resize_in_place(&mut self, shape: [usize; NDIM]) {
         self.0.resize_in_place(shape)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::{
+        DynArray, StridedDynArray,
+        dense::array::storage_test_support::{
+            assert_storage_addresses_elements, assert_storage_consistent_with_data,
+            assert_storage_mut_writes_elements,
+        },
+    };
+
+    #[test]
+    fn references_forward_the_storage_of_their_array() {
+        let arr = StridedDynArray::<f64, 2>::row_major([3, 4]);
+        let pointer = arr.storage().unwrap().0.as_ptr();
+        let view = arr.r();
+        assert_eq!(assert_storage_addresses_elements(&view), (12, 0));
+        assert_eq!(view.storage().unwrap().0.as_ptr(), pointer);
+
+        // The reference of a view keeps the view's offset.
+        let sub = arr.r().into_subview([1, 1], [2, 3]);
+        assert_eq!(assert_storage_addresses_elements(&sub.r()), (12, 5));
+
+        let mut arr = DynArray::<f64, 3>::from_shape([2, 3, 4]);
+        let pointer = arr.storage().unwrap().0.as_ptr();
+        let view = arr.r_mut();
+        assert_eq!(assert_storage_addresses_elements(&view), (24, 0));
+        assert_eq!(view.storage().unwrap().0.as_ptr(), pointer);
+    }
+
+    #[test]
+    fn mutable_references_write_through_mutable_storage() {
+        let mut arr = DynArray::<f64, 3>::from_shape([2, 3, 4]);
+        assert_storage_mut_writes_elements(&mut arr.r_mut());
+
+        let mut outer = arr.r_mut();
+        assert_storage_mut_writes_elements(&mut outer.r_mut());
+
+        let mut arr = StridedDynArray::<f64, 2>::row_major([3, 4]);
+        assert_storage_mut_writes_elements(&mut arr.r_mut());
+    }
+
+    #[test]
+    fn reference_storage_is_consistent_with_data() {
+        let mut arr = DynArray::<f64, 2>::from_shape([4, 3]);
+        assert_eq!(assert_storage_consistent_with_data(&arr.r()), (12, 0));
+        assert_eq!(assert_storage_consistent_with_data(&arr.r_mut()), (12, 0));
+
+        let mut arr = StridedDynArray::<f64, 2>::row_major([4, 3]);
+        assert_eq!(assert_storage_consistent_with_data(&arr.r()), (12, 0));
+        assert_eq!(assert_storage_consistent_with_data(&arr.r_mut()), (12, 0));
     }
 }

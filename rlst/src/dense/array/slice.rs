@@ -3,11 +3,11 @@
 use crate::{
     ContainerType, MemoryLayout, RawAccess, RawAccessMut, Unknown,
     base_types::NumberType,
-    dense::layout::convert_1d_nd_from_shape,
+    dense::layout::{checked_storage_offset, convert_1d_nd_from_shape},
     traits::{
         accessors::{
-            UnsafeDisjointRandom1DAccessMut, UnsafeRandom1DAccessByRef,
-            UnsafeRandom1DAccessByValue, UnsafeRandom1DAccessMut,
+            StridedRawAccess, StridedRawAccessMut, UnsafeDisjointRandom1DAccessMut,
+            UnsafeRandom1DAccessByRef, UnsafeRandom1DAccessByValue, UnsafeRandom1DAccessMut,
         },
         base_operations::BaseItem,
         number_relations::{IsGreaterByOne, IsGreaterZero},
@@ -270,6 +270,39 @@ where
     }
 }
 
+// The fixed index moves the first element; the other strides are the parent's.
+impl<ArrayImpl, const ADIM: usize, const NDIM: usize> StridedRawAccess
+    for ArraySlice<ArrayImpl, ADIM, NDIM>
+where
+    NumberType<ADIM>: IsGreaterByOne<NDIM>,
+    NumberType<NDIM>: IsGreaterZero,
+    ArrayImpl: StridedRawAccess + Stride<ADIM>,
+{
+    fn storage(&self) -> Option<(&[Self::Item], usize)> {
+        let step = self.arr.stride()[self.slice[0]];
+        let (storage, offset) = self.arr.storage()?;
+        Some((
+            storage,
+            checked_storage_offset(offset, [self.slice[1]], [step])?,
+        ))
+    }
+}
+
+impl<ArrayImpl, const ADIM: usize, const NDIM: usize> StridedRawAccessMut
+    for ArraySlice<ArrayImpl, ADIM, NDIM>
+where
+    NumberType<ADIM>: IsGreaterByOne<NDIM>,
+    NumberType<NDIM>: IsGreaterZero,
+    ArrayImpl: StridedRawAccessMut + Stride<ADIM>,
+{
+    fn storage_mut(&mut self) -> Option<(&mut [Self::Item], usize)> {
+        let step = self.arr.stride()[self.slice[0]];
+        let index = self.slice[1];
+        let (storage, offset) = self.arr.storage_mut()?;
+        Some((storage, checked_storage_offset(offset, [index], [step])?))
+    }
+}
+
 // ////////////////////
 
 #[inline(always)]
@@ -293,6 +326,92 @@ mod test {
 
     use crate::DynArray;
     use crate::StridedDynArray;
+    use crate::dense::array::storage_test_support::{
+        assert_storage_addresses_elements, assert_storage_consistent_with_data,
+        assert_storage_mut_writes_elements,
+    };
+
+    #[test]
+    fn slices_add_the_offset_of_the_fixed_index() {
+        // Column-major, strides [1, 3, 12].
+        let arr = DynArray::<f64, 3>::from_shape([3, 4, 5]);
+        assert_eq!(
+            assert_storage_addresses_elements(&arr.r().slice::<2>(0, 2)),
+            (60, 2)
+        );
+        assert_eq!(
+            assert_storage_addresses_elements(&arr.r().slice::<2>(1, 3)),
+            (60, 9)
+        );
+        assert_eq!(
+            assert_storage_addresses_elements(&arr.r().slice::<2>(2, 4)),
+            (60, 48)
+        );
+
+        // Row-major, strides [20, 5, 1].
+        let arr = StridedDynArray::<f64, 3>::row_major([3, 4, 5]);
+        assert_eq!(
+            assert_storage_addresses_elements(&arr.r().slice::<2>(0, 2)),
+            (60, 40)
+        );
+        assert_eq!(
+            assert_storage_addresses_elements(&arr.r().slice::<2>(1, 3)),
+            (60, 15)
+        );
+        assert_eq!(
+            assert_storage_addresses_elements(&arr.r().slice::<2>(2, 4)),
+            (60, 4)
+        );
+
+        // Column-major, strides [1, 4].
+        let mat = DynArray::<f64, 2>::from_shape([4, 3]);
+        assert_eq!(assert_storage_addresses_elements(&mat.r().row(2)), (12, 2));
+        assert_eq!(assert_storage_addresses_elements(&mat.r().col(1)), (12, 4));
+    }
+
+    #[test]
+    fn slices_write_through_mutable_storage() {
+        let mut arr = DynArray::<f64, 3>::from_shape([3, 4, 5]);
+        for axis in 0..3 {
+            assert_storage_mut_writes_elements(&mut arr.r_mut().slice::<2>(axis, 1));
+        }
+
+        let mut arr = StridedDynArray::<f64, 3>::row_major([3, 4, 5]);
+        for axis in 0..3 {
+            assert_storage_mut_writes_elements(&mut arr.r_mut().slice::<2>(axis, 2));
+        }
+
+        let mut mat = DynArray::<f64, 2>::from_shape([4, 3]);
+        assert_storage_mut_writes_elements(&mut mat.r_mut().row(2));
+        assert_storage_mut_writes_elements(&mut mat.r_mut().col(1));
+    }
+
+    #[test]
+    fn contiguous_slices_are_consistent_with_data() {
+        let mat = DynArray::<f64, 2>::from_shape([4, 3]);
+        assert_eq!(
+            assert_storage_consistent_with_data(&mat.r().col(2)),
+            (12, 8)
+        );
+
+        let arr = DynArray::<f64, 3>::from_shape([3, 4, 5]);
+        assert_eq!(
+            assert_storage_consistent_with_data(&arr.r().slice::<2>(2, 3)),
+            (60, 36)
+        );
+
+        let mat = StridedDynArray::<f64, 2>::row_major([4, 3]);
+        assert_eq!(
+            assert_storage_consistent_with_data(&mat.r().row(2)),
+            (12, 6)
+        );
+
+        let arr = StridedDynArray::<f64, 3>::row_major([3, 4, 5]);
+        assert_eq!(
+            assert_storage_consistent_with_data(&arr.r().slice::<2>(0, 1)),
+            (60, 20)
+        );
+    }
 
     #[test]
     fn test_row_major_data() {

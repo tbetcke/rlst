@@ -1,539 +1,166 @@
-//! Implementation of fft using fftw
+//! Fast Fourier transforms with FFTW.
 //!
-//! FFTW uses plans to execute an FFT computation. Within FFTW there are two steps
-//! to get the FFT of a given array.
+//! This module wraps every transform family of FFTW's serial interface, through FFTW's 64-bit
+//! guru interface: complex-to-complex, real-to-complex and complex-to-real plans, on
+//! interleaved and on split complex storage, and real-to-real plans, on slices and on RLST
+//! arrays and views. A plan is independent of the buffers it runs on: it is made once for a
+//! [`Layout`] and runs on any buffers that fit that layout and its [`AlignmentClass`]es, from
+//! any thread, with every buffer checked before FFTW is called.
 //!
-//! 1. Generate a plan for the desired FFT
-//! 2. Execute the FFT
+//! Enable the feature `fftw_system`, the only back end, which implies `fftw`. The system must
+//! provide both single- and double-precision libraries (`fftw3f` and `fftw3`), version 3.3.4
+//! or later, normally discovered through `pkg-config`. The feature `fftw_threads`, which
+//! implies `fftw_system`, adds threaded plans; it also links FFTW's threads libraries
+//! (`fftw3_threads` and `fftw3f_threads`) and needs version 3.3.6 or later. The guide in
+//! [`doc::optional_integrations`](crate::doc::optional_integrations) describes the setup.
 //!
-//! FFTW supports FFT computations on one-, two-, and three-dimensional input arrays.
-//! Enable `fftw` together with one backend feature: `fftw_system`, `fftw_source`, or
-//! `fftw_mkl`. The system backend must provide both single- and double-precision
-//! libraries (`fftw3f` and `fftw3`), normally discovered through `pkg-config`.
+//! # Licence
 //!
-//! ## Complex-to-Complex transform
+//! > **Warning: FFTW is licensed under the GNU General Public License (version 2 or later).**
+//! > RLST's optional `fftw` feature links FFTW and the GPL-licensed `fftw-sys` bindings. RLST
+//! > itself is licensed MIT / Apache-2.0, but a program built with this feature links
+//! > GPL-licensed code, and distributing such a
+//! > program is subject to the terms of the GPL unless you hold a non-free FFTW licence from
+//! > MIT's Technology Licensing Office. Cargo enables a feature for the whole build when any crate in the dependency graph requests it,
+//! > so check your graph (for example with `cargo tree -e features`). The feature is off by
+//! > default. This note is not legal advice; check the licences that apply to your use.
 //!
-//! The following gives an example of computing the Complex-to-Complex transform
-//! of a given array `arr`.
-//! ```
-//! use rlst::{rlst_dynamic_array, fftw::{FftwPlanFlags, C2CDirection, C2CPlan, FftPlanInplace},
-//!     EvaluateArray, c64,
-//!     assert_array_relative_eq};
-//! use num::FromPrimitive;
+//! # Parts
 //!
-//! let shape = [3, 5, 2];
-//! // We create a 16 byte aligned array. This is
-//! // the required alignment for FFTW to use SIMD features.
-//! let mut arr = rlst_dynamic_array!(c64, shape | rlst::FFTW_ALIGNED);
-//! arr.fill_from_seed_equally_distributed(0);
+//! - [`Layout`], made from [`Dim`]s, the [`Storage`] of each side (complex, real or split)
+//!   and a [`Placement`]: transform and batch dimensions with strides, validated and
+//!   normalised, whose storages give the family ([`Layout::with_storage`]);
+//! - layouts from RLST arrays and views of any memory order, subviews, slices and nested views
+//!   included: [`Layout::along_axis`], [`Layout::over_axes`] and their in-place variants,
+//!   which pass FFTW the dimensions in the order of the axes given, with their own strides,
+//!   and read each side's storage from the [`FftElement`] type of its array;
+//! - complex-to-complex transforms, [`C2c`], in a [`Direction`], made by [`Planner::c2c`] and
+//!   its companions;
+//! - real-to-complex and complex-to-real transforms, [`R2c`] and [`C2r`]: a real array and a
+//!   complex one whose extent along the halved axis, the last of the axes given, is `n / 2 +
+//!   1` for the real extent `n`, made by [`Planner::r2c`], [`Planner::c2r`] and their
+//!   companions. In place, the complex array holds the real side in its reals, padded
+//!   ([`Layout::r2c_inplace`], [`Layout::c2r_inplace`]), which [`as_reals`] and
+//!   [`as_reals_mut`] give access to. As in FFTW, **a complex-to-real plan destroys its input
+//!   unless [`Planner::preserve_input`] is given**, which it supports over one transform
+//!   dimension only;
+//! - real-to-real transforms, [`R2r`], with all eleven [`R2rKind`]s of FFTW and one kind per
+//!   transform dimension, `kinds[i]` for `axes[i]` whatever the memory order, made by
+//!   [`Planner::r2r`] and its companions;
+//! - split complex storage, the real and imaginary parts in one buffer of reals a fixed gap
+//!   apart, such as a real plane and then an imaginary plane: a split complex array is a real
+//!   array with a *part axis* of extent 2, and [`Layout::split_along_axis`],
+//!   [`Layout::split_over_axes`], their in-place variants and [`Layout::new_split`] make
+//!   layouts with gaps, which count reals, for [`Planner::split_c2c`] and its companions;
+//! - split real-to-complex and complex-to-real transforms, [`SplitR2c`] and [`SplitC2r`],
+//!   between a real array and a split complex one with a part axis
+//!   ([`Layout::split_r2c_along_axis`], [`Layout::split_c2r_along_axis`] and their
+//!   companions), made by [`Planner::split_r2c`] and [`Planner::split_c2r`] and their
+//!   companions; they have no in-place plans, and split c2r destroys its input by default;
+//! - [`Planner`], a builder with [`Rigor`], wisdom-only, unaligned, time-limit, alignment-class
+//!   and scratch options, and with `fftw_threads` a thread count (`Planner::threads`), whose
+//!   input-policy requests ([`DefaultRequest`], [`PreserveRequest`], [`DestroyRequest`])
+//!   decide a plan's policy;
+//! - [`Plan`], of precision [`FftwReal`], family [`C2c`], [`SplitC2c`], [`R2c`], [`C2r`],
+//!   [`R2r`], [`SplitR2c`] or [`SplitC2r`] and policy [`Preserving`], [`Destroying`] or
+//!   [`InPlace`], which runs on any buffers that fit its layout and [`AlignmentClass`]es,
+//!   from any thread, with [`Plan::description`], [`Plan::fingerprint`], [`Plan::threads`],
+//!   [`Plan::logical_size`] and [`Plan::scale_factor`] for a [`Scale`];
+//! - [`FftBuffer`] and [`FftBufferMut`], implemented for slices and for RLST arrays and views
+//!   through [`StridedRawAccess`](crate::StridedRawAccess), checked at execution by shape,
+//!   strides and storage;
+//! - [`FftwError`] and [`Side`]; [`PLAN_ALIGNMENT`]; [`Backend`], [`backend`] and [`version`];
+//! - [`wisdom`]: FFTW's wisdom of each precision, exported to and imported from strings and
+//!   files, forgotten, and the system's wisdom, with what wisdom means for determinism;
+//! - `threads`, with the feature `fftw_threads`: RLST's FFTW lock, its limits, and
+//!   `make_planner_thread_safe`, which adds FFTW's own lock for other libraries that plan
+//!   with FFTW in the process.
 //!
-//! // We use `eval` to copy the data into a new array before generating the plan
-//! // so that `arr` is not overwritten. If we want to overwrite `arr` with the
-//! // FFT computations we could use `arr.r_mut().into_fft()` instead.
-//! let mut fft = arr.eval().into_fft();
-//! let forward_plan = fft.c2c_fft(FftwPlanFlags::Estimate, C2CDirection::Forward);
-//! let backward_plan = fft.c2c_fft(FftwPlanFlags::Estimate, C2CDirection::Backward);
+//! Plans are made on scratch buffers unless a `*_on` method is used, so planning never
+//! touches user data. Execution checks the buffers against the plan before calling FFTW and
+//! takes no lock. Every other FFTW call RLST makes, planning, plan destruction and wisdom
+//! included, runs under one process-wide lock. Split plans can use fewer of FFTW's SIMD
+//! stages than interleaved ones (see [`SplitC2c`]). Every planner method rejects a layout of
+//! another family. FFTW's transforms are unnormalised: a forward and a backward transform
+//! multiply by the [logical size](Plan::logical_size), and [`Plan::scale_factor`] gives the
+//! factor that undoes it.
 //!
-//! forward_plan.unwrap().execute();
-//! backward_plan.unwrap().execute();
+//! The rules on threads and determinism, when two plans are the same plan and give the same
+//! bits, are stated on [`Plan`](Plan#threads-and-determinism) and [`Plan::fingerprint`]; the
+//! rules on shared wisdom in [`wisdom`].
 //!
-//! // We can get a reference to the array in `fft` using the `borrow` method.
-//! let actual_arr = fft.borrow().unwrap();
+//! # Example
 //!
-//! assert_array_relative_eq!(c64::from_usize(30).unwrap() * arr.r(), actual_arr.r(), 1E-10);
-//!
-//! ```
-//! The method [c2c_fft](C2CPlan::c2c_fft) generates the c2c plan.
-//! One can then execute a forward or backward fft as shown above.
-//! By default the FFT overwrites the original array. With the `eval` function
-//! the result is written into a new array. Note that the array in `backward`
-//! is scaled compared to the original array. This is the default behaviour of FFTW.
-//!
-//! The FFTW interface in RLST always generates a forward and a backward FFT plan and
-//! stores both plans.
-//!
-//! The `plan` struct satisfies all the usual traits for mutable array access. Hence,
-//! it can be used itself like any other array. The underlying data is that of the original array
-//! for who a plan was computed.
-//!
-//! ## Real-to-Real transform
-//!
-//! The FFTW library supports a number of real-to-real transformations which are accessible
-//! through RLST. The following example demonstrates the use of the DCT-II transform in three
-//! dimensions.  
-//!
-//! ```
-//! use rlst::{rlst_dynamic_array, fftw::{FftwPlanFlags, R2RPlanKind, R2RPlan, FftPlanInplace},
-//!     EvaluateArray, c64,
-//!     assert_array_relative_eq};
-//! use num::FromPrimitive;
-//!
-//! let shape = [3, 5, 2];
-//! // We create a 16 byte aligned array. This is
-//! // the required alignment for FFTW to use SIMD features.
-//! let mut arr = rlst_dynamic_array!(f64, shape | rlst::FFTW_ALIGNED);
-//! arr.fill_from_seed_equally_distributed(0);
-//!
-//! // We use `eval` to copy the data into a new array before generating the plan
-//! // so that `arr` is not overwritten. If we want to overwrite `arr` with the
-//! // FFT computations we could use `arr.r_mut().into_fft()` instead.
-//! let mut fft = arr.eval().into_fft();
-//! let forward_plan = fft.r2r_fft(FftwPlanFlags::Estimate,
-//!   &[
-//!     R2RPlanKind::FFTW_REDFT10,
-//!     R2RPlanKind::FFTW_REDFT10,
-//!     R2RPlanKind::FFTW_REDFT10
-//!   ]);
-//! let backward_plan = fft.r2r_fft(FftwPlanFlags::Estimate,
-//!   &[
-//!     R2RPlanKind::FFTW_REDFT01,
-//!     R2RPlanKind::FFTW_REDFT01,
-//!     R2RPlanKind::FFTW_REDFT01
-//!   ]);
-//!
-//! forward_plan.unwrap().execute();
-//! backward_plan.unwrap().execute();
-//!
-//! // We can get a reference to the array in `fft` using the `borrow` method.
-//! let actual_arr = fft.borrow().unwrap();
-//!
-//! assert_array_relative_eq!(f64::from_usize(240).unwrap() * arr.r(), actual_arr.r(), 1E-10);
+//! A batch of transforms along the first axis of an RLST array, planned once and executed on
+//! two arrays of the same layout and alignment class:
 //!
 //! ```
-//! The `FFTW_REDFT10` plan is the standard DCT and `FFTW_REDFT01` is its inverse. For an overview
-//! of real-to-real transformations in FFTW
-//! see also [here](https://www.fftw.org/fftw3_doc/Real_002dto_002dReal-Transform-Kinds.html).
-//! In multi-dimensional transformation a different kind of real-to-real transform can be assigned
-//! to each dimension. Hence, the `kind` is a vector with the same dimension as the input array.
+//! use rlst::{c64, rlst_dynamic_array};
+//! use rlst::fftw::{Direction, Layout, Planner, Scale};
 //!
-//! ## Thread Safety
+//! // Three transforms of length 8, one per column, in buffers aligned to `FFTW_ALIGNED`.
+//! let mut data = rlst_dynamic_array!(c64, [8, 3] | rlst::FFTW_ALIGNED);
+//! let mut spectrum = rlst_dynamic_array!(c64, [8, 3] | rlst::FFTW_ALIGNED);
+//! let mut result = rlst_dynamic_array!(c64, [8, 3] | rlst::FFTW_ALIGNED);
+//! data.fill_from_seed_equally_distributed(0);
 //!
-//! Plan generation is not thread-safe in FFTW. This is solved in `rlst` by hiding the plan
-//! generation inside a mutex. However, if other libraries access FFTW at the same time as `rlst`
-//! a race condition may occur. The execution of a plan to compute the forward or backward FFT
-//! is thread-safe.
+//! let layout = Layout::along_axis(&data, &spectrum, 0)?;
+//! let forward = Planner::<f64>::new().c2c(&layout, Direction::Forward)?;
+//! let backward = Planner::<f64>::new().c2c(&layout, Direction::Backward)?;
 //!
-//! ## A note on ownership
+//! forward.execute(&data, &mut spectrum)?;
+//! backward.execute(&spectrum, &mut result)?;
 //!
-//! In the example above we are creating two plans, `forward_plan` and `backward_plan`. Both require
-//! mutable access to the array. This is solved by storing the array as an `Arc<RwLock<...>>` object
-//! in the `fft` struct. Each plan generation creates another shared reference by cloning the `Arc`
-//! and write access is then controlled at runtime through the `RwLock`, which prevents two plans
-//! writing into the data at the same time. Since `Arc` and `RwLock` are thread-safe this works
-//! also across multiple threads.
-//! Moving an array into this shared reference is why `into_fft` is necessary in the first place.
-//! Calling `borrow` or `borrow_mut` on `fft` creates a new read or write lock and allows the user
-//! to access the array data directly without other threads being able to write at the same time.
-//! Mutable access is intentionally limited to the stored elements: the array itself cannot be
-//! replaced while a plan retains pointers into its allocation.
+//! // The round trip multiplies by the transform length, which `Scale::Inverse` undoes.
+//! let scale = backward.scale_factor(Scale::Inverse);
+//! for (x, y) in data.iter_value().zip(result.iter_value()) {
+//!     assert!((x - scale * y).norm() < 1e-12);
+//! }
+//!
+//! // The same plans run on any other arrays of this layout and alignment class.
+//! let mut other = rlst_dynamic_array!(c64, [8, 3] | rlst::FFTW_ALIGNED);
+//! other.fill_from_seed_equally_distributed(1);
+//! forward.execute(&other, &mut spectrum)?;
+//! # Ok::<(), rlst::fftw::FftwError>(())
+//! ```
 
-pub mod c2c_inplace;
-pub mod r2r_inplace;
+mod align;
+mod backend;
+mod buffer;
+#[cfg(test)]
+mod concurrency_tests;
+mod element;
+mod error;
+mod execute;
+mod fingerprint;
+mod kind;
+mod layout;
+mod lock;
+mod options;
+mod plan;
+mod planner;
+mod real;
+mod scale;
+#[cfg(test)]
+mod test_support;
+#[cfg(feature = "fftw_threads")]
+#[cfg_attr(docsrs, doc(cfg(feature = "fftw_threads")))]
+pub mod threads;
+mod version;
+pub mod wisdom;
 
-pub use c2c_inplace::{C2CDirection, C2CPlan};
-pub use r2r_inplace::{R2RPlan, R2RPlanKind};
-
-use std::{
-    ffi::c_void,
-    marker::PhantomData,
-    ops::Deref,
-    sync::{LazyLock, LockResult, Mutex, PoisonError, RwLockReadGuard, RwLockWriteGuard},
+pub use align::{AlignmentClass, PLAN_ALIGNMENT};
+pub use backend::{Backend, backend, version};
+pub use buffer::{FftBuffer, FftBufferMut};
+pub use element::{FftElement, as_reals, as_reals_mut};
+pub use error::{FftwError, Side};
+pub use kind::{Direction, R2rKind};
+pub use layout::{Dim, Layout, Placement, Storage};
+pub use options::{DefaultRequest, DestroyRequest, PreserveRequest, Rigor};
+pub use plan::{
+    C2c, C2r, Destroying, Family, InPlace, Plan, Policy, Preserving, R2c, R2r, SplitC2c, SplitC2r,
+    SplitR2c,
 };
-
-use crate::{
-    Array, BaseItem, BorrowAtRuntime, BorrowAtRuntimeMut, RawAccessMut, RlstScalar, Shape,
-    StableRawAccessMut, Stride, c32, c64, dense::array::shared_array::ArrayAtomicSharedRef,
-};
-use fftw_sys;
-use num::Complex;
-
-static FFTW_PLAN_INTERFACE: LazyLock<Mutex<FftwPlanInterface>> =
-    LazyLock::new(|| Mutex::new(FftwPlanInterface::default()));
-
-/// FFT Precision
-#[derive(Copy, Clone, Debug)]
-pub enum FftPrecision {
-    /// Single Precision FFT
-    Single,
-    /// Double Precision FFT
-    Double,
-}
-
-/// Flags for FFT Plans
-#[derive(Copy, Clone, Debug)]
-#[repr(u32)]
-pub enum FftwPlanFlags {
-    /// Use a simple heuristic to select the plan. Does not overwrite data.
-    Estimate = fftw_sys::FFTW_ESTIMATE,
-    /// Compute several FFTs and measure execution time. Overwrites data.
-    Measure = fftw_sys::FFTW_MEASURE,
-    /// Like [FftwPlanFlags::Measure] but selects from a wider set of algorithms.
-    Patient = fftw_sys::FFTW_PATIENT,
-    /// Even wider search than [`FftwPlanFlags::Patient`]. May overwrite input while planning.
-    Exhaustive = fftw_sys::FFTW_EXHAUSTIVE,
-    /// Allow out of place transform to overwrite the input.
-    DestroyInput = fftw_sys::FFTW_DESTROY_INPUT,
-    /// Only use saved wisdom to generate a plan; fail if no applicable wisdom exists.
-    WisdomOnly = fftw_sys::FFTW_WISDOM_ONLY,
-    /// Do not assume SIMD-compatible alignment of input and output arrays.
-    Unaligned = fftw_sys::FFTW_UNALIGNED,
-}
-
-/// Description of a plan with different input and output arrays.
-pub trait FftPlanInplace {
-    /// Execute the plan in place, overwriting the plan's shared array data.
-    fn execute(&mut self);
-}
-
-struct FftwPlanPtrType<T> {
-    _marker: PhantomData<T>,
-}
-
-trait FftwPlanPtrTypeTrait {
-    type PtrType;
-
-    fn get_fftw_ptr(ptr: *mut c_void) -> Self::PtrType;
-}
-
-impl FftwPlanPtrTypeTrait for FftwPlanPtrType<f64> {
-    type PtrType = fftw_sys::fftw_plan;
-
-    fn get_fftw_ptr(ptr: *mut c_void) -> Self::PtrType {
-        ptr as fftw_sys::fftw_plan
-    }
-}
-
-impl FftwPlanPtrTypeTrait for FftwPlanPtrType<f32> {
-    type PtrType = fftw_sys::fftwf_plan;
-
-    fn get_fftw_ptr(ptr: *mut c_void) -> Self::PtrType {
-        ptr as fftw_sys::fftwf_plan
-    }
-}
-
-/// Storage for a pointer to an FFT Plan
-struct FftwPlanPtr<T>
-where
-    T: 'static,
-    FftwPlanPtrType<T>: FftwPlanPtrTypeTrait,
-{
-    ptr: *mut c_void,
-    _marker: std::marker::PhantomData<T>,
-}
-
-trait PlanInterfaceTrait {
-    type PlanPtr;
-
-    type RealType;
-
-    /// Destroy a given plan
-    unsafe fn destroy_plan(&self, plan_ptr: Self::PlanPtr);
-
-    /// Create a c2c plan
-    unsafe fn create_c2c(
-        &self,
-        rank: i32,
-        shape: *const i32,
-        arr_in: *mut Complex<Self::RealType>,
-        arr_out: *mut Complex<Self::RealType>,
-        sign: i32,
-        flags: u32,
-    ) -> Self::PlanPtr;
-
-    /// Create a r2r plan
-    unsafe fn create_r2r(
-        &self,
-        rank: i32,
-        shape: *const i32,
-        arr_in: *mut Self::RealType,
-        arr_out: *mut Self::RealType,
-        kind: &[R2RPlanKind],
-        flags: u32,
-    ) -> Self::PlanPtr;
-}
-
-impl<T> Drop for FftwPlanPtr<T>
-where
-    T: 'static,
-    FftwPlanPtrType<T>: FftwPlanPtrTypeTrait,
-{
-    fn drop(&mut self) {
-        if coe::is_same::<T, f64>() {
-            let ptr = FftwPlanPtrType::<f64>::get_fftw_ptr(self.ptr);
-            unsafe {
-                FFTW_PLAN_INTERFACE
-                    .lock()
-                    .unwrap()
-                    .fftw_double
-                    .destroy_plan(ptr);
-            };
-        } else if coe::is_same::<T, f32>() {
-            let ptr = FftwPlanPtrType::<f32>::get_fftw_ptr(self.ptr);
-            unsafe {
-                FFTW_PLAN_INTERFACE
-                    .lock()
-                    .unwrap()
-                    .fftw_single
-                    .destroy_plan(ptr)
-            };
-        }
-    }
-}
-
-/// An interface to plan generation routines that will be hidden behind a mutex
-struct ConcretePlanInterface<T> {
-    _marker: PhantomData<T>,
-}
-
-impl<T> Default for ConcretePlanInterface<T> {
-    fn default() -> Self {
-        Self {
-            _marker: Default::default(),
-        }
-    }
-}
-
-impl PlanInterfaceTrait for ConcretePlanInterface<f64> {
-    type PlanPtr = fftw_sys::fftw_plan;
-
-    type RealType = f64;
-
-    unsafe fn destroy_plan(&self, plan_ptr: Self::PlanPtr) {
-        unsafe {
-            fftw_sys::fftw_destroy_plan(plan_ptr);
-        }
-    }
-
-    unsafe fn create_c2c(
-        &self,
-        rank: i32,
-        shape: *const i32,
-        arr_in: *mut Complex<Self::RealType>,
-        arr_out: *mut Complex<Self::RealType>,
-        sign: i32,
-        flags: u32,
-    ) -> Self::PlanPtr {
-        unsafe { fftw_sys::fftw_plan_dft(rank, shape, arr_in, arr_out, sign, flags) }
-    }
-
-    unsafe fn create_r2r(
-        &self,
-        rank: i32,
-        shape: *const i32,
-        arr_in: *mut Self::RealType,
-        arr_out: *mut Self::RealType,
-        kind: &[R2RPlanKind],
-        flags: u32,
-    ) -> Self::PlanPtr {
-        unsafe { fftw_sys::fftw_plan_r2r(rank, shape, arr_in, arr_out, kind.as_ptr(), flags) }
-    }
-}
-
-impl PlanInterfaceTrait for ConcretePlanInterface<f32> {
-    type PlanPtr = fftw_sys::fftwf_plan;
-
-    type RealType = f32;
-
-    unsafe fn destroy_plan(&self, plan_ptr: Self::PlanPtr) {
-        unsafe {
-            fftw_sys::fftwf_destroy_plan(plan_ptr);
-        }
-    }
-
-    unsafe fn create_c2c(
-        &self,
-        rank: i32,
-        shape: *const i32,
-        arr_in: *mut Complex<Self::RealType>,
-        arr_out: *mut Complex<Self::RealType>,
-        sign: i32,
-        flags: u32,
-    ) -> Self::PlanPtr {
-        unsafe { fftw_sys::fftwf_plan_dft(rank, shape, arr_in, arr_out, sign, flags) }
-    }
-
-    unsafe fn create_r2r(
-        &self,
-        rank: i32,
-        shape: *const i32,
-        arr_in: *mut Self::RealType,
-        arr_out: *mut Self::RealType,
-        kind: &[R2RPlanKind],
-        flags: u32,
-    ) -> Self::PlanPtr {
-        unsafe { fftw_sys::fftwf_plan_r2r(rank, shape, arr_in, arr_out, kind.as_ptr(), flags) }
-    }
-}
-
-/// A thread-safe interface to work with FFTW Plans
-#[derive(Default)]
-struct FftwPlanInterface {
-    pub fftw_single: ConcretePlanInterface<f32>,
-    pub fftw_double: ConcretePlanInterface<f64>,
-}
-
-/// An in-place FFT plan
-#[allow(private_bounds)]
-pub struct PlanInplace<Item, ArrayImpl, const NDIM: usize>
-where
-    Item: RlstScalar + 'static,
-    FftwPlanPtrType<Item::Real>: FftwPlanPtrTypeTrait,
-{
-    shared_ref: ArrayAtomicSharedRef<ArrayImpl, NDIM>,
-    plan: FftwPlanPtr<Item::Real>,
-    _marker: std::marker::PhantomData<Item>,
-}
-
-#[allow(private_interfaces, private_bounds)]
-impl<Item, ArrayImpl, const NDIM: usize> PlanInplace<Item, ArrayImpl, NDIM>
-where
-    Item: RlstScalar + 'static,
-    FftwPlanPtrType<Item::Real>: FftwPlanPtrTypeTrait,
-{
-    /// Create a new plan interface
-    pub fn new(
-        shared_ref: ArrayAtomicSharedRef<ArrayImpl, NDIM>,
-        plan: FftwPlanPtr<Item::Real>,
-    ) -> Self {
-        Self {
-            shared_ref,
-            plan,
-            _marker: PhantomData,
-        }
-    }
-}
-
-macro_rules! impl_plan_inplace {
-
-    ($dtype:ty, $execute:ident) => {
-
-impl<ArrayImpl, const NDIM: usize> FftPlanInplace for PlanInplace<$dtype, ArrayImpl, NDIM>
-where
-    ArrayImpl: BaseItem<Item = $dtype>,
-{
-
-    fn execute(&mut self) {
-        // Lock access to the array. This will be returned when `lock` goes out of scope.
-        // We need `lock` to stay in scope until the end of the function. Using `_lock`
-        // as name achieves it without triggering a rust-analyzer warning about unused variables.
-        let mut _lock = self.shared_ref.borrow_mut().unwrap();
-
-        unsafe {
-            fftw_sys::$execute(
-                <FftwPlanPtrType<<$dtype as RlstScalar>::Real> as FftwPlanPtrTypeTrait>::get_fftw_ptr(
-                    self.plan.ptr,
-                ),
-            );
-        }
-
-    }
-
-
-}
-
-
-    };
-
-}
-
-impl_plan_inplace!(f32, fftwf_execute);
-impl_plan_inplace!(f64, fftw_execute);
-impl_plan_inplace!(c32, fftwf_execute);
-impl_plan_inplace!(c64, fftw_execute);
-
-/// The FFT struct is a factory to create FFT plans.
-///
-/// It holds a shared reference to the original array,
-/// which allow cloning so that multiple plans can be created
-/// for the same underlying array without violating borrowing
-/// constraints.
-pub struct Fft<ArrayImpl, const NDIM: usize> {
-    shared_ref: ArrayAtomicSharedRef<ArrayImpl, NDIM>,
-}
-
-/// A mutable lock on the elements used by FFT plans.
-///
-/// Unlike [`RwLockWriteGuard`], this guard does not implement `DerefMut`. This prevents replacing
-/// the array (and therefore its allocation) while an FFTW plan stores pointers into that allocation.
-///
-/// ```compile_fail
-/// use rlst::{DynArray, fftw::FftMutGuard};
-///
-/// let fft = DynArray::<f64, 1>::from_shape([4]).into_fft();
-/// let mut guard = fft.borrow_mut().unwrap();
-/// // Replacing the planned array would invalidate FFTW's stored pointer.
-/// *guard = DynArray::<f64, 1>::from_shape([4]);
-/// ```
-pub struct FftMutGuard<'a, ArrayImpl, const NDIM: usize> {
-    guard: RwLockWriteGuard<'a, Array<ArrayImpl, NDIM>>,
-}
-
-impl<ArrayImpl, const NDIM: usize> Deref for FftMutGuard<'_, ArrayImpl, NDIM> {
-    type Target = Array<ArrayImpl, NDIM>;
-
-    fn deref(&self) -> &Self::Target {
-        &self.guard
-    }
-}
-
-impl<ArrayImpl, const NDIM: usize> FftMutGuard<'_, ArrayImpl, NDIM>
-where
-    ArrayImpl: RawAccessMut,
-{
-    /// Return the mutable backing slice, when the array implementation exposes one.
-    ///
-    /// Mutating elements does not change the allocation or layout captured by existing plans.
-    pub fn data_mut(&mut self) -> Option<&mut [ArrayImpl::Item]> {
-        self.guard.data_mut()
-    }
-
-    pub(crate) fn array_mut(&mut self) -> &mut Array<ArrayImpl, NDIM> {
-        &mut self.guard
-    }
-}
-
-#[allow(private_bounds)]
-impl<Item, ArrayImpl, const NDIM: usize> Array<ArrayImpl, NDIM>
-where
-    Item: RlstScalar + 'static,
-    FftwPlanPtrType<Item::Real>: FftwPlanPtrTypeTrait,
-    ArrayImpl: StableRawAccessMut<Item = Item> + Shape<NDIM> + Stride<NDIM>,
-{
-    /// Initialize a FFT computation.
-    pub fn into_fft(self) -> Fft<ArrayImpl, NDIM> {
-        Fft::from_arr(self)
-    }
-}
-
-#[allow(private_bounds)]
-impl<Item, ArrayImpl, const NDIM: usize> Fft<ArrayImpl, NDIM>
-where
-    Item: RlstScalar + 'static,
-    FftwPlanPtrType<Item::Real>: FftwPlanPtrTypeTrait,
-    ArrayImpl: StableRawAccessMut<Item = Item> + Shape<NDIM> + Stride<NDIM>,
-{
-    /// Create a new FFT struct from an existing array
-    pub fn from_arr(arr: Array<ArrayImpl, NDIM>) -> Self {
-        Self {
-            shared_ref: arr.into_shared_atomic(),
-        }
-    }
-
-    /// Borrow the array as read-only
-    pub fn borrow(&self) -> LockResult<RwLockReadGuard<'_, Array<ArrayImpl, NDIM>>> {
-        self.shared_ref.borrow()
-    }
-
-    /// Borrow the stored elements as read-write.
-    ///
-    /// The returned guard permits element mutation through [`FftMutGuard::data_mut`] but prevents
-    /// replacing the array or changing its allocation and layout while plans exist.
-    pub fn borrow_mut(&self) -> LockResult<FftMutGuard<'_, ArrayImpl, NDIM>> {
-        match self.shared_ref.borrow_mut() {
-            Ok(guard) => Ok(FftMutGuard { guard }),
-            Err(error) => Err(PoisonError::new(FftMutGuard {
-                guard: error.into_inner(),
-            })),
-        }
-    }
-}
+pub use planner::{DEFAULT_MAX_SCRATCH, Planner};
+pub use real::FftwReal;
+pub use scale::Scale;

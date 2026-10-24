@@ -1,0 +1,1280 @@
+//! Concurrency of complex-to-complex, real-to-complex and real-to-real plans, of wisdom export,
+//! and of threaded plans (tasks F4, F3, F5a, F5b, F6a and F6b; design Sections 5 and 7.5).
+//!
+//! The tests run as threads of the test process, beside the other tests, and plan with
+//! `Rigor::Estimate` only, so no wisdom of a greater rigor exists in the process and plans of
+//! one layout made in different threads are the same plan (design, Section 3 item 4). Threads
+//! are started with `std::thread::scope` in fixed numbers and overlap through `Barrier`s;
+//! a panic in a thread fails the test when its scope ends. No test here imports or forgets
+//! wisdom, which would change the plans of every later test (DC39). The tests that need a
+//! fresh process are in the harness-free binary `tests/fftw_determinism.rs`.
+
+use std::fmt;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Barrier, mpsc};
+use std::time::Duration;
+
+use num::Complex;
+
+use crate::dense::array::StridedSliceArrayMut;
+use crate::fftw::lock::with_fftw;
+use crate::fftw::test_support::{
+    PolicyKind, SEED, TestReal, aligned, assert_matches_reference, fill_view, logical_reference,
+    random_reals, random_values, real_sentinel, real_sentinel_parent, sentinel, sentinel_parent,
+};
+use crate::fftw::{
+    AlignmentClass, C2c, C2r, Destroying, Direction, FftBufferMut, FftwReal, InPlace, Layout, Plan,
+    Planner, Preserving, R2c, R2r, R2rKind, SplitC2c, SplitC2r, SplitR2c, as_reals_mut, wisdom,
+};
+use crate::{
+    Array, BaseItem, Shape, SliceArray, SliceArrayMut, Stride, StridedRawAccessMut,
+    UnsafeRandomAccessByRef, UnsafeRandomAccessMut,
+};
+
+/// nd-fmm's unit: `N_PHI` points on each of `RINGS` rings (design, Section 2.5).
+const UNIT_SHAPE: [usize; 2] = [140, 8];
+
+/// The elements of a unit: 1120 complex values, a multiple of 64 bytes in both precisions,
+/// so that consecutive units of an aligned parent all have alignment class 0.
+const UNIT: usize = 140 * 8;
+
+/// The threads that execute one plan at once.
+const THREADS: usize = 8;
+
+/// The executions of each thread.
+const ITERATIONS: usize = 8;
+
+/// A complex-to-complex plan of one of the three input policies.
+enum AnyPlan<T: FftwReal> {
+    Preserving(Plan<T, C2c, Preserving>),
+    Destroying(Plan<T, C2c, Destroying>),
+    InPlace(Plan<T, C2c, InPlace>),
+}
+
+impl<T: TestReal> AnyPlan<T> {
+    /// A plan of `policy` for `layout` (out of place) or `inplace` (in place), on scratch.
+    fn new(
+        planner: &Planner<T>,
+        policy: PolicyKind,
+        layout: &Layout,
+        inplace: &Layout,
+        direction: Direction,
+    ) -> Self {
+        match policy {
+            PolicyKind::Preserving => Self::Preserving(planner.c2c(layout, direction).unwrap()),
+            PolicyKind::Destroying => Self::Destroying(
+                planner
+                    .clone()
+                    .may_destroy_input()
+                    .c2c(layout, direction)
+                    .unwrap(),
+            ),
+            PolicyKind::InPlace => Self::InPlace(planner.c2c_inplace(inplace, direction).unwrap()),
+        }
+    }
+
+    /// A plan of `policy` for nd-fmm's unit, along axis 0, at alignment class 0.
+    fn unit(policy: PolicyKind, direction: Direction) -> Self {
+        let scratch = [Complex::<T>::default(); UNIT];
+        let unit = SliceArray::from_shape(&scratch[..], UNIT_SHAPE);
+        let layout = Layout::along_axis(&unit, &unit, 0).unwrap();
+        let inplace = Layout::along_axis_inplace(&unit, 0).unwrap();
+        Self::new(&Planner::new(), policy, &layout, &inplace, direction)
+    }
+
+    /// Execute from `input` into `output` out of place, or on `input` in place, where the
+    /// result then is.
+    fn execute<I, O>(&self, input: &mut I, output: &mut O)
+    where
+        I: FftBufferMut<Complex<T>> + ?Sized,
+        O: FftBufferMut<Complex<T>> + ?Sized,
+    {
+        match self {
+            Self::Preserving(plan) => plan.execute(&*input, output),
+            Self::Destroying(plan) => plan.execute(input, output),
+            Self::InPlace(plan) => plan.execute(input),
+        }
+        .unwrap()
+    }
+
+    fn description(&self) -> String {
+        match self {
+            Self::Preserving(plan) => plan.description(),
+            Self::Destroying(plan) => plan.description(),
+            Self::InPlace(plan) => plan.description(),
+        }
+    }
+
+    fn fingerprint(&self) -> u64 {
+        match self {
+            Self::Preserving(plan) => plan.fingerprint(),
+            Self::Destroying(plan) => plan.fingerprint(),
+            Self::InPlace(plan) => plan.fingerprint(),
+        }
+    }
+}
+
+/// The bits of complex values, for comparisons bit for bit.
+fn bits<T: TestReal>(values: &[Complex<T>]) -> Vec<(u64, u64)> {
+    values
+        .iter()
+        .map(|value| (value.re.to_f64().to_bits(), value.im.to_f64().to_bits()))
+        .collect()
+}
+
+/// The seed of the input of unit `k`.
+fn unit_seed(k: usize) -> u64 {
+    SEED + k as u64
+}
+
+/// The context of a message from the threads of a test.
+struct Context<'a> {
+    precision: &'static str,
+    policy: PolicyKind,
+    seed: u64,
+    thread: usize,
+    iteration: usize,
+    test: &'a str,
+}
+
+impl fmt::Display for Context<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{}: {} {:?}, seed {:#x}, thread {}, iteration {}",
+            self.test, self.precision, self.policy, self.seed, self.thread, self.iteration
+        )
+    }
+}
+
+/// The units of an executing thread: its input and output, its input values, and the bits
+/// of its result from the sequential execution.
+struct Unit<'a, T> {
+    input: &'a mut [Complex<T>],
+    output: &'a mut [Complex<T>],
+    values: Vec<Complex<T>>,
+    expected: Vec<(u64, u64)>,
+    seed: u64,
+}
+
+impl<T: TestReal> Unit<'_, T> {
+    /// Restore the input, fill the output with the sentinel, execute `plan` once on the unit
+    /// and assert that the result equals the sequential one, bit for bit.
+    fn execute_and_check(&mut self, plan: &AnyPlan<T>, policy: PolicyKind, context: &Context) {
+        self.input.copy_from_slice(&self.values);
+        self.output.fill(sentinel::<T>());
+        plan.execute(
+            &mut SliceArrayMut::from_shape(&mut *self.input, UNIT_SHAPE),
+            &mut SliceArrayMut::from_shape(&mut *self.output, UNIT_SHAPE),
+        );
+        let result = match policy {
+            PolicyKind::InPlace => &*self.input,
+            _ => &*self.output,
+        };
+        assert!(
+            bits(result) == self.expected,
+            "{context}: the result differs from the sequential one"
+        );
+    }
+}
+
+/// Split the parents `input` and `output` into units, one per thread, with seeded input from
+/// `unit_seed(first_seed + k)`, and compute the result of `plan` on each unit sequentially.
+fn units<'a, T: TestReal>(
+    plan: &AnyPlan<T>,
+    policy: PolicyKind,
+    input: &'a mut [Complex<T>],
+    output: &'a mut [Complex<T>],
+    first_seed: usize,
+) -> Vec<Unit<'a, T>> {
+    // The units are disjoint chunks of the parents, as `chunks_exact_mut(UNIT)` gives them.
+    let (inputs, _) = input.as_chunks_mut::<UNIT>();
+    let (outputs, _) = output.as_chunks_mut::<UNIT>();
+    inputs
+        .iter_mut()
+        .zip(outputs)
+        .enumerate()
+        .map(|(k, (input, output))| {
+            let seed = unit_seed(first_seed + k);
+            let mut unit = Unit {
+                input: &mut input[..],
+                output: &mut output[..],
+                values: random_values::<T>(seed, UNIT),
+                expected: Vec::new(),
+                seed,
+            };
+            unit.input.copy_from_slice(&unit.values);
+            plan.execute(
+                &mut SliceArrayMut::from_shape(&mut *unit.input, UNIT_SHAPE),
+                &mut SliceArrayMut::from_shape(&mut *unit.output, UNIT_SHAPE),
+            );
+            unit.expected = bits(match policy {
+                PolicyKind::InPlace => &*unit.input,
+                _ => &*unit.output,
+            });
+            unit
+        })
+        .collect()
+}
+
+/// Parents of `count` units at `FFTW_ALIGNED`, filled with the sentinel.
+fn parents<T: TestReal>(
+    count: usize,
+) -> (
+    crate::dense::array::AlignedDynArray<Complex<T>, 1, { crate::FFTW_ALIGNED }>,
+    crate::dense::array::AlignedDynArray<Complex<T>, 1, { crate::FFTW_ALIGNED }>,
+) {
+    (
+        sentinel_parent::<T, 1>([count * UNIT]),
+        sentinel_parent::<T, 1>([count * UNIT]),
+    )
+}
+
+#[test]
+fn test_plans_are_send_and_sync() {
+    fn send_and_sync<P: Send + Sync>() {}
+    send_and_sync::<Plan<f64, C2c, Preserving>>();
+    send_and_sync::<Plan<f64, C2c, Destroying>>();
+    send_and_sync::<Plan<f64, C2c, InPlace>>();
+    send_and_sync::<Plan<f32, C2c, Preserving>>();
+    send_and_sync::<Plan<f32, C2c, Destroying>>();
+    send_and_sync::<Plan<f32, C2c, InPlace>>();
+    send_and_sync::<Plan<f64, SplitC2c, Preserving>>();
+    send_and_sync::<Plan<f64, SplitC2c, Destroying>>();
+    send_and_sync::<Plan<f64, SplitC2c, InPlace>>();
+    send_and_sync::<Plan<f32, SplitC2c, Preserving>>();
+    send_and_sync::<Plan<f32, SplitC2c, Destroying>>();
+    send_and_sync::<Plan<f32, SplitC2c, InPlace>>();
+    send_and_sync::<Plan<f64, R2c, Preserving>>();
+    send_and_sync::<Plan<f64, R2c, Destroying>>();
+    send_and_sync::<Plan<f64, R2c, InPlace>>();
+    send_and_sync::<Plan<f32, C2r, Preserving>>();
+    send_and_sync::<Plan<f32, C2r, Destroying>>();
+    send_and_sync::<Plan<f32, C2r, InPlace>>();
+    send_and_sync::<Plan<f64, R2r, Preserving>>();
+    send_and_sync::<Plan<f32, R2r, Destroying>>();
+    send_and_sync::<Plan<f64, R2r, InPlace>>();
+    send_and_sync::<Plan<f64, SplitR2c, Preserving>>();
+    send_and_sync::<Plan<f32, SplitR2c, Destroying>>();
+    send_and_sync::<Plan<f64, SplitC2r, Preserving>>();
+    send_and_sync::<Plan<f32, SplitC2r, Destroying>>();
+}
+
+/// One plan of `policy` executed by `THREADS` threads at once, `ITERATIONS` times each, on
+/// disjoint units of one parent (design, Section 5 rule 2).
+fn check_one_plan_many_threads<T: TestReal>(policy: PolicyKind) {
+    let plan = AnyPlan::<T>::unit(policy, Direction::Forward);
+    let (mut input, mut output) = parents::<T>(THREADS);
+    let units = units(
+        &plan,
+        policy,
+        input.data_mut().unwrap(),
+        output.data_mut().unwrap(),
+        0,
+    );
+    let barrier = Barrier::new(THREADS);
+    std::thread::scope(|scope| {
+        for (thread, mut unit) in units.into_iter().enumerate() {
+            let (plan, barrier) = (&plan, &barrier);
+            scope.spawn(move || {
+                for iteration in 0..ITERATIONS {
+                    let context = Context {
+                        precision: T::NAME,
+                        policy,
+                        seed: unit.seed,
+                        thread,
+                        iteration,
+                        test: "one plan, many threads",
+                    };
+                    // Every thread starts each execution together with the others.
+                    barrier.wait();
+                    unit.execute_and_check(plan, policy, &context);
+                }
+            });
+        }
+    });
+}
+
+#[test]
+fn test_one_plan_many_threads() {
+    for policy in PolicyKind::ALL {
+        check_one_plan_many_threads::<f64>(policy);
+        check_one_plan_many_threads::<f32>(policy);
+    }
+}
+
+/// nd-fmm's box as split planes (task F3): `UNIT_SHAPE` with the part axis outermost.
+const SPLIT_SHAPE: [usize; 3] = [140, 8, 2];
+
+/// The reals of a split box: 2240, a multiple of 64 bytes in both precisions, so that
+/// consecutive boxes of an aligned parent all have alignment class 0.
+const SPLIT_UNIT: usize = 2 * UNIT;
+
+/// A split complex-to-complex plan of one of the three input policies.
+enum AnySplitPlan<T: FftwReal> {
+    Preserving(Plan<T, SplitC2c, Preserving>),
+    Destroying(Plan<T, SplitC2c, Destroying>),
+    InPlace(Plan<T, SplitC2c, InPlace>),
+}
+
+impl<T: TestReal> AnySplitPlan<T> {
+    /// A plan of `policy` for nd-fmm's split box, along logical axis 0, at class 0.
+    fn unit(policy: PolicyKind, direction: Direction) -> Self {
+        let scratch = [T::default(); SPLIT_UNIT];
+        let unit = SliceArray::from_shape(&scratch[..], SPLIT_SHAPE);
+        let planner = Planner::<T>::new();
+        match policy {
+            PolicyKind::Preserving => {
+                let layout = Layout::split_along_axis(&unit, 2, &unit, 2, 0).unwrap();
+                Self::Preserving(planner.split_c2c(&layout, direction).unwrap())
+            }
+            PolicyKind::Destroying => {
+                let layout = Layout::split_along_axis(&unit, 2, &unit, 2, 0).unwrap();
+                Self::Destroying(
+                    planner
+                        .may_destroy_input()
+                        .split_c2c(&layout, direction)
+                        .unwrap(),
+                )
+            }
+            PolicyKind::InPlace => {
+                let layout = Layout::split_along_axis_inplace(&unit, 2, 0).unwrap();
+                Self::InPlace(planner.split_c2c_inplace(&layout, direction).unwrap())
+            }
+        }
+    }
+
+    /// Execute from the box `input` into the box `output` out of place, or on `input` in
+    /// place.
+    fn execute(&self, input: &mut [T], output: &mut [T]) {
+        let mut input = SliceArrayMut::from_shape(input, SPLIT_SHAPE);
+        let mut output = SliceArrayMut::from_shape(output, SPLIT_SHAPE);
+        match self {
+            Self::Preserving(plan) => plan.execute(&input, &mut output),
+            Self::Destroying(plan) => plan.execute(&mut input, &mut output),
+            Self::InPlace(plan) => plan.execute(&mut input),
+        }
+        .unwrap()
+    }
+}
+
+/// The bits of reals, for comparisons bit for bit.
+fn real_bits<T: TestReal>(values: &[T]) -> Vec<u64> {
+    values
+        .iter()
+        .map(|&value| TestReal::to_f64(value).to_bits())
+        .collect()
+}
+
+/// One split plan of `policy` executed by `THREADS` threads at once, `ITERATIONS` times
+/// each, on disjoint boxes of one parent, against the sequential results bit for bit.
+fn check_one_split_plan_many_threads<T: TestReal>(policy: PolicyKind) {
+    let plan = AnySplitPlan::<T>::unit(policy, Direction::Forward);
+    let mut input = real_sentinel_parent::<T, 1>([THREADS * SPLIT_UNIT]);
+    let mut output = real_sentinel_parent::<T, 1>([THREADS * SPLIT_UNIT]);
+    let (inputs, _) = input.data_mut().unwrap().as_chunks_mut::<SPLIT_UNIT>();
+    let (outputs, _) = output.data_mut().unwrap().as_chunks_mut::<SPLIT_UNIT>();
+    // Each box with its seeded input and its sequential result.
+    let boxes: Vec<_> = inputs
+        .iter_mut()
+        .zip(outputs)
+        .enumerate()
+        .map(|(k, (input, output))| {
+            let seed = unit_seed(k);
+            let values: Vec<T> = random_values::<T>(seed, UNIT)
+                .into_iter()
+                .flat_map(|value| [value.re, value.im])
+                .collect();
+            input.copy_from_slice(&values);
+            plan.execute(input, output);
+            let expected = real_bits(match policy {
+                PolicyKind::InPlace => &input[..],
+                _ => &output[..],
+            });
+            (input, output, values, expected, seed)
+        })
+        .collect();
+    let barrier = Barrier::new(THREADS);
+    std::thread::scope(|scope| {
+        for (thread, (input, output, values, expected, seed)) in boxes.into_iter().enumerate() {
+            let (plan, barrier) = (&plan, &barrier);
+            scope.spawn(move || {
+                for iteration in 0..ITERATIONS {
+                    let context = Context {
+                        precision: T::NAME,
+                        policy,
+                        seed,
+                        thread,
+                        iteration,
+                        test: "one split plan, many threads",
+                    };
+                    input.copy_from_slice(&values);
+                    output.fill(real_sentinel::<T>());
+                    // Every thread starts each execution together with the others.
+                    barrier.wait();
+                    plan.execute(input, output);
+                    let result = match policy {
+                        PolicyKind::InPlace => &input[..],
+                        _ => &output[..],
+                    };
+                    assert!(
+                        real_bits(result) == expected,
+                        "{context}: the result differs from the sequential one"
+                    );
+                }
+            });
+        }
+    });
+}
+
+#[test]
+fn test_one_split_plan_many_threads() {
+    for policy in PolicyKind::ALL {
+        check_one_split_plan_many_threads::<f64>(policy);
+        check_one_split_plan_many_threads::<f32>(policy);
+    }
+}
+
+/// nd-fmm's unit as a real input (task F5a): `UNIT_SHAPE` reals into this spectrum, halved
+/// along axis 0, 71 = 140 / 2 + 1.
+const R2C_SHAPE: [usize; 2] = [71, 8];
+
+/// The complex values of a unit's spectrum: 568, a multiple of 64 bytes in both precisions,
+/// as the 1120 reals of its input are.
+const R2C_UNIT: usize = 71 * 8;
+
+/// A real-to-complex plan of one of the three input policies.
+enum AnyR2cPlan<T: FftwReal> {
+    Preserving(Plan<T, R2c, Preserving>),
+    Destroying(Plan<T, R2c, Destroying>),
+    InPlace(Plan<T, R2c, InPlace>),
+}
+
+impl<T: TestReal> AnyR2cPlan<T> {
+    /// A plan of `policy` for the real unit along axis 0, at class 0; in place on the
+    /// spectrum, whose columns of 142 reals hold the 140 reals of the input.
+    fn unit(policy: PolicyKind) -> Self {
+        let reals = [T::default(); UNIT];
+        let values = [Complex::<T>::default(); R2C_UNIT];
+        let real = SliceArray::from_shape(&reals[..], UNIT_SHAPE);
+        let complex = SliceArray::from_shape(&values[..], R2C_SHAPE);
+        let layout = Layout::along_axis(&real, &complex, 0).unwrap();
+        let planner = Planner::<T>::new();
+        match policy {
+            PolicyKind::Preserving => Self::Preserving(planner.r2c(&layout).unwrap()),
+            PolicyKind::Destroying => {
+                Self::Destroying(planner.may_destroy_input().r2c(&layout).unwrap())
+            }
+            PolicyKind::InPlace => {
+                let layout = Layout::r2c_inplace(&complex, &[0], UNIT_SHAPE[0]).unwrap();
+                Self::InPlace(planner.r2c_inplace(&layout).unwrap())
+            }
+        }
+    }
+
+    /// Write `values` into the unit's input: `input` out of place, the reals of `output` in
+    /// place, whose other reals are set to the sentinel's parts.
+    fn load(&self, input: &mut [T], output: &mut [Complex<T>], values: &[T]) {
+        output.fill(sentinel::<T>());
+        match self {
+            Self::InPlace(_) => {
+                let n = UNIT_SHAPE[0];
+                let reals = as_reals_mut(output);
+                for (column, values) in values.chunks_exact(n).enumerate() {
+                    let start = 2 * R2C_SHAPE[0] * column;
+                    reals[start..start + n].copy_from_slice(values);
+                }
+            }
+            _ => input.copy_from_slice(values),
+        }
+    }
+
+    /// Execute from `input` into `output` out of place, or on `output` in place.
+    fn execute(&self, input: &mut [T], output: &mut [Complex<T>]) {
+        let mut output = SliceArrayMut::from_shape(output, R2C_SHAPE);
+        match self {
+            Self::Preserving(plan) => {
+                plan.execute(&SliceArray::from_shape(&*input, UNIT_SHAPE), &mut output)
+            }
+            Self::Destroying(plan) => plan.execute(
+                &mut SliceArrayMut::from_shape(input, UNIT_SHAPE),
+                &mut output,
+            ),
+            Self::InPlace(plan) => plan.execute(&mut output),
+        }
+        .unwrap()
+    }
+}
+
+/// One real-to-complex plan of `policy` executed by `THREADS` threads at once, `ITERATIONS`
+/// times each, on disjoint units of one parent, against the sequential results bit for bit.
+fn check_one_r2c_plan_many_threads<T: TestReal>(policy: PolicyKind) {
+    let plan = AnyR2cPlan::<T>::unit(policy);
+    let mut input = real_sentinel_parent::<T, 1>([THREADS * UNIT]);
+    let mut output = sentinel_parent::<T, 1>([THREADS * R2C_UNIT]);
+    let (inputs, _) = input.data_mut().unwrap().as_chunks_mut::<UNIT>();
+    let (outputs, _) = output.data_mut().unwrap().as_chunks_mut::<R2C_UNIT>();
+    // Each unit with its seeded input and its sequential result.
+    let units: Vec<_> = inputs
+        .iter_mut()
+        .zip(outputs)
+        .enumerate()
+        .map(|(k, (input, output))| {
+            let seed = unit_seed(k);
+            let values = random_reals::<T>(seed, UNIT);
+            plan.load(input, output, &values);
+            plan.execute(input, output);
+            let expected = bits(&output[..]);
+            (input, output, values, expected, seed)
+        })
+        .collect();
+    let barrier = Barrier::new(THREADS);
+    std::thread::scope(|scope| {
+        for (thread, (input, output, values, expected, seed)) in units.into_iter().enumerate() {
+            let (plan, barrier) = (&plan, &barrier);
+            scope.spawn(move || {
+                for iteration in 0..ITERATIONS {
+                    let context = Context {
+                        precision: T::NAME,
+                        policy,
+                        seed,
+                        thread,
+                        iteration,
+                        test: "one r2c plan, many threads",
+                    };
+                    plan.load(input, output, &values);
+                    // Every thread starts each execution together with the others.
+                    barrier.wait();
+                    plan.execute(input, output);
+                    assert!(
+                        bits(&output[..]) == expected,
+                        "{context}: the result differs from the sequential one"
+                    );
+                }
+            });
+        }
+    });
+}
+
+#[test]
+fn test_one_r2c_plan_many_threads() {
+    for policy in PolicyKind::ALL {
+        check_one_r2c_plan_many_threads::<f64>(policy);
+        check_one_r2c_plan_many_threads::<f32>(policy);
+    }
+}
+
+/// A real-to-real plan of one of the three input policies (task F5b).
+enum AnyR2rPlan<T: FftwReal> {
+    Preserving(Plan<T, R2r, Preserving>),
+    Destroying(Plan<T, R2r, Destroying>),
+    InPlace(Plan<T, R2r, InPlace>),
+}
+
+impl<T: TestReal> AnyR2rPlan<T> {
+    /// A `Redft10` plan of `policy` along axis 0 of the real unit `UNIT_SHAPE`, at class 0.
+    fn unit(policy: PolicyKind) -> Self {
+        let reals = [T::default(); UNIT];
+        let unit = SliceArray::from_shape(&reals[..], UNIT_SHAPE);
+        let kinds = [R2rKind::Redft10];
+        let planner = Planner::<T>::new();
+        match policy {
+            PolicyKind::Preserving => {
+                let layout = Layout::along_axis(&unit, &unit, 0).unwrap();
+                Self::Preserving(planner.r2r(&layout, &kinds).unwrap())
+            }
+            PolicyKind::Destroying => {
+                let layout = Layout::along_axis(&unit, &unit, 0).unwrap();
+                Self::Destroying(planner.may_destroy_input().r2r(&layout, &kinds).unwrap())
+            }
+            PolicyKind::InPlace => {
+                let layout = Layout::along_axis_inplace(&unit, 0).unwrap();
+                Self::InPlace(planner.r2r_inplace(&layout, &kinds).unwrap())
+            }
+        }
+    }
+
+    /// Execute from `input` into `output` out of place, or on `input` in place.
+    fn execute(&self, input: &mut [T], output: &mut [T]) {
+        let mut input = SliceArrayMut::from_shape(input, UNIT_SHAPE);
+        let mut output = SliceArrayMut::from_shape(output, UNIT_SHAPE);
+        match self {
+            Self::Preserving(plan) => plan.execute(&input, &mut output),
+            Self::Destroying(plan) => plan.execute(&mut input, &mut output),
+            Self::InPlace(plan) => plan.execute(&mut input),
+        }
+        .unwrap()
+    }
+}
+
+/// One real-to-real plan of `policy` executed by `THREADS` threads at once, `ITERATIONS`
+/// times each, on disjoint units of one parent, against the sequential results bit for bit.
+fn check_one_r2r_plan_many_threads<T: TestReal>(policy: PolicyKind) {
+    let plan = AnyR2rPlan::<T>::unit(policy);
+    let mut input = real_sentinel_parent::<T, 1>([THREADS * UNIT]);
+    let mut output = real_sentinel_parent::<T, 1>([THREADS * UNIT]);
+    let (inputs, _) = input.data_mut().unwrap().as_chunks_mut::<UNIT>();
+    let (outputs, _) = output.data_mut().unwrap().as_chunks_mut::<UNIT>();
+    // Each unit with its seeded input and its sequential result.
+    let units: Vec<_> = inputs
+        .iter_mut()
+        .zip(outputs)
+        .enumerate()
+        .map(|(k, (input, output))| {
+            let seed = unit_seed(k);
+            let values = random_reals::<T>(seed, UNIT);
+            input.copy_from_slice(&values);
+            plan.execute(input, output);
+            let expected = real_bits(match policy {
+                PolicyKind::InPlace => &input[..],
+                _ => &output[..],
+            });
+            (input, output, values, expected, seed)
+        })
+        .collect();
+    let barrier = Barrier::new(THREADS);
+    std::thread::scope(|scope| {
+        for (thread, (input, output, values, expected, seed)) in units.into_iter().enumerate() {
+            let (plan, barrier) = (&plan, &barrier);
+            scope.spawn(move || {
+                for iteration in 0..ITERATIONS {
+                    let context = Context {
+                        precision: T::NAME,
+                        policy,
+                        seed,
+                        thread,
+                        iteration,
+                        test: "one r2r plan, many threads",
+                    };
+                    input.copy_from_slice(&values);
+                    output.fill(real_sentinel::<T>());
+                    // Every thread starts each execution together with the others.
+                    barrier.wait();
+                    plan.execute(input, output);
+                    let result = match policy {
+                        PolicyKind::InPlace => &input[..],
+                        _ => &output[..],
+                    };
+                    assert!(
+                        real_bits(result) == expected,
+                        "{context}: the result differs from the sequential one"
+                    );
+                }
+            });
+        }
+    });
+}
+
+#[test]
+fn test_one_r2r_plan_many_threads() {
+    for policy in PolicyKind::ALL {
+        check_one_r2r_plan_many_threads::<f64>(policy);
+        check_one_r2r_plan_many_threads::<f32>(policy);
+    }
+}
+
+/// The arrays and views of the planning threads (F2's memory orders), all over aligned
+/// storage so that their alignment classes are the same in every thread.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Order {
+    ColumnMajor,
+    RowMajor,
+    Subview,
+    Slice,
+}
+
+/// The shape of the planning threads' problems, transformed along axis 0.
+const PLANNING_SHAPE: [usize; 2] = [12, 5];
+
+/// Make, describe, execute once and drop a plan of `policy` for `input` and `output`; assert
+/// the result against the logical reference, and return the plan's fingerprint.
+fn plan_and_execute<T, AIn, AOut>(
+    policy: PolicyKind,
+    input: &mut Array<AIn, 2>,
+    output: &mut Array<AOut, 2>,
+    context: &str,
+) -> u64
+where
+    T: TestReal,
+    AIn: BaseItem<Item = Complex<T>>
+        + StridedRawAccessMut
+        + Shape<2>
+        + Stride<2>
+        + UnsafeRandomAccessByRef<2>
+        + UnsafeRandomAccessMut<2>,
+    AOut: BaseItem<Item = Complex<T>>
+        + StridedRawAccessMut
+        + Shape<2>
+        + Stride<2>
+        + UnsafeRandomAccessByRef<2>
+        + UnsafeRandomAccessMut<2>,
+{
+    let values = fill_view(input, SEED);
+    let layout = Layout::along_axis(input, output, 0).unwrap();
+    let inplace = Layout::along_axis_inplace(input, 0).unwrap();
+    // Subviews and slices at an offset have other classes than their parents; in place,
+    // the input is also the output.
+    let input_class = AlignmentClass::of(&*input);
+    let output_class = match policy {
+        PolicyKind::InPlace => input_class,
+        _ => AlignmentClass::of(&*output),
+    };
+    let planner = Planner::<T>::new().alignment(input_class, output_class);
+    let plan = AnyPlan::new(&planner, policy, &layout, &inplace, Direction::Forward);
+    assert!(!plan.description().is_empty(), "{context}: no description");
+    let fingerprint = plan.fingerprint();
+    plan.execute(input, output);
+    drop(plan);
+    let reference = logical_reference(PLANNING_SHAPE, &values, &[0], Direction::Forward);
+    match policy {
+        PolicyKind::InPlace => assert_matches_reference(&*input, &reference, &[0], &context),
+        _ => assert_matches_reference(&*output, &reference, &[0], &context),
+    }
+    fingerprint
+}
+
+/// Plan, execute and drop plans for every order and policy in precision `T`; return each
+/// problem's label and fingerprint.
+fn plan_orders<T: TestReal>(thread: usize) -> Vec<(String, u64)> {
+    let shape = PLANNING_SHAPE;
+    let mut fingerprints = Vec::new();
+    for order in [
+        Order::ColumnMajor,
+        Order::RowMajor,
+        Order::Subview,
+        Order::Slice,
+    ] {
+        for policy in PolicyKind::ALL {
+            let label = format!("{} {order:?} {policy:?}", T::NAME);
+            let context = format!("planning while executing: {label}, thread {thread}");
+            let fingerprint = match order {
+                Order::ColumnMajor => {
+                    let mut input = sentinel_parent::<T, 2>(shape);
+                    let mut output = sentinel_parent::<T, 2>(shape);
+                    plan_and_execute(policy, &mut input, &mut output, &context)
+                }
+                Order::RowMajor => {
+                    let stride = [shape[1], 1];
+                    let len = shape[0] * shape[1];
+                    let mut input = aligned(&vec![sentinel::<T>(); len]);
+                    let mut output = aligned(&vec![sentinel::<T>(); len]);
+                    plan_and_execute(
+                        policy,
+                        &mut StridedSliceArrayMut::from_shape_and_stride(
+                            &mut input[..],
+                            shape,
+                            stride,
+                        ),
+                        &mut StridedSliceArrayMut::from_shape_and_stride(
+                            &mut output[..],
+                            shape,
+                            stride,
+                        ),
+                        &context,
+                    )
+                }
+                Order::Subview => {
+                    let mut input = sentinel_parent::<T, 2>([15, 8]);
+                    let mut output = sentinel_parent::<T, 2>([14, 7]);
+                    plan_and_execute(
+                        policy,
+                        &mut input.r_mut().into_subview([2, 2], shape),
+                        &mut output.r_mut().into_subview([1, 1], shape),
+                        &context,
+                    )
+                }
+                Order::Slice => {
+                    let mut input = sentinel_parent::<T, 3>([3, shape[0], shape[1]]);
+                    let mut output = sentinel_parent::<T, 3>([shape[0], shape[1], 3]);
+                    plan_and_execute(
+                        policy,
+                        &mut input.r_mut().slice::<2>(0, 1),
+                        &mut output.r_mut().slice::<2>(2, 2),
+                        &context,
+                    )
+                }
+            };
+            fingerprints.push((label, fingerprint));
+        }
+    }
+    fingerprints
+}
+
+/// Counts a finished planning thread when dropped, during unwinding as well, so that the
+/// executing threads stop even if a planning thread panics.
+struct Finished<'a>(&'a AtomicUsize);
+
+impl Drop for Finished<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_add(1, Ordering::SeqCst);
+    }
+}
+
+#[test]
+fn test_planning_while_executing() {
+    const EXECUTORS: usize = 4;
+    const PLANNERS: usize = 4;
+    // At least this many executions per executing thread, and more until every planning
+    // thread has finished.
+    const MIN_ITERATIONS: usize = 4;
+
+    let policy = PolicyKind::Preserving;
+    let plan = AnyPlan::<f64>::unit(policy, Direction::Forward);
+    let (mut input, mut output) = parents::<f64>(EXECUTORS);
+    let units = units(
+        &plan,
+        policy,
+        input.data_mut().unwrap(),
+        output.data_mut().unwrap(),
+        THREADS,
+    );
+    let finished = AtomicUsize::new(0);
+    let barrier = Barrier::new(EXECUTORS + PLANNERS);
+    let fingerprints = std::thread::scope(|scope| {
+        for (thread, mut unit) in units.into_iter().enumerate() {
+            let (plan, barrier, finished) = (&plan, &barrier, &finished);
+            scope.spawn(move || {
+                barrier.wait();
+                let mut iteration = 0;
+                while iteration < MIN_ITERATIONS || finished.load(Ordering::SeqCst) < PLANNERS {
+                    let context = Context {
+                        precision: f64::NAME,
+                        policy,
+                        seed: unit.seed,
+                        thread,
+                        iteration,
+                        test: "planning while executing",
+                    };
+                    unit.execute_and_check(plan, policy, &context);
+                    iteration += 1;
+                }
+            });
+        }
+        let planners: Vec<_> = (0..PLANNERS)
+            .map(|thread| {
+                let (barrier, finished) = (&barrier, &finished);
+                scope.spawn(move || {
+                    let _finished = Finished(finished);
+                    barrier.wait();
+                    let mut fingerprints = plan_orders::<f64>(thread);
+                    fingerprints.extend(plan_orders::<f32>(thread));
+                    fingerprints
+                })
+            })
+            .collect();
+        planners
+            .into_iter()
+            .map(|planner| planner.join().unwrap())
+            .collect::<Vec<_>>()
+    });
+
+    assert_same_plans(&fingerprints, "planning while executing");
+}
+
+/// Plans of the same layout made in different threads are the same plan: the labelled
+/// fingerprints of every planning thread equal those of the first.
+fn assert_same_plans(fingerprints: &[Vec<(String, u64)>], test: &str) {
+    let (first, others) = fingerprints.split_first().unwrap();
+    for (thread, other) in others.iter().enumerate() {
+        for ((label, fingerprint), (other_label, other_fingerprint)) in first.iter().zip(other) {
+            assert_eq!(label, other_label);
+            assert_eq!(
+                fingerprint,
+                other_fingerprint,
+                "{test}: {label}: thread {} and thread 0 made different plans",
+                thread + 1
+            );
+        }
+    }
+}
+
+#[test]
+fn test_wisdom_export_during_planning() {
+    const EXPORTERS: usize = 4;
+    const PLANNERS: usize = 4;
+    // At least this many exports per exporting thread, and more until every planning thread
+    // has finished.
+    const MIN_ITERATIONS: usize = 4;
+
+    let finished = AtomicUsize::new(0);
+    let barrier = Barrier::new(EXPORTERS + PLANNERS);
+    let fingerprints = std::thread::scope(|scope| {
+        for thread in 0..EXPORTERS {
+            let (barrier, finished) = (&barrier, &finished);
+            scope.spawn(move || {
+                barrier.wait();
+                let mut iteration = 0;
+                while iteration < MIN_ITERATIONS || finished.load(Ordering::SeqCst) < PLANNERS {
+                    let exports = [
+                        ("f64", wisdom::export::<f64>(), " fftw_wisdom "),
+                        ("f32", wisdom::export::<f32>(), " fftwf_wisdom "),
+                    ];
+                    for (precision, exported, header) in exports {
+                        assert!(
+                            exported.starts_with("(fftw-3.") && exported.contains(header),
+                            "wisdom export during planning: thread {thread}, iteration \
+                             {iteration}, {precision}: {exported}"
+                        );
+                    }
+                    iteration += 1;
+                    // Paces the exports: the FFTW lock is not fair, and exporters that take it
+                    // again at once starve the planners (80 s instead of 0.03 s on macOS).
+                    // Nothing is synchronised by it.
+                    std::thread::sleep(Duration::from_micros(200));
+                }
+            });
+        }
+        let planners: Vec<_> = (0..PLANNERS)
+            .map(|thread| {
+                let (barrier, finished) = (&barrier, &finished);
+                scope.spawn(move || {
+                    let _finished = Finished(finished);
+                    barrier.wait();
+                    let mut fingerprints = plan_orders::<f64>(thread);
+                    fingerprints.extend(plan_orders::<f32>(thread));
+                    fingerprints
+                })
+            })
+            .collect();
+        planners
+            .into_iter()
+            .map(|planner| planner.join().unwrap())
+            .collect::<Vec<_>>()
+    });
+
+    assert_same_plans(&fingerprints, "wisdom export during planning");
+}
+
+#[test]
+fn test_descriptions_from_many_threads() {
+    let plan = AnyPlan::<f64>::unit(PolicyKind::Preserving, Direction::Backward);
+    let (description, fingerprint) = (plan.description(), plan.fingerprint());
+    let barrier = Barrier::new(THREADS);
+    std::thread::scope(|scope| {
+        for thread in 0..THREADS {
+            let (plan, barrier, description) = (&plan, &barrier, &description);
+            scope.spawn(move || {
+                barrier.wait();
+                assert_eq!(
+                    &plan.description(),
+                    description,
+                    "descriptions from many threads: thread {thread}"
+                );
+                assert_eq!(
+                    plan.fingerprint(),
+                    fingerprint,
+                    "descriptions from many threads: thread {thread}"
+                );
+            });
+        }
+    });
+}
+
+#[test]
+fn test_execution_takes_no_lock() {
+    // Made before the lock is held: planning takes the lock.
+    let plan = AnyPlan::<f64>::unit(PolicyKind::Preserving, Direction::Forward);
+    let (mut input, mut output) = parents::<f64>(1);
+    let mut units = units(
+        &plan,
+        PolicyKind::Preserving,
+        input.data_mut().unwrap(),
+        output.data_mut().unwrap(),
+        0,
+    );
+    let mut unit = units.pop().unwrap();
+    let (locked, wait_for_lock) = mpsc::channel();
+    let (executed, wait_for_execution) = mpsc::channel();
+    let holder = std::thread::scope(|scope| {
+        let holder = scope.spawn(move || {
+            with_fftw(|_| {
+                locked.send(()).unwrap();
+                // Bounded, so that execution that takes the lock fails the test rather than
+                // deadlocking it; the lock is released before the result is asserted.
+                wait_for_execution.recv_timeout(Duration::from_secs(10))
+            })
+        });
+        let plan = &plan;
+        scope.spawn(move || {
+            wait_for_lock
+                .recv_timeout(Duration::from_secs(10))
+                .expect("execution takes no lock: the lock was not acquired");
+            let context = Context {
+                precision: f64::NAME,
+                policy: PolicyKind::Preserving,
+                seed: unit.seed,
+                thread: 1,
+                iteration: 0,
+                test: "execution takes no lock",
+            };
+            unit.execute_and_check(plan, PolicyKind::Preserving, &context);
+            // The holder may have timed out and dropped its receiver.
+            let _ = executed.send(());
+        });
+        holder.join().unwrap()
+    });
+    assert!(
+        holder.is_ok(),
+        "execution takes no lock: no execution within 10 s while the FFTW lock was held"
+    );
+}
+
+#[test]
+fn test_plans_move_between_threads() {
+    let (mut input, mut output) = parents::<f64>(1);
+    let values = random_values::<f64>(unit_seed(0), UNIT);
+    input.data_mut().unwrap().copy_from_slice(&values);
+    let plan =
+        std::thread::spawn(|| AnyPlan::<f64>::unit(PolicyKind::Preserving, Direction::Forward))
+            .join()
+            .unwrap();
+    std::thread::scope(|scope| {
+        scope.spawn(|| {
+            plan.execute(
+                &mut SliceArrayMut::from_shape(input.data_mut().unwrap(), UNIT_SHAPE),
+                &mut SliceArrayMut::from_shape(output.data_mut().unwrap(), UNIT_SHAPE),
+            );
+            drop(plan);
+        });
+    });
+    let reference = logical_reference(UNIT_SHAPE, &values, &[0], Direction::Forward);
+    let output = SliceArray::from_shape(output.data().unwrap(), UNIT_SHAPE);
+    assert_matches_reference(&output, &reference, &[0], &"plans move between threads");
+}
+
+/// Threaded plans (feature `fftw_threads`, task F6b; design Sections 4.7, 4.14 and 7.5).
+#[cfg(feature = "fftw_threads")]
+mod threads {
+    use std::num::NonZeroUsize;
+    use std::sync::Barrier;
+
+    use num::Complex;
+
+    use super::{AnyPlan, Context, UNIT_SHAPE, parents, units};
+    use crate::fftw::test_support::{
+        PolicyKind, SEED, TestReal, aligned, c2c_tolerance, filled, random_reals, random_values,
+        relative_error, sentinel, widen,
+    };
+    use crate::fftw::{Direction, Layout, Planner};
+    use crate::{SliceArray, SliceArrayMut};
+
+    /// The thread counts of threaded plans: fixed and small, for debug builds and the macOS
+    /// runner's 3 cores.
+    const COUNTS: [usize; 2] = [2, 4];
+
+    /// The shapes of the c2c plans, transformed along axis 0: a larger problem, and nd-fmm's
+    /// unit.
+    const SHAPES: [[usize; 2]; 2] = [[1080, 64], UNIT_SHAPE];
+
+    fn count(threads: usize) -> NonZeroUsize {
+        NonZeroUsize::new(threads).unwrap()
+    }
+
+    fn threads_of<T: TestReal>(plan: &AnyPlan<T>) -> usize {
+        match plan {
+            AnyPlan::Preserving(plan) => plan.threads(),
+            AnyPlan::Destroying(plan) => plan.threads(),
+            AnyPlan::InPlace(plan) => plan.threads(),
+        }
+    }
+
+    /// A c2c plan of `policy` for `shape` along axis 0, forward, from `planner`.
+    fn c2c_plan<T: TestReal>(
+        planner: &Planner<T>,
+        policy: PolicyKind,
+        shape: [usize; 2],
+    ) -> AnyPlan<T> {
+        let scratch = vec![Complex::<T>::default(); shape[0] * shape[1]];
+        let array = SliceArray::from_shape(&scratch[..], shape);
+        let layout = Layout::along_axis(&array, &array, 0).unwrap();
+        let inplace = Layout::along_axis_inplace(&array, 0).unwrap();
+        AnyPlan::new(planner, policy, &layout, &inplace, Direction::Forward)
+    }
+
+    /// The result of `plan` on `values` of `shape`, widened to f64.
+    fn c2c_result<T: TestReal>(
+        plan: &AnyPlan<T>,
+        policy: PolicyKind,
+        shape: [usize; 2],
+        values: &[Complex<T>],
+    ) -> Vec<Complex<f64>> {
+        let mut input = aligned(values);
+        let mut output = filled(sentinel::<T>(), values.len());
+        plan.execute(
+            &mut SliceArrayMut::from_shape(&mut input[..], shape),
+            &mut SliceArrayMut::from_shape(&mut output[..], shape),
+        );
+        widen(match policy {
+            PolicyKind::InPlace => &input,
+            _ => &output,
+        })
+    }
+
+    /// Assert that each transform of `len` outputs in `found` is within the c2c tolerance of
+    /// precision `T`, for the logical size `n`, of the same transform in `expected`.
+    fn assert_close<T: TestReal>(
+        found: &[Complex<f64>],
+        expected: &[Complex<f64>],
+        (len, n): (usize, usize),
+        context: &str,
+    ) {
+        let tolerance = c2c_tolerance::<T>(n);
+        let transforms = found.chunks_exact(len).zip(expected.chunks_exact(len));
+        for (k, (found, expected)) in transforms.enumerate() {
+            let error = relative_error(found, expected);
+            assert!(
+                error <= tolerance,
+                "{context}, transform {k}: relative error {error:e} above {tolerance:e}"
+            );
+        }
+    }
+
+    fn check_threaded_c2c<T: TestReal>(shape: [usize; 2], values: &[Complex<T>]) {
+        for policy in PolicyKind::ALL {
+            check_threaded_c2c_policy(policy, shape, values);
+        }
+    }
+
+    fn check_threaded_c2c_policy<T: TestReal>(
+        policy: PolicyKind,
+        shape: [usize; 2],
+        values: &[Complex<T>],
+    ) {
+        let single = c2c_plan(&Planner::<T>::new(), policy, shape);
+        let expected = c2c_result(&single, policy, shape, values);
+        for threads in COUNTS {
+            let planner = Planner::<T>::new().threads(count(threads));
+            let plan = c2c_plan(&planner, policy, shape);
+            let context = format!(
+                "threaded c2c: {} {policy:?} {shape:?}, {threads} threads",
+                T::NAME
+            );
+            assert_eq!(threads_of(&plan), threads, "{context}");
+            let found = c2c_result(&plan, policy, shape, values);
+            assert_close::<T>(&found, &expected, (shape[0], shape[0]), &context);
+        }
+    }
+
+    fn check_threaded_r2c<T: TestReal>() {
+        let (real_shape, complex_shape) = (UNIT_SHAPE, [UNIT_SHAPE[0] / 2 + 1, UNIT_SHAPE[1]]);
+        let reals = vec![T::default(); real_shape[0] * real_shape[1]];
+        let values = vec![Complex::<T>::default(); complex_shape[0] * complex_shape[1]];
+        let layout = Layout::along_axis(
+            &SliceArray::from_shape(&reals[..], real_shape),
+            &SliceArray::from_shape(&values[..], complex_shape),
+            0,
+        )
+        .unwrap();
+        let input = aligned(&random_reals::<T>(SEED, reals.len()));
+        let result = |planner: Planner<T>| {
+            let plan = planner.r2c(&layout).unwrap();
+            let mut output = filled(sentinel::<T>(), values.len());
+            plan.execute(
+                &SliceArray::from_shape(&input[..], real_shape),
+                &mut SliceArrayMut::from_shape(&mut output[..], complex_shape),
+            )
+            .unwrap();
+            (plan.threads(), widen(&output))
+        };
+        let (_, expected) = result(Planner::new());
+        for threads in COUNTS {
+            let (found_threads, found) = result(Planner::new().threads(count(threads)));
+            let context = format!("threaded r2c: {}, {threads} threads", T::NAME);
+            assert_eq!(found_threads, threads, "{context}");
+            let sizes = (complex_shape[0], real_shape[0]);
+            assert_close::<T>(&found, &expected, sizes, &context);
+        }
+    }
+
+    #[test]
+    fn test_threaded_against_single_threaded() {
+        for shape in SHAPES {
+            let len = shape[0] * shape[1];
+            check_threaded_c2c(shape, &random_values::<f64>(SEED, len));
+            check_threaded_c2c(shape, &random_values::<f32>(SEED, len));
+        }
+        check_threaded_r2c::<f64>();
+        check_threaded_r2c::<f32>();
+    }
+
+    /// One 2-thread plan of `policy` executed by 3 threads at once, 4 times each, on their own
+    /// units, against the sequential results bit for bit (design, Section 5 rule 3).
+    fn check_threaded_plan_many_threads<T: TestReal>(policy: PolicyKind) {
+        const EXECUTORS: usize = 3;
+        const ITERATIONS: usize = 4;
+        let plan = c2c_plan(&Planner::<T>::new().threads(count(2)), policy, UNIT_SHAPE);
+        let (mut input, mut output) = parents::<T>(EXECUTORS);
+        let units = units(
+            &plan,
+            policy,
+            input.data_mut().unwrap(),
+            output.data_mut().unwrap(),
+            0,
+        );
+        let barrier = Barrier::new(EXECUTORS);
+        std::thread::scope(|scope| {
+            for (thread, mut unit) in units.into_iter().enumerate() {
+                let (plan, barrier) = (&plan, &barrier);
+                scope.spawn(move || {
+                    for iteration in 0..ITERATIONS {
+                        let context = Context {
+                            precision: T::NAME,
+                            policy,
+                            seed: unit.seed,
+                            thread,
+                            iteration,
+                            test: "a threaded plan from several threads",
+                        };
+                        barrier.wait();
+                        unit.execute_and_check(plan, policy, &context);
+                    }
+                });
+            }
+        });
+    }
+
+    #[test]
+    fn test_threaded_plan_many_threads() {
+        for policy in PolicyKind::ALL {
+            check_threaded_plan_many_threads::<f64>(policy);
+            check_threaded_plan_many_threads::<f32>(policy);
+        }
+    }
+
+    #[test]
+    fn test_thread_count_does_not_leak() {
+        for shape in SHAPES {
+            let before = c2c_plan(&Planner::<f64>::new(), PolicyKind::Preserving, shape);
+            for threads in COUNTS {
+                let planner = Planner::<f64>::new().threads(count(threads));
+                let threaded = c2c_plan(&planner, PolicyKind::Preserving, shape);
+                drop(threaded);
+                let after = c2c_plan(&Planner::<f64>::new(), PolicyKind::Preserving, shape);
+                assert_eq!(threads_of(&after), 1, "{shape:?} after {threads} threads");
+                assert_eq!(
+                    after.fingerprint(),
+                    before.fingerprint(),
+                    "{shape:?} after {threads} threads: {} became {}",
+                    before.description(),
+                    after.description()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_one_thread_is_unthreaded() {
+        for shape in SHAPES {
+            for policy in PolicyKind::ALL {
+                let unthreaded = c2c_plan(&Planner::<f32>::new(), policy, shape);
+                let one = c2c_plan(&Planner::<f32>::new().threads(count(1)), policy, shape);
+                assert_eq!(threads_of(&one), 1);
+                assert_eq!(
+                    one.fingerprint(),
+                    unthreaded.fingerprint(),
+                    "{shape:?} {policy:?}"
+                );
+            }
+        }
+    }
+}
