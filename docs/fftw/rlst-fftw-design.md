@@ -1,7 +1,7 @@
 # FFTW interfaces for RLST: design proposal
 
-Draft 0.15, 2026-10-23. A proposal for the RLST maintainers, not a plan until it is signed
-off. It records the decisions taken from 2026-10-21 to 2026-10-23. It replaces RLST's FFTW interface
+Draft 0.16, 2026-10-24. A proposal for the RLST maintainers, not a plan until it is signed
+off. It records the decisions taken from 2026-10-21 to 2026-10-24. It replaces RLST's FFTW interface
 completely: every transform family of FFTW 3.3's serial interface, plans that are
 independent of the arrays they run on, checked and sound execution, wisdom, threads,
 alignment classes, determinism with stated preconditions, a test suite sized for CI, and
@@ -18,7 +18,7 @@ for nd-fmm: Section 11 lists open points and options for nd-fmm's own review.
 In the RLST repository this document is `docs/fftw/rlst-fftw-design.md`; the task briefs
 are in `docs/fftw/tasks/` and the workflow in `docs/fftw/README.md`.
 
-What drafts 0.6 to 0.15 change, for the start of the implementation:
+What drafts 0.6 to 0.16 change, for the start of the implementation:
 
 - **Work plan** (Section 9): the removal of `fftw_source` and `fftw_mkl` moves from F7 to
   F1; the 0.10 module coexists with the new types until F7 and shares the new FFTW lock;
@@ -65,6 +65,13 @@ What drafts 0.6 to 0.15 change, for the start of the implementation:
   must address distinct elements, since the transform overwrites its input (Section 4.3,
   DC36); a preserving c2r plan counts every transform dimension, those of extent 1
   included (Section 4.4, DC37).
+- **Wisdom and threads** (draft 0.16, from the F6 brief): the wisdom functions' types, with
+  a `WisdomFile` error for the file functions (Sections 4.13 and 4.15, DC38); tests that
+  import or forget wisdom run in fresh processes only (Section 7.5, DC39); wisdom shared
+  between processes is tested to give the same plans (Section 7.6, DC40); `Planner::threads`
+  takes a `NonZeroUsize` and exists only with `fftw_threads`, `Plan::threads` on every plan,
+  with two new errors (Sections 4.14 and 4.15, DC41); threaded plans in the determinism tests
+  (Section 7.6, DC42); F6 adds `fftw_threads` to CI (Sections 7.7 and 9, DC43).
 
 Every decision for the RLST maintainers and every design choice is settled (Section 10).
 This document makes no decisions for nd-fmm (Section 11). Earlier drafts' changes are
@@ -711,14 +718,34 @@ across ranks in one all-reduce.
 allocation has to be freed. `import::<T>(&str)`, `export_to_file` and `import_from_file`
 (through Rust I/O), `forget::<T>()` and `import_system_wisdom::<T>()` (FFTW's
 `/etc/fftw/wisdom`, only on explicit request) complete it. All run under the lock, per
-precision. Section 5 states their role in determinism.
+precision; file I/O runs outside it. Section 5 states their role in determinism.
+
+The types (DC38):
+
+```rust
+pub fn export<T: FftwReal>() -> String;
+pub fn import<T: FftwReal>(wisdom: &str) -> Result<(), FftwError>;
+pub fn export_to_file<T: FftwReal>(path: impl AsRef<Path>) -> Result<(), FftwError>;
+pub fn import_from_file<T: FftwReal>(path: impl AsRef<Path>) -> Result<(), FftwError>;
+pub fn forget<T: FftwReal>();
+pub fn import_system_wisdom<T: FftwReal>() -> Result<(), FftwError>;
+```
+
+FFTW's refusal of wisdom is `WisdomImportFailed`; a file that cannot be read or written is
+`WisdomFile`, which carries the path, the `std::io::ErrorKind` and the message, since
+`FftwError` is `Clone` and `Eq` and cannot hold a `std::io::Error`. Every fallible function
+of `rlst::fftw` thus returns `FftwError`. Import goes through FFTW's callback import as well,
+so no `CString` is built.
 
 ### 4.14 Threads (feature `fftw_threads`)
 
 - `fftw_init_threads` and `fftwf_init_threads` run once, inside the lock, before RLST's
   first FFTW call (Section 3 item 12). FFTW calls made earlier by other libraries are
   outside RLST's control; the documentation says so.
-- `Planner::threads(n)` makes a plan for n threads; the plan records n.
+- `Planner::threads(n: NonZeroUsize)`, present only with `fftw_threads`, makes a plan for n
+  threads; `Plan::threads() -> usize`, on every plan, returns the count it was made for, 1
+  without the feature (DC41). Planning returns `InvalidThreadCount` when n exceeds FFTW's
+  `int`, and `ThreadsUnavailable` when n > 1 and `fftw_init_threads` failed.
 - `threads::make_planner_thread_safe()` is an explicit opt-in, documented with the limits
   of Section 3 item 3.
 - A threaded plan is a different plan from a single-threaded one and can round
@@ -733,7 +760,9 @@ precision. Section 5 states their role in determinism.
 with n = 1), `PreserveInputUnsupported`, `ScratchTooLarge`, `VersionTooOld`, `PlanCreationFailed` (FFTW returned NULL; the flags and layout are
 attached, since FFTW gives no reason, with a `hint: Option<&'static str>` shown in the
 message when RLST knows a remedy, such as `may_destroy_input()` for a preserving r2r plan
-with an HC2R kind, DC34) and `WisdomImportFailed`. A layout of the other storage kind, an
+with an HC2R kind, DC34), `WisdomImportFailed`, `WisdomFile` (a wisdom file that cannot
+be read or written, with its path, `std::io::ErrorKind` and message, DC38), and `InvalidThreadCount` and
+`ThreadsUnavailable`, which only planning with `fftw_threads` returns (DC41). A layout of the other storage kind, an
 interleaved layout given to a split planner method or a split layout to an interleaved one,
 is an `InvalidLayout` naming the part axis, with a reason naming the family and the storage
 the layout describes (DC28). Every planner method, those of c2c included, rejects a layout
@@ -870,9 +899,14 @@ With `std::thread::scope` (no new dependency):
 - one plan executed from many threads on distinct buffers gives bit for bit the
   sequential results;
 - plans are made and destroyed from many threads while others execute;
-- wisdom export and import run concurrently with planning;
+- wisdom export and import run concurrently with planning. In the test process, wisdom is
+  only exported, which reads it; import and forgetting concurrent with planning run in a
+  fresh process of Section 7.6, whose later `Estimate` plans equal those of a fresh process.
+  No test of the test process imports or forgets wisdom, which would change the plans of
+  every later test (DC39);
 - with `fftw_threads`, threaded plans against single-threaded ones to round-off, and
-  threaded plans executed from several threads at once.
+  threaded plans executed from several threads at once, bit for bit against sequential
+  execution of the same plan.
 
 ### 7.6 Determinism and wisdom, in separate processes
 
@@ -888,6 +922,15 @@ already does), which runs each case in a fresh child process:
 - the same plan executed on fixed-batch units at different positions of a larger buffer
   gives the same bits;
 - export, forget, import, then wisdom-only: the same fingerprint and the same bits;
+- wisdom shared between processes (Section 5 rule 7): a process that imports the wisdom
+  another exported, and plans wisdom-only with the same options, gets the fingerprints and
+  bits of the exporting process; a failure is a design question (DC40);
+- with `fftw_threads`, threaded `Estimate` plans give the same fingerprints and bits in two
+  fresh processes; single-threaded `Estimate` plans made after threaded `Estimate` and
+  `Measure` plans of the same problems give those of a fresh process, since the thread count
+  never leaks and wisdom is kept per thread count; and planning after
+  `make_planner_thread_safe()` gives the plans of a fresh process. A failure of either of the
+  first two is a design question (DC42);
 - wisdom-only with no wisdom: `PlanCreationFailed`;
 - an `ESTIMATE` plan made after a `MEASURE` plan of the same problem: the fingerprints are
   reported. This documents Section 3 item 4; it asserts that fingerprints are available
@@ -906,8 +949,11 @@ on every build.
 
 GitHub Actions, in `run-tests.yml`, with `CLAUDE.md`'s validation list updated to match:
 
+- **F6**: both jobs gain Clippy and `cargo test` with `fftw_threads`, beside their commands
+  without it, so that the threads code runs in CI from the task that adds it (DC43).
 - **F8a**: ubuntu-24.04 with `fftw_system` (`libfftw3-dev`, FFTW 3.3.10), with and without
-  `fftw_threads`; macOS with Homebrew's FFTW (3.3.11, without SIMD on the arm64 runner); the
+  `fftw_threads` (added in F6; F8a reviews the matrix as a whole); macOS with Homebrew's
+  FFTW (3.3.11, without SIMD on the arm64 runner); the
   default build, with a check that
   `cargo tree -e normal` lists no `fftw-sys`; doctests; `cargo doc` with `--cfg docsrs`.
 - **F8b**: benchmarks (`examples/fftw_bench.rs`, with `required-features`, no new
@@ -945,7 +991,7 @@ document and decides nothing for it.
 | F3 | Split c2c with the part axis | 7.2 split c2c cells; 7.3 split against interleaved | CHR.3, CH4.6 ("split planes, or interleaved scratch until then") |
 | F4 | Concurrency and determinism for c2c; rules 2 to 6 of Section 5 in the rustdoc of `Plan` and `Plan::fingerprint` (DC23) | 7.5 and 7.6 without the wisdom API and threads, in the harness-free binary, wisdom-only planning without wisdom and the `ESTIMATE` plan after a `MEASURE` plan included (DC24) | CHR.3, CH4.6, CH8.1 |
 | F5 | r2c and c2r (in place with padding), r2r with all kinds and kinds per axis, split r2c and c2r, `Scale` | 7.2 and 7.3 for these families | "not used" |
-| F6 | Wisdom; the `fftw_threads` feature | 4.13, 4.14; 7.5 and 7.6 for them: wisdom export and import during planning, export, forget and import, threaded plans (DC24) | "not used" |
+| F6 | Wisdom; the `fftw_threads` feature, with its CI commands (DC43) | 4.13, 4.14; 7.5 and 7.6 for them: wisdom export and import during planning, export, forget and import, shared wisdom, threaded plans (DC24, DC39, DC40, DC42) | "not used" |
 | F7 | Removal of the 0.10 module; the Chebyshev port (Section 8, after F5); documentation with an example for every public item; the licence warning in its four places and the docs.rs metadata; CHANGELOG with the migration notes of Appendix B | doctests; the warning in the four places; the Chebyshev regressions of 7.3 | CHR.1 (the warning) |
 | F8a | CI on Linux (system FFTW, with and without `fftw_threads`) and macOS; the default-build check; docs | 7.7 F8a | CHR.1 (tests on Linux and macOS) |
 | F8b | Benchmarks; **release 0.11.0** | 7.7 F8b; every task above done | CHR.1 and CHR.2 (the release) |
@@ -1018,6 +1064,12 @@ waits for is the complete one. When that release comes is Helmholtz decision D14
 | DC35 | `Plan::logical_size() -> usize` and `Plan::scale_factor(Scale) -> T` on every plan; `Layout::logical_size` stays the product of the extents (Section 4.9) | accepted (F5 brief) |
 | DC36 | In place, the distinct-element rule applies to the input side as well as the output side: the transform overwrites its input, and an in-place c2r layout can have distinct outputs and overlapping inputs (Section 4.3) | accepted (F5a) |
 | DC37 | `PreserveInputUnsupported` counts every transform dimension of a c2r plan, those of extent 1 included; a layout with one transform dimension of extent above 1 can be planned along it alone instead (Section 4.4) | accepted (F5a) |
+| DC38 | The wisdom functions have the types of Section 4.13, `export` and `forget` infallible; file errors are a new `FftwError::WisdomFile` with the path, `std::io::ErrorKind` and message, so that every fallible function of `rlst::fftw` returns `FftwError` (Sections 4.13 and 4.15) | accepted (F6 brief) |
+| DC39 | No test in the test process imports or forgets wisdom; import and forgetting concurrent with planning are tested in a fresh process (Section 7.5) | accepted (F6 brief) |
+| DC40 | The determinism tests assert that wisdom shared between processes gives the importing process the fingerprints and bits of the exporting one; a failure is a design question (Section 7.6) | accepted (F6 brief) |
+| DC41 | `Planner::threads(n: NonZeroUsize)` exists only with `fftw_threads`; `Plan::threads() -> usize` on every plan, 1 without the feature; `InvalidThreadCount` above FFTW's `int`, `ThreadsUnavailable` when n > 1 and thread initialisation failed; `make_planner_thread_safe()` returns `()` (Sections 4.14 and 4.15) | accepted (F6 brief) |
+| DC42 | With `fftw_threads`, the determinism tests assert that threaded `Estimate` plans agree across fresh processes and that threaded planning leaves no trace on single-threaded plans; failures are design questions (Section 7.6) | accepted (F6 brief) |
+| DC43 | F6 adds Clippy and tests with `fftw_threads` to both CI jobs, beside those without it; F8a reviews the matrix (Sections 7.7 and 9) | accepted (F6 brief) |
 
 ### 10.2 DF6: why `fftw_source` is dropped
 
@@ -1274,6 +1326,17 @@ review.
   needs (Section 4.3, DC36), and Section 4.3 no longer says that every in-place layout has
   equal strides on both sides, which DC32 changed for r2c and c2r; a preserving c2r plan
   counts every transform dimension, those of extent 1 included (Section 4.4, DC37).
+
+- **Draft 0.16** (2026-10-24), from the open questions of the F6 brief
+  (`docs/fftw/tasks/F6-wisdom-threads.md`), settled by the maintainer before the task
+  started, each with the proposed option: the wisdom functions' types, and a `WisdomFile`
+  error for the file functions (Sections 4.13 and 4.15, DC38); tests that import or forget
+  wisdom run only in fresh processes (Section 7.5, DC39); wisdom shared between processes is
+  tested to give the same plans (Section 7.6, DC40); `Planner::threads` takes a
+  `NonZeroUsize` and exists only with `fftw_threads`, `Plan::threads` exists on every plan,
+  and planning gains `InvalidThreadCount` and `ThreadsUnavailable` (Sections 4.14 and 4.15,
+  DC41); threaded plans in the determinism tests (Section 7.6, DC42); F6 adds `fftw_threads`
+  to both CI jobs (Sections 7.7 and 9, DC43).
 
 ## Appendix B. Migration from 0.10
 

@@ -3,10 +3,10 @@
 | | |
 | --- | --- |
 | Task | F6 (design, Section 9) |
-| Status | not started; open questions 1 to 6 to be settled by the maintainer before it starts |
+| Status | not started |
 | Depends on | F1, F4, F5 |
 | Pull requests | two, into `fftw-0.11`, in this order: F6a (wisdom: export, import, files, forgetting, system wisdom, and their tests), F6b (the `fftw_threads` feature: linking, thread initialisation, `Planner::threads`, `make_planner_thread_safe`, and their tests and CI) |
-| Read first | design: Section 1.2 (the functions not wrapped), Section 3 items 2–4, 9 and 12, Sections 4.7, 4.10 and 4.12–4.15, Section 5 (rules 1, 3, 6 and 7), Sections 7.5–7.7, Section 9 (F6 row), Section 10, in particular DF7, DF8, DC13 and DC22–DC24, Section 11 items 3 and 4, Appendix A (draft 0.12); `docs/fftw/tasks/F1-core.md` (the lock and the settings guard) and `F4-determinism.md` (the binary), including their "Open questions"; `docs/fftw/F0-findings.md` (the threads libraries on the runners); `CLAUDE.md` |
+| Read first | design: Section 1.2 (the functions not wrapped), Section 3 items 2–4, 9 and 12, Sections 4.7, 4.10 and 4.12–4.15, Section 5 (rules 1, 3, 6 and 7), Sections 7.5–7.7, Section 9 (F6 row), Section 10, in particular DF7, DF8, DC13, DC22–DC24 and DC38–DC43, Section 11 items 3 and 4, Appendix A (drafts 0.12 and 0.16); `docs/fftw/tasks/F1-core.md` (the lock and the settings guard) and `F4-determinism.md` (the binary), including their "Open questions"; `docs/fftw/F0-findings.md` (the threads libraries on the runners); `CLAUDE.md` |
 
 ## Goal
 
@@ -65,7 +65,7 @@ In scope:
   (work item 4; F6b);
 - the tests of design Sections 7.5 and 7.6 that DC24 gives to F6, in the concurrency tests
   and the determinism binary (work items 5 and 6);
-- the CI of open question 6 (work item 7; F6b);
+- the CI commands of DC43 (work item 7; F6b);
 - rustdoc, the module documentation of `rlst/src/fftw.rs`, `rlst/CHANGELOG.md`, the README's
   "System FFTW" section, `CLAUDE.md`, the files table of `docs/fftw/README.md`, and this
   brief's "Open questions" (work item 8).
@@ -92,7 +92,7 @@ Files touched:
 | --- | --- | --- |
 | `rlst/src/fftw/wisdom.rs` (new) | the functions of work item 1 | F6a |
 | `rlst/src/fftw/real.rs` | export, import, forgetting and system wisdom in the sealed `FftwReal`; with `fftw_threads`, thread initialisation, the thread count and `make_planner_thread_safe` | F6a, F6b |
-| `rlst/src/fftw/error.rs` | the variants of open questions 1 and 4 | F6a, F6b |
+| `rlst/src/fftw/error.rs` | `WisdomFile` (DC38); `InvalidThreadCount` and `ThreadsUnavailable` (DC41) | F6a, F6b |
 | `rlst/src/fftw/lock.rs` | thread initialisation on the first acquisition; the thread count in `SettingsGuard`; its test | F6b |
 | `rlst/src/fftw/threads.rs` (new) | `make_planner_thread_safe`, the module documentation of rule 1 | F6b |
 | `rlst/src/fftw/planner.rs` | `Planner::threads`; the count passed to the guard and recorded in every plan | F6b |
@@ -103,13 +103,13 @@ Files touched:
 | `rlst/src/fftw.rs` | `pub mod wisdom;`, `#[cfg(feature = "fftw_threads")] pub mod threads;`, module documentation | F6a, F6b |
 | `rlst/src/fftw/concurrency_tests.rs` | the tests of work item 5 | F6a, F6b |
 | `rlst/tests/fftw_determinism.rs` | the cases and scenarios of work item 6 | F6a, F6b |
-| `.github/workflows/run-tests.yml` | open question 6 | F6b |
+| `.github/workflows/run-tests.yml` | the commands of work item 7 (DC43) | F6b |
 | `README.md` | `fftw_threads` in "System FFTW" | F6b |
 | `rlst/CHANGELOG.md`, `docs/fftw/README.md`, `CLAUDE.md` | yes | F6a, F6b |
 
 ## 1. Wisdom (`wisdom.rs`, `real.rs`; F6a)
 
-The functions, generic over the precision `T: FftwReal`, as open question 1 settles:
+The functions, generic over the precision `T: FftwReal`, as DC38 settles (open question 1):
 
 ```rust
 pub mod wisdom {
@@ -193,13 +193,17 @@ pub mod wisdom {
 
 ## 4. Planner and plans (`planner.rs`, `plan.rs`; F6b)
 
-- **`Planner::threads(n)`**, as open question 4 settles: the planner records `n`, and every
+- **`Planner::threads(n: NonZeroUsize)`**, present only with `fftw_threads`, as DC41 settles
+  (open question 4): the planner records `n`, and every
   planner method, those of every family, on scratch, `*_on` and in place, passes it to the
   settings guard. Its rustdoc says that a threaded plan is another plan than a
   single-threaded one, with another fingerprint even for small problems (fact 7), and can
   round differently (Section 5 rule 6).
-- **`Plan::threads()`** returns the thread count the plan was made for; the plan's `Debug`
-  output shows it.
+- **`Plan::threads() -> usize`**, on every plan, returns the thread count the plan was made
+  for, 1 without the feature; the plan's `Debug` output shows it.
+- **Errors** (DC41): planning returns `InvalidThreadCount { requested }` when `n` exceeds
+  `c_int::MAX`, and `ThreadsUnavailable` when `n > 1` and thread initialisation failed, before
+  FFTW is called.
 - **"Threads and determinism"** on `Plan` (DC23): the list of rule 3 gains the thread count;
   the bullet on batch and threads gains rule 6's last sentence, that a threaded plan can round
   differently from a single-threaded one; and a sentence states Section 4.14: executing a
@@ -210,7 +214,7 @@ pub mod wisdom {
 
 Ordinary unit tests, in the test process, with `Rigor::Estimate` only, `std::thread::scope`,
 `Barrier`, fixed thread counts and F1's seeded inputs, as in F4. **No unit test imports or
-forgets wisdom** (open question 2): those change the wisdom of every later test in the
+forgets wisdom** (DC39, open question 2): those change the wisdom of every later test in the
 process.
 
 F6a:
@@ -219,8 +223,8 @@ F6a:
   f32 wisdom in a loop while 4 threads make, execute and drop plans as in F4's "planning while
   executing". Every export starts with `(fftw-3.` and names `fftw_wisdom` or `fftwf_wisdom`
   by precision; the planning threads' results are as F4 asserts.
-- **Errors without FFTW**: `export_to_file` into a directory that does not exist returns the
-  error of open question 1 and leaves the process's wisdom as it was (export reads it only);
+- **Errors without FFTW**: `export_to_file` into a directory that does not exist returns
+  `WisdomFile` (DC38) and leaves the process's wisdom as it was (export reads it only);
   the messages of the new and changed variants.
 
 F6b, with `fftw_threads`:
@@ -257,14 +261,14 @@ F6a:
   given to `import::<f32>` returns `WisdomImportFailed` (fact 3); it prints the lines of A
   and B, and whether a failed import of a malformed string left the export unchanged
   (fact 2, reported only).
-- **`wisdom-export`** and **`wisdom-import`** (open question 3; Section 5 rule 7): the first
+- **`wisdom-export`** and **`wisdom-import`** (DC40, open question 3; Section 5 rule 7): the first
   plans the problems of `wisdom-round-trip` with `Measure`, prints their lines, and writes
   both precisions' wisdom with `export_to_file` to files in `CARGO_TARGET_TMPDIR` named by
   the parent's process id (`std::os::unix::process::parent_id`), which both children share.
   The second, as its first FFTW work, imports the files with `import_from_file`, removes them,
   plans the same problems wisdom-only with otherwise the same planner options, and prints
   their lines.
-- **`wisdom-concurrent`** (open question 2; Section 7.5 third item): 4 threads plan and
+- **`wisdom-concurrent`** (DC39, open question 2; Section 7.5 third item): 4 threads plan and
   execute the problems of `estimate` in a loop, while 2 threads export, forget and import
   their own exports in a loop, for both precisions; afterwards the child plans the problems of
   `estimate` once more and prints their lines.
@@ -278,7 +282,7 @@ F6a:
 | Wisdom during planning | `estimate` once, `wisdom-concurrent` once | its lines equal those of `estimate` (DC22: wisdom from `Estimate` planning does not change `Estimate` plans) |
 | System wisdom | `system-wisdom` once | exit status 0; the outcomes are printed |
 
-F6b, with `fftw_threads`, as open question 5 settles:
+F6b, with `fftw_threads`, as DC42 settles (open question 5):
 
 - **`estimate-threads`**: nd-fmm's units of `estimate` (f64, both directions, and n_phi = 140
   in f32) with `threads(2)` and `threads(4)`, `Estimate`.
@@ -300,15 +304,15 @@ included; measure and report.
 
 ## 7. CI (`run-tests.yml`; F6b)
 
-As open question 6 settles. With the proposed option, each job gains, beside its commands
-without the feature:
+As DC43 settles (open question 6), each job gains, beside its commands without the feature:
 
 ```bash
 cargo clippy --features "fftw,fftw_system,fftw_threads,strict" -- -D warnings
 cargo test --features "fftw,fftw_system,fftw_threads,strict"
 ```
 
-and `CLAUDE.md`'s validation commands list them, its Clippy commands becoming seven. The
+and `CLAUDE.md`'s validation commands list them, its Clippy commands becoming seven. F8a
+reviews the matrix as a whole. The
 pull request reports the determinism binary's summary from both jobs, with and without the
 feature.
 
@@ -327,7 +331,7 @@ feature.
   (F6b).
 - `README.md`, "System FFTW": `fftw_threads` and the threads libraries it needs (F6b).
 - `CLAUDE.md`: the features list gains `fftw_threads`; the FFTW rules say that tests which
-  import or forget wisdom belong in the binary; the validation commands follow open question 6.
+  import or forget wisdom belong in the binary; the validation commands follow DC43.
 - `docs/fftw/README.md`: the files table lists this brief; the status table is updated when
   the last pull request merges.
 
@@ -343,8 +347,7 @@ feature.
 
 ## Acceptance
 
-- [ ] The wisdom functions of work item 1 exist for both precisions, as open question 1
-      settles; every FFTW call runs inside `with_fftw`, file I/O outside it.
+- [ ] The wisdom functions of work item 1 exist for both precisions, as DC38 settles; every FFTW call runs inside `with_fftw`, file I/O outside it.
 - [ ] `fftw_threads` implies `fftw_system`, links `fftw3_threads` and `fftw3f_threads` before
       `fftw3` and `fftw3f`, fails the build with a clear message when they are missing, and
       raises the minimum to 3.3.6 at build time and at run time; builds without it reference
@@ -352,7 +355,7 @@ feature.
 - [ ] Threads are initialised once, inside the lock, before RLST's first FFTW call; the
       settings guard sets and resets the thread count; `make_planner_thread_safe` exists with
       the limits of design Section 3 item 3 in its rustdoc.
-- [ ] `Planner::threads` and `Plan::threads` exist as open question 4 settles, for every
+- [ ] `Planner::threads` and `Plan::threads` exist as DC41 settles, with its errors, for every
       family and planner method.
 - [ ] The tests of work item 5 pass in the default FFTW test run and with `fftw_threads`, in CI
       on Linux and macOS; no unit test imports or forgets wisdom; their added time in a debug
@@ -360,12 +363,12 @@ feature.
 - [ ] The cases and scenarios of work item 6 pass in CI on Linux and macOS, with and without
       `fftw_threads`; the binary's summaries are in the pull requests; its time in a debug
       build is at most about 10 s.
-- [ ] CI runs the commands of open question 6, and `CLAUDE.md` lists them.
+- [ ] CI runs the commands of work item 7 (DC43), and `CLAUDE.md` lists them.
 - [ ] The rustdoc states Section 5 rules 1 and 7 (in `threads` and `wisdom`) and the thread
       count in rules 3 and 6 (on `Plan`); every new public item has an example.
 - [ ] Every `unsafe` block has a `SAFETY:` comment naming the conditions it relies on; no
       dependency was added.
-- [ ] The six (with open question 6, seven) Clippy commands of `CLAUDE.md` pass (or are
+- [ ] The seven Clippy commands of `CLAUDE.md` (six before F6b) pass (or are
       reported unavailable), as do `cargo fmt -- --check`, `cargo test`,
       `cargo test --features "fftw,fftw_system,strict"`,
       `cargo test --features "fftw,fftw_system,fftw_threads,strict"` and
@@ -376,7 +379,7 @@ feature.
 
 - **Wisdom is global to the process** (design, Section 3 item 4), and estimate planning adds
   to it (fact 1). Unit tests may export; importing, forgetting and `Measure` planning belong
-  to the binary's children (open question 2). In a child of a scenario that compares with
+  to the binary's children (DC39). In a child of a scenario that compares with
   `estimate`, nothing may plan before the case starts.
 - **Symbols of the threads libraries** (fact 6). Every reference to `fftw_init_threads`,
   `fftw_plan_with_nthreads` and `fftw_make_planner_thread_safe`, in `FftwReal` and in the
@@ -415,8 +418,9 @@ feature.
 Record here anything the design leaves unclear, and raise it; do not resolve design questions
 in code.
 
-Raised while writing this brief, **to be settled by the maintainer before the task starts**.
-The work items follow the options marked *proposed*.
+Raised while writing this brief, and **settled by the maintainer before the task started**
+(design draft 0.16, DC38–DC43, Appendix A): all six with the option marked *proposed*. The
+work items follow these answers.
 
 1. **The wisdom functions' types and file errors.** Design Section 4.13 names the functions
    without types. `FftwError` is `Clone + PartialEq + Eq`, so it cannot hold a
@@ -428,6 +432,7 @@ The work items follow the options marked *proposed*.
    to `io::ErrorKind::InvalidData` with `WisdomImportFailed` as its source; (c) no file
    functions, users write `export()` and read `import()` with `std::fs` (Section 4.13
    corrected).
+   *Decided: (a), DC38.*
 2. **Where the tests that change the wisdom run.** Design Section 7.5 puts "wisdom export and
    import run concurrently with planning" among the concurrency tests, which run in the test
    process, but importing or forgetting wisdom there changes the wisdom every later unit test
@@ -436,6 +441,7 @@ The work items follow the options marked *proposed*.
    of the binary (`wisdom-concurrent`), whose later plans are compared with `estimate`;
    (b) the unit tests import only wisdom exported from the same process and forget nothing,
    relying on DC22 inside the test process.
+   *Decided: (a), DC39.*
 3. **Wisdom shared between processes.** Section 7.6 tests export, forget and import in one
    process; Section 5 rule 7, and the option of Section 11 item 4, rely on wisdom shared
    between processes giving the same plans. Options: (a) *proposed*: the `shared wisdom`
@@ -443,6 +449,7 @@ The work items follow the options marked *proposed*.
    wisdom-only gets the fingerprints and bits of the exporting process, and a failure is a
    design question, as DC22; (b) the scenario reports whether they are equal; (c) no such
    scenario.
+   *Decided: (a), DC40.*
 4. **The threads API and its errors.** Section 4.14 names `Planner::threads(n)` and says that
    the plan records `n`, without types; FFTW takes an `int`, and `fftw_init_threads` can fail
    (Section 3 item 12), for which Section 4.15 has no variant. Options: (a) *proposed*:
@@ -453,6 +460,7 @@ The work items follow the options marked *proposed*.
    `threads::make_planner_thread_safe()` returns `()`; (b) `Planner::threads(n: usize)` and
    `Plan::threads` always present, with `n = 0` an error and `n > 1` an error without the
    feature; (c) as (a), with `n` clamped to `c_int::MAX` instead of an error.
+   *Decided: (a), DC41.*
 5. **Threaded plans in the determinism binary.** Section 7.6 lists no threaded case, but
    Section 5 rule 3 counts the thread count among a plan's settings, which claims that
    threaded `Estimate` plans are the same in every fresh process, and Section 4.7 says the
@@ -460,8 +468,10 @@ The work items follow the options marked *proposed*.
    of work item 6, each asserting; a failure of "threads leave no trace" or of the threaded
    fresh processes is a design question; (b) the threaded cases report only, as `estimate
    after measure` does; (c) no threaded cases, the unit tests of work item 5 only.
+   *Decided: (a), DC42.*
 6. **CI for `fftw_threads`.** Section 7.7 gives "with and without `fftw_threads`" to F8a, so
    F6b's code would run in no CI job until then. Options: (a) *proposed*: F6b adds the Clippy
    and test commands of work item 7 to both jobs, beside the existing ones, and `CLAUDE.md`
    lists them; F8a reviews the matrix as a whole; (b) F8a adds them, and F6b reports local
    runs on macOS only.
+   *Decided: (a), DC43.*
