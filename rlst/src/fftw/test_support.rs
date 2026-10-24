@@ -8,7 +8,7 @@ use rand::{RngExt, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 
 use super::align::PLAN_ALIGNMENT;
-use super::kind::Direction;
+use super::kind::{Direction, R2rKind};
 use super::layout::{Dim, Layout, Placement};
 use super::real::FftwReal;
 use crate::dense::array::AlignedDynArray;
@@ -659,4 +659,107 @@ where
             })
         })
         .collect()
+}
+
+// The real-to-real reference (task F5b).
+
+/// The real-to-real transform of `line` by the definition of `kind` (FFTW manual,
+/// "Real-to-Real Transform Kinds"), O(n²) in f64 with compensated summation. Every angle is
+/// 2π r / period for an integer r reduced modulo the period, so the reference's own error does
+/// not grow with n². `Redft00` needs n ≥ 2.
+pub(crate) fn r2r_line(line: &mut [f64], kind: R2rKind) {
+    let n = line.len();
+    let x = line.to_vec();
+    // The cosine and sine of 2π r / period.
+    let trig = |r: usize, period: usize| (2.0 * PI * (r % period) as f64 / period as f64).sin_cos();
+    let cos = |r: usize, period: usize| trig(r, period).1;
+    let sin = |r: usize, period: usize| trig(r, period).0;
+    let sign = |k: usize| if k.is_multiple_of(2) { 1.0 } else { -1.0 };
+    for (k, y) in line.iter_mut().enumerate() {
+        let mut sum = Neumaier::default();
+        match kind {
+            R2rKind::R2hc if k <= n / 2 => {
+                (0..n).for_each(|j| sum.add(x[j] * cos(j * k, n)));
+            }
+            R2rKind::R2hc => {
+                // The imaginary part of frequency n − k.
+                (0..n).for_each(|j| sum.add(-x[j] * sin(j * (n - k), n)));
+            }
+            R2rKind::Hc2r => {
+                sum.add(x[0]);
+                for m in 1..n.div_ceil(2) {
+                    sum.add(2.0 * x[m] * cos(m * k, n));
+                    sum.add(-2.0 * x[n - m] * sin(m * k, n));
+                }
+                if n.is_multiple_of(2) {
+                    sum.add(sign(k) * x[n / 2]);
+                }
+            }
+            R2rKind::Dht => {
+                (0..n).for_each(|j| sum.add(x[j] * (cos(j * k, n) + sin(j * k, n))));
+            }
+            R2rKind::Redft00 => {
+                sum.add(x[0]);
+                sum.add(sign(k) * x[n - 1]);
+                (1..n - 1).for_each(|j| sum.add(2.0 * x[j] * cos(j * k, 2 * (n - 1))));
+            }
+            R2rKind::Redft10 => {
+                (0..n).for_each(|j| sum.add(2.0 * x[j] * cos((2 * j + 1) * k, 4 * n)));
+            }
+            R2rKind::Redft01 => {
+                sum.add(x[0]);
+                (1..n).for_each(|j| sum.add(2.0 * x[j] * cos(j * (2 * k + 1), 4 * n)));
+            }
+            R2rKind::Redft11 => {
+                (0..n).for_each(|j| sum.add(2.0 * x[j] * cos((2 * j + 1) * (2 * k + 1), 8 * n)));
+            }
+            R2rKind::Rodft00 => {
+                (0..n).for_each(|j| sum.add(2.0 * x[j] * sin((j + 1) * (k + 1), 2 * (n + 1))));
+            }
+            R2rKind::Rodft10 => {
+                (0..n).for_each(|j| sum.add(2.0 * x[j] * sin((2 * j + 1) * (k + 1), 4 * n)));
+            }
+            R2rKind::Rodft01 => {
+                sum.add(sign(k) * x[n - 1]);
+                (0..n - 1).for_each(|j| sum.add(2.0 * x[j] * sin((j + 1) * (2 * k + 1), 4 * n)));
+            }
+            R2rKind::Rodft11 => {
+                (0..n).for_each(|j| sum.add(2.0 * x[j] * sin((2 * j + 1) * (2 * k + 1), 8 * n)));
+            }
+        }
+        *y = sum.value();
+    }
+}
+
+/// The r2r reference (design Section 7.1): the reals `values` of `shape`, given in
+/// column-major order, widened to f64 and transformed along each axis `axes[i]` with
+/// `kinds[i]`, by [`r2r_line`]. It reads values by multi-index and builds no `Layout`.
+pub(crate) fn reference_r2r<T: TestReal, const N: usize>(
+    shape: [usize; N],
+    values: &[T],
+    axes: &[usize],
+    kinds: &[R2rKind],
+) -> DynArray<f64, N> {
+    let mut reference = DynArray::<f64, N>::from_shape(shape);
+    for (index, &value) in multi_indices(shape).zip(values) {
+        reference[index] = TestReal::to_f64(value);
+    }
+    for (&axis, &kind) in axes.iter().zip(kinds) {
+        let mut line = vec![0.0; shape[axis]];
+        for start in multi_indices(shape).filter(|index| index[axis] == 0) {
+            let at = |j: usize| {
+                let mut index = start;
+                index[axis] = j;
+                index
+            };
+            for (j, value) in line.iter_mut().enumerate() {
+                *value = reference[at(j)];
+            }
+            r2r_line(&mut line, kind);
+            for (j, value) in line.iter().enumerate() {
+                reference[at(j)] = *value;
+            }
+        }
+    }
+    reference
 }
