@@ -2,7 +2,7 @@
 //!
 //! FFTW's planner, plan destruction, wisdom, `fftw_sprint_plan` and its global settings must
 //! be used from one thread at a time (design, Sections 3 item 2 and 4.7). Every such call in
-//! RLST, in the 0.10 module as well, runs inside [`with_fftw`]. The lock cannot protect FFTW
+//! RLST runs inside [`with_fftw`]. The lock cannot protect FFTW
 //! from other libraries in the process, nor from a second copy of RLST in the same build.
 
 use std::marker::PhantomData;
@@ -180,11 +180,7 @@ mod tests {
     use std::panic::{AssertUnwindSafe, catch_unwind};
 
     use super::{FFTW_LOCK, SettingsGuard, with_fftw};
-    use crate::fftw::{
-        C2CDirection, C2CPlan, Dim, Direction, FftPlanInplace, FftwPlanFlags, Layout, Placement,
-        Planner,
-    };
-    use crate::{DynArray, c64};
+    use crate::fftw::{Dim, Direction, Layout, Placement, Planner};
 
     #[test]
     fn test_lock_recovers_after_panic() {
@@ -229,17 +225,5 @@ mod tests {
         let after = plan();
         assert_eq!(after.threads(), 1);
         assert_eq!(after.fingerprint(), before, "{}", after.description());
-
-        // Planning with the 0.10 module, which shares the lock, still works.
-        let mut data = DynArray::<c64, 1>::from_shape([8]);
-        data[[0]] = c64::new(1.0, 0.0);
-        let fft = data.into_fft();
-        fft.c2c_fft(FftwPlanFlags::Estimate, C2CDirection::Forward)
-            .unwrap()
-            .execute();
-        let transformed = fft.borrow().unwrap();
-        for k in 0..8 {
-            approx::assert_relative_eq!(transformed[[k]], c64::new(1.0, 0.0), epsilon = 1e-14);
-        }
     }
 }

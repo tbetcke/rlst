@@ -229,9 +229,9 @@ workflow and tracks the status of every task; `docs/fftw/tasks/` holds one brief
   incomplete, stop and report it, and record it under "Open questions" in the brief, rather
   than deviating silently. Design changes go into the design document, with an entry in its
   Appendix A.
-- No compatibility with the 0.10 FFTW API is required. Until task F7 the 0.10 module stays
-  in `rlst::fftw` beside the new types, unchanged except that its planning and plan
-  destruction use the new FFTW lock.
+- No compatibility with the 0.10 FFTW API is required. Task F7b removed the 0.10 module
+  (`into_fft`, `Fft`, `PlanInplace`, `C2CPlan`, `R2RPlan` and their companions); `rlst::fftw`
+  holds only the new interface, and `rlst::chebychev` uses it.
 - Rules for all new FFTW code:
   - every FFTW call other than plan execution goes through the FFTW lock (design,
     Section 4.7);

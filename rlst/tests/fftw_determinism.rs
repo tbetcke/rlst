@@ -38,10 +38,10 @@ use rand::{RngExt, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 use rlst::dense::array::{AlignedDynArray, StridedSliceArrayMut};
 use rlst::fftw::{
-    C2CDirection, C2CPlan, Direction, FftBufferMut, FftPlanInplace, FftwError, FftwPlanFlags,
-    FftwReal, Layout, Planner, R2rKind, Rigor, as_reals, as_reals_mut, wisdom,
+    Direction, FftBufferMut, FftwError, FftwReal, Layout, Planner, R2rKind, Rigor, as_reals,
+    as_reals_mut, wisdom,
 };
-use rlst::{DynArray, SliceArray, SliceArrayMut, c32, c64};
+use rlst::{SliceArray, SliceArrayMut, c64};
 
 /// The environment variable that makes the executable a child running one case.
 const CASE_VARIABLE: &str = "RLST_FFTW_DETERMINISM_CASE";
@@ -895,26 +895,11 @@ fn other_plans<T: Precision>() {
     }
 }
 
-/// `estimate-after-other-plans`: `Estimate` plans of unrelated problems, through the new
-/// interface and the 0.10 module, and then the problems of `estimate` in reverse order. The
-/// lines are printed in the order of `estimate`.
+/// `estimate-after-other-plans`: `Estimate` plans of unrelated problems, and then the
+/// problems of `estimate` in reverse order. The lines are printed in the order of `estimate`.
 fn case_estimate_after_other_plans() -> Vec<String> {
     other_plans::<f64>();
     other_plans::<f32>();
-    for shape in [[30, 7], [588, 3]] {
-        let mut array = DynArray::<c64, 2>::from_shape(shape);
-        array.fill_from_seed_equally_distributed(1);
-        let fft = array.into_fft();
-        fft.c2c_fft(FftwPlanFlags::Estimate, C2CDirection::Forward)
-            .unwrap()
-            .execute();
-        let mut array = DynArray::<c32, 2>::from_shape(shape);
-        array.fill_from_seed_equally_distributed(2);
-        let fft = array.into_fft();
-        fft.c2c_fft(FftwPlanFlags::Estimate, C2CDirection::Backward)
-            .unwrap()
-            .execute();
-    }
     let mut lines: Vec<String> = Problem::estimate()
         .into_iter()
         .rev()

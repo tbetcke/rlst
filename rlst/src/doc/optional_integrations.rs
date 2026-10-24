@@ -9,20 +9,8 @@
 //! double-precision FFTW libraries, version 3.3.4 or later. FFTW is GPL-licensed; review the
 //! licensing implications before distributing linked binaries.
 //!
-//! FFT plans store pointers into the planned array. Since RLST 0.7, `borrow_mut()`
-//! therefore returns an `FftMutGuard`: mutate elements through `data_mut()`, rather than replacing
-//! the array or changing its layout while a plan exists.
-//!
-//! ```ignore
-//! use rlst::{BorrowAtRuntimeMut, DynArray};
-//!
-//! let fft = DynArray::<f64, 1>::from_shape([8]).into_fft();
-//! let mut elements = fft.borrow_mut().unwrap();
-//! elements.data_mut().unwrap().fill(0.0);
-//! ```
-//!
-//! Transform direction, normalization, planning flags, dimensionality, and contiguous-layout
-//! requirements are covered by the `rlst::fftw` module examples.
+//! Layouts, planners, plans and their execution are described in the documentation of the
+//! `rlst::fftw` module, which has an example for each of its items.
 //!
 //! # Burn tensors
 //!
