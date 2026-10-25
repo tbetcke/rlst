@@ -33,10 +33,12 @@ jobs:
           grep -m1 'model name' /proc/cpuinfo
           nproc
 
-      - name: Build the benchmark before (origin/main) and after (this branch's parent)
+      - name: Build the benchmark before (origin/main) and after (the fix commit)
         run: |
           git worktree add "$RUNNER_TEMP/before" origin/main
-          git worktree add "$RUNNER_TEMP/after" HEAD~1
+          git worktree add "$RUNNER_TEMP/after" 26874c188818c5ad0a02f05ef4813590d228081c
+          git -C "$RUNNER_TEMP/after" log --oneline -1
+          git -C "$RUNNER_TEMP/before" log --oneline -1
           for v in before after; do
             (cd "$RUNNER_TEMP/$v" && cargo build --release --example fftw_bench --features fftw_system \
               && cp target/release/examples/fftw_bench "$RUNNER_TEMP/bench_$v")
