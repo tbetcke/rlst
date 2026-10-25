@@ -1,77 +1,5 @@
 //! A collection of macros for Rlst.
 
-/// Implementation support for rank-dependent dynamic-array construction.
-#[doc(hidden)]
-pub mod dynamic {
-    use std::marker::PhantomData;
-
-    use crate::{Array, DynArray, ZeroDimArray};
-
-    /// Preserve expected-result rank inference before call-site method dispatch.
-    pub fn build<Item, const NDIM: usize, ArrayImpl>(
-        shape: [usize; NDIM],
-        allocate: impl FnOnce(Request<Item, NDIM>) -> Array<ArrayImpl, NDIM>,
-    ) -> Array<ArrayImpl, NDIM> {
-        allocate(Request::new(shape))
-    }
-
-    /// Reject aligned scalars while preserving the constructor's shape inference.
-    pub fn aligned_shape<const NDIM: usize>(shape: [usize; NDIM]) -> [usize; NDIM] {
-        assert!(
-            NDIM > 0,
-            "Aligned zero-dimensional arrays are not supported; use the unaligned macro form"
-        );
-        shape
-    }
-
-    /// A shape and item type awaiting call-site rank dispatch.
-    pub struct Request<Item, const NDIM: usize> {
-        shape: [usize; NDIM],
-        item: PhantomData<Item>,
-    }
-
-    impl<Item, const NDIM: usize> Request<Item, NDIM> {
-        /// Evaluate and retain the shape once.
-        pub fn new(shape: [usize; NDIM]) -> Self {
-            Self {
-                shape,
-                item: PhantomData,
-            }
-        }
-    }
-
-    /// Select storage using method lookup at the macro expansion site.
-    pub trait Allocate {
-        /// The concrete array type for this receiver.
-        type Output;
-
-        /// Construct a default-initialized array.
-        fn allocate(self) -> Self::Output;
-    }
-
-    // Method lookup dereferences the macro's &&Request receiver to this fallback
-    // for positive or unresolved generic ranks. No rank enumeration is needed.
-    impl<Item: Copy + Default, const NDIM: usize> Allocate for &Request<Item, NDIM> {
-        type Output = DynArray<Item, NDIM>;
-
-        fn allocate(self) -> Self::Output {
-            DynArray::from_shape(self.shape)
-        }
-    }
-
-    // An exact receiver match wins for rank zero. Method lookup can also infer an
-    // otherwise unconstrained rank as zero; later uses cannot revise that choice.
-    // Keep this dispatch in the macro: a generic helper function would always
-    // select the fallback before monomorphization, even when called with [].
-    impl<Item: Copy + Default> Allocate for &&Request<Item, 0> {
-        type Output = ZeroDimArray<Item>;
-
-        fn allocate(self) -> Self::Output {
-            ZeroDimArray::from_scalar(Item::default())
-        }
-    }
-}
-
 /// Implementation support for the direct tensor multiplication macros.
 #[doc(hidden)]
 pub mod direct {
@@ -81,7 +9,7 @@ pub mod direct {
 
     use crate::{
         Array, BaseItem, DynArray, Shape, UnsafeRandomAccessByValue, UnsafeRandomAccessMut,
-        ZeroDimArray, operator::element::Element, sparse::csr_mat::CsrMatrix,
+        operator::element::Element, sparse::csr_mat::CsrMatrix,
         traits::abstract_operator::OperatorBase,
     };
 
@@ -94,12 +22,6 @@ pub mod direct {
     impl<Item: Copy + Default, const R: usize> AllocateOutput<R> for DynArray<Item, R> {
         fn allocate_output(shape: [usize; R]) -> Self {
             Self::from_shape(shape)
-        }
-    }
-
-    impl<Item: Copy + Default> AllocateOutput<0> for ZeroDimArray<Item> {
-        fn allocate_output(_shape: [usize; 0]) -> Self {
-            Self::from_scalar(Item::default())
         }
     }
 
@@ -147,7 +69,7 @@ pub mod direct {
         }
     }
 
-    /// Mutable output access for indexed arrays and dedicated scalar storage.
+    /// Mutable output access for indexed arrays, including zero-dimensional ones.
     pub trait Output<const R: usize>: BaseItem {
         /// Access an output element after validating its index.
         ///
@@ -160,12 +82,6 @@ pub mod direct {
         unsafe fn output_mut(&mut self, index: [usize; R]) -> &mut Self::Item {
             // SAFETY: the caller guarantees a valid index.
             unsafe { self.get_unchecked_mut(index) }
-        }
-    }
-
-    impl<Item: Copy + Default> Output<0> for ZeroDimArray<Item> {
-        unsafe fn output_mut(&mut self, _index: [usize; 0]) -> &mut Item {
-            self.scalar_mut()
         }
     }
 
@@ -314,11 +230,11 @@ macro_rules! dot_into {
 
 /// Allocate a direct contraction of the last axis of `a` with the first of `b`.
 ///
-/// Uses the same rank-dependent storage as [`rlst_dynamic_array!`](crate::rlst_dynamic_array) and
-/// [`dot_into!`](crate::dot_into) for multiplication. Arguments are
+/// Allocates a [`DynArray`](crate::DynArray), as [`rlst_dynamic_array!`](crate::rlst_dynamic_array)
+/// does, and fills it with [`dot_into!`](crate::dot_into). Arguments are
 /// evaluated and borrowed once. The output concatenates the remaining input axes,
-/// with a [`ZeroDimArray`](crate::ZeroDimArray) of shape `[]` for two vectors;
-/// multiplication does not conjugate either input.
+/// with a [`ZeroDimArray`](crate::ZeroDimArray) (a `DynArray<_, 0>`) of shape `[]`
+/// for two vectors; multiplication does not conjugate either input.
 ///
 /// Stable Rust requires the independent output rank to be inferred from context,
 /// for example an explicit `DynArray<_, R>` or `ZeroDimArray<_>` annotation.

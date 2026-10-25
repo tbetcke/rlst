@@ -41,7 +41,7 @@ use subview::ArraySubView;
 
 use crate::{
     AsMatrixApply, AsMultiIndex, EvaluateArray, EvaluateRowMajorArray, Gemm, IsGreaterByOne,
-    IsGreaterZero, IsSmallerThan, Max, MemoryLayout, NumberDifference, NumberType, RandScalar,
+    IsSmallerThan, Max, MemoryLayout, NumberDifference, NumberType, RandScalar,
     RandomAccessByValue, RlstError, RlstResult, RlstScalar, SubtractEqual, TransMode,
     dense::{
         array::multislice::Multislice,
@@ -88,7 +88,7 @@ pub use zero_dim::ZeroDimArray;
 ///
 /// Construct one with [`DynArray::from_shape`], [`DynArray::from_shape_and_vec`], or
 /// [`crate::rlst_dynamic_array`]. Elements supplied as a flat vector use column-major order.
-/// This storage requires at least one axis; use [`ZeroDimArray`] for scalar results.
+/// Rank zero is allowed: [`ZeroDimArray`] is `DynArray<Item, 0>`, holding one element.
 pub type DynArray<Item, const NDIM: usize> = Array<BaseArray<VectorContainer<Item>, NDIM>, NDIM>;
 
 /// A contiguous column-major array with an explicitly aligned heap allocation.
@@ -134,8 +134,7 @@ pub struct Array<ArrayImpl, const NDIM: usize>(ArrayImpl);
 impl<ArrayImpl, const NDIM: usize> Array<ArrayImpl, NDIM> {
     /// Wrap an array implementation.
     ///
-    /// The implementation determines the supported ranks and access operations.
-    /// [`ZeroDimArray`] provides scalar-only storage for rank zero.
+    /// The implementation determines the supported access operations.
     pub fn new(arr: ArrayImpl) -> Self {
         Self(arr)
     }
@@ -717,13 +716,14 @@ where
 /// Create an empty array of given type and dimension.
 ///
 /// Empty arrays serve as convenient containers for input into functions that
-/// resize an array before filling it with data.
+/// resize an array before filling it with data. Every extent is zero; a
+/// zero-dimensional array has no extent and holds one default element.
 pub fn empty_array<Item, const NDIM: usize>() -> Array<BaseArray<VectorContainer<Item>, NDIM>, NDIM>
 where
     Item: Copy + Default,
 {
     let shape = [0; NDIM];
-    let container = VectorContainer::new(0);
+    let container = VectorContainer::new(shape.iter().product());
     Array::new(BaseArray::new(container, shape))
 }
 
@@ -1542,7 +1542,8 @@ where
     ///
     /// If `arr` is a matrix then the first column of the matrix is obtained from
     /// `arr.slice(1, 0)`, while the third row of the matrix is obtained from
-    /// `arr.slice(0, 2)`.
+    /// `arr.slice(0, 2)`. Slicing a vector gives a zero-dimensional view of one element:
+    /// `vec.slice::<0>(0, 2)`.
     pub fn slice<const OUTDIM: usize>(
         self,
         axis: usize,
@@ -1550,7 +1551,6 @@ where
     ) -> Array<ArraySlice<ArrayImpl, ADIM, OUTDIM>, OUTDIM>
     where
         NumberType<ADIM>: IsGreaterByOne<OUTDIM>,
-        NumberType<OUTDIM>: IsGreaterZero,
     {
         Array::new(ArraySlice::new(self, [axis, index]))
     }

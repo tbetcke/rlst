@@ -147,14 +147,12 @@ pub struct NumberType<const N: usize>;
 /// Type-level witness used to prove that `M - N` equals another const integer.
 pub struct NumberDifference<const M: usize, const N: usize>;
 
-// the condition that M = 1 + N.
+// the condition that M = 1 + N, including N = 0.
 impl<const M: usize, const N: usize> IsGreaterByOne<N> for NumberType<M>
 where
-    PInt<U<N>>: Add<typenum::P1, Output = PInt<U<M>>>,
     Const<N>: ToUInt,
     Const<M>: ToUInt,
-    <Const<N> as ToUInt>::Output: Unsigned + NonZero,
-    <Const<M> as ToUInt>::Output: Unsigned + NonZero,
+    U<N>: Add<typenum::U1, Output = U<M>>,
 {
 }
 

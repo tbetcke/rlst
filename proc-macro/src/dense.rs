@@ -93,9 +93,7 @@ pub(crate) fn rlst_dynamic_array_impl(items: TokenStream) -> TokenStream {
             panic!("Expression or literal expected as last argument.");
         };
         quote! {
-            rlst::dense::array::AlignedDynArray::<#ty, _, { #alignment }>::from_shape(
-                rlst::dense::macros::dynamic::aligned_shape(#shape)
-            )
+            rlst::dense::array::AlignedDynArray::<#ty, _, { #alignment }>::from_shape(#shape)
         }
         .into()
     } else {
@@ -107,12 +105,9 @@ pub(crate) fn rlst_dynamic_array_impl(items: TokenStream) -> TokenStream {
             panic!("Expression expected as second argument.");
         };
 
-        quote! {{
-            use rlst::dense::macros::dynamic::Allocate as _;
-            rlst::dense::macros::dynamic::build::<#ty, _, _>(#shape, |request| {
-                (&&request).allocate()
-            })
-        }}
+        quote! {
+            rlst::dense::array::DynArray::<#ty, _>::from_shape(#shape)
+        }
         .into()
     }
 }

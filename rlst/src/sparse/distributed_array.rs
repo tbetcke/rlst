@@ -77,6 +77,16 @@ fn collective_nonleading_shape_agreement<C: CommunicatorCollectives, const NDIM:
     );
 }
 
+/// Reject zero-dimensional arrays, which have no first axis to distribute along.
+///
+/// `NDIM` is a compile-time constant, so every process of a collective call agrees.
+fn assert_positive_rank<const NDIM: usize>() {
+    assert!(
+        NDIM > 0,
+        "a distributed array needs at least one axis to distribute along"
+    );
+}
+
 fn checked_scatter_counts<const NDIM: usize>(
     shape: [usize; NDIM],
     local_counts: &[usize],
@@ -118,7 +128,13 @@ where
     /// `new`. Generally, it is advisable not to use this method to instantiate a new
     /// distributed array but either the [crate::dist_vec] or the [crate::dist_mat] macro that create
     /// distributed vectors or matrices.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `NDIM` is zero or the first extent of `arr` differs from the number of local
+    /// indices of `index_layout`.
     pub fn new(index_layout: Rc<IndexLayout<'a, C>>, arr: Array<ArrayImpl, NDIM>) -> Self {
+        assert_positive_rank::<NDIM>();
         let number_of_local_indices = index_layout.number_of_local_indices();
         assert_eq!(
             number_of_local_indices,
@@ -257,10 +273,12 @@ where
     ///
     /// The data is always scattered out along the first axis of the array.
     /// Call this method on root. On other ranks call [Array::scatter_from_one].
+    /// Panics if `NDIM` is zero, on every rank before any communication.
     pub fn scatter_from_one_root<'a, C: CommunicatorCollectives>(
         &self,
         index_layout: Rc<IndexLayout<'a, C>>,
     ) -> DistributedArray<'a, C, BaseArray<VectorContainer<Item>, NDIM>, NDIM> {
+        assert_positive_rank::<NDIM>();
         let comm = index_layout.comm();
         collective_root_agreement(comm, comm.rank() as usize);
         let this_process = comm.this_process();
@@ -306,10 +324,12 @@ where
     ///
     /// The data is always scattered out along the first axis of the array.
     /// Call this method on all ranks that are not `root`.
+    /// Panics if `NDIM` is zero, on every rank before any communication.
     pub fn scatter_from_one<'a, C: CommunicatorCollectives>(
         root: usize,
         index_layout: Rc<IndexLayout<'a, C>>,
     ) -> DistributedArray<'a, C, BaseArray<VectorContainer<Item>, NDIM>, NDIM> {
+        assert_positive_rank::<NDIM>();
         let comm = index_layout.comm();
         collective_root_agreement(comm, root);
 

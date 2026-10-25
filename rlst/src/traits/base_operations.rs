@@ -73,13 +73,17 @@ pub trait Stride<const NDIM: usize> {
     /// A column-major layout has entries continuous in memory
     /// starting with the first outer dimension. A row-major layout
     /// has entries continuous in memory starting with the last outer dimension.
-    /// 1d contiguous layouts are always returned as column major.
+    /// 1d contiguous layouts are always returned as column major, and so is the
+    /// one element of a zero-dimensional array.
     /// Possible return values are [MemoryLayout::ColumnMajor], [MemoryLayout::RowMajor],
     /// and [MemoryLayout::Unknown].
     fn memory_layout(&self) -> MemoryLayout
     where
         Self: Shape<NDIM>,
     {
+        if NDIM == 0 {
+            return MemoryLayout::ColumnMajor;
+        }
         let stride = self.stride();
         let shape = self.shape();
         let mut factor = 1;

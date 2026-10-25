@@ -194,9 +194,11 @@ let doubled = (2.0 * a.r()).eval();                    // a.r() borrows; bare `a
   product (and chains: `dot_blas!(a.r(), b.r(), c.r())`) and is the right default for general
   dense matrices. `dot!` performs a direct tensor contraction. `dot_into!` writes into an existing
   buffer. Picking the wrong one is a silent performance or semantics bug.
-- `ZeroDimArray` (shape `[]`, one scalar) is the reduction result type and is distinct from shape
-  `[0]` (an empty rank-1 array). It has no indexing — use `scalar()`, `scalar_mut()`,
-  `into_scalar()`, or the `From`/`Into` conversions.
+- Rank 0 is an ordinary rank: shape `[]`, one element, indexed by `[]`. `ZeroDimArray<T>` is an
+  alias of `DynArray<T, 0>` (the result of a vector-vector `dot!`) and is distinct from shape
+  `[0]` (an empty rank-1 array). Besides `a[[]]`, use `scalar()`, `scalar_mut()`,
+  `into_scalar()`, or the `From`/`Into` conversions. Rank-generic code must not index axis 0
+  or `NDIM - 1` without handling `NDIM == 0`.
 - Element type only needs `Copy + Default`, so arrays of e.g. `[usize; 3]` are valid.
 
 Decompositions are reached through the traits in `rlst/src/traits/linalg/`, implemented in

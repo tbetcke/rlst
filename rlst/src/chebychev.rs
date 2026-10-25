@@ -48,8 +48,9 @@ use crate::{c32, c64};
 
 /// Convert between tensor-grid data and Chebychev coefficients.
 ///
-/// Implemented for arrays of `f32`, `f64`, `c32` and `c64` of any number of dimensions. Every
-/// axis uses second-kind points and its array extent determines the number of points.
+/// Implemented for arrays of `f32`, `f64`, `c32` and `c64` of any number of dimensions,
+/// including zero, for which both conversions return a copy. Every axis uses second-kind
+/// points and its array extent determines the number of points.
 ///
 /// Along each axis of extent `n > 1` the conversion is one DCT-I, FFTW's
 /// [`R2rKind::Redft00`], along that axis and batched over the others, applied axis by axis,
@@ -989,7 +990,7 @@ mod test {
     use rand_distr::{Distribution, StandardNormal, StandardUniform};
 
     use crate::{
-        EvaluateArray, Linspace, RandScalar, assert_array_relative_eq,
+        EvaluateArray, Linspace, RandScalar, ZeroDimArray, assert_array_relative_eq,
         dense::tools::PrettyPrint,
         interpolation::{
             Kind, barycentric_chebychev_weights, barycentric_evaluate_2d, barycentric_evaluate_3d,
@@ -1704,6 +1705,28 @@ mod test {
             check_extent_one::<c64, 3, 2>(shape, squeezed, 1E-14);
             check_extent_one::<c32, 3, 2>(shape, squeezed, 1E-6);
         }
+    }
+
+    #[test]
+    fn test_rank_zero() {
+        // No axis: both conversions return a copy, without calling FFTW.
+        let data = ZeroDimArray::from_scalar(0.75_f64);
+        let coeffs = data.chebychev_coeffs_from_data_second_kind().unwrap();
+        assert_eq!(coeffs.into_scalar(), 0.75);
+        let back = data.chebychev_data_from_coeffs_second_kind().unwrap();
+        assert_eq!(back.into_scalar(), 0.75);
+
+        let data = ZeroDimArray::from_scalar(c32::new(0.5, -2.0));
+        let coeffs = data.chebychev_coeffs_from_data_second_kind().unwrap();
+        assert_eq!(coeffs.into_scalar(), c32::new(0.5, -2.0));
+        let back = data.chebychev_data_from_coeffs_second_kind().unwrap();
+        assert_eq!(back.into_scalar(), c32::new(0.5, -2.0));
+
+        // An axis of extent 1 is the same as no axis.
+        check_extent_one::<f64, 1, 0>([1], [], 0.0);
+        check_extent_one::<f32, 1, 0>([1], [], 0.0);
+        check_extent_one::<c64, 1, 0>([1], [], 0.0);
+        check_extent_one::<c32, 1, 0>([1], [], 0.0);
     }
 
     #[test]

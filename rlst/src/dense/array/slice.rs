@@ -10,7 +10,7 @@ use crate::{
             UnsafeRandom1DAccessByRef, UnsafeRandom1DAccessByValue, UnsafeRandom1DAccessMut,
         },
         base_operations::BaseItem,
-        number_relations::{IsGreaterByOne, IsGreaterZero},
+        number_relations::IsGreaterByOne,
     },
 };
 
@@ -22,7 +22,6 @@ use super::{
 pub struct ArraySlice<ArrayImpl, const ADIM: usize, const NDIM: usize>
 where
     NumberType<ADIM>: IsGreaterByOne<NDIM>,
-    NumberType<NDIM>: IsGreaterZero,
 {
     arr: Array<ArrayImpl, ADIM>,
     // The first entry is the axis, the second is the index in the axis.
@@ -37,7 +36,6 @@ impl<ArrayImpl, const ADIM: usize, const NDIM: usize> ContainerType
 where
     ArrayImpl: ContainerType,
     NumberType<ADIM>: IsGreaterByOne<NDIM>,
-    NumberType<NDIM>: IsGreaterZero,
 {
     type Type = Unknown;
 }
@@ -46,7 +44,6 @@ impl<ArrayImpl, const ADIM: usize, const NDIM: usize> BaseItem for ArraySlice<Ar
 where
     ArrayImpl: BaseItem,
     NumberType<ADIM>: IsGreaterByOne<NDIM>,
-    NumberType<NDIM>: IsGreaterZero,
 {
     type Item = ArrayImpl::Item;
 }
@@ -55,7 +52,6 @@ impl<ArrayImpl, const ADIM: usize, const NDIM: usize> ArraySlice<ArrayImpl, ADIM
 where
     ArrayImpl: Shape<ADIM>,
     NumberType<ADIM>: IsGreaterByOne<NDIM>,
-    NumberType<NDIM>: IsGreaterZero,
 {
     /// Create a slice, where `slice` is `[axis, index_on_axis]`.
     ///
@@ -90,7 +86,6 @@ impl<ArrayImpl, const ADIM: usize, const NDIM: usize> UnsafeRandomAccessByValue<
     for ArraySlice<ArrayImpl, ADIM, NDIM>
 where
     NumberType<ADIM>: IsGreaterByOne<NDIM>,
-    NumberType<NDIM>: IsGreaterZero,
     ArrayImpl: UnsafeRandomAccessByValue<ADIM>,
 {
     #[inline(always)]
@@ -105,7 +100,6 @@ impl<ArrayImpl, const ADIM: usize, const NDIM: usize> UnsafeRandomAccessByRef<ND
     for ArraySlice<ArrayImpl, ADIM, NDIM>
 where
     NumberType<ADIM>: IsGreaterByOne<NDIM>,
-    NumberType<NDIM>: IsGreaterZero,
     ArrayImpl: UnsafeRandomAccessByRef<ADIM>,
 {
     unsafe fn get_unchecked(&self, multi_index: [usize; NDIM]) -> &Self::Item {
@@ -119,7 +113,6 @@ impl<ArrayImpl, const ADIM: usize, const NDIM: usize> Shape<NDIM>
     for ArraySlice<ArrayImpl, ADIM, NDIM>
 where
     NumberType<ADIM>: IsGreaterByOne<NDIM>,
-    NumberType<NDIM>: IsGreaterZero,
     ArrayImpl: Shape<ADIM>,
 {
     #[inline(always)]
@@ -139,7 +132,6 @@ impl<ArrayImpl, const ADIM: usize, const NDIM: usize> Stride<NDIM>
     for ArraySlice<ArrayImpl, ADIM, NDIM>
 where
     NumberType<ADIM>: IsGreaterByOne<NDIM>,
-    NumberType<NDIM>: IsGreaterZero,
     ArrayImpl: Stride<ADIM>,
 {
     #[inline(always)]
@@ -159,7 +151,6 @@ impl<ArrayImpl: UnsafeRandomAccessMut<ADIM>, const ADIM: usize, const NDIM: usiz
     UnsafeRandomAccessMut<NDIM> for ArraySlice<ArrayImpl, ADIM, NDIM>
 where
     NumberType<ADIM>: IsGreaterByOne<NDIM>,
-    NumberType<NDIM>: IsGreaterZero,
 {
     #[inline(always)]
     unsafe fn get_unchecked_mut(&mut self, multi_index: [usize; NDIM]) -> &mut Self::Item {
@@ -173,7 +164,6 @@ impl<ArrayImpl: UnsafeRandomAccessByValue<ADIM> + Shape<ADIM>, const ADIM: usize
     UnsafeRandom1DAccessByValue for ArraySlice<ArrayImpl, ADIM, NDIM>
 where
     NumberType<ADIM>: IsGreaterByOne<NDIM>,
-    NumberType<NDIM>: IsGreaterZero,
 {
     #[inline(always)]
     unsafe fn get_value_1d_unchecked(&self, index: usize) -> Self::Item {
@@ -185,7 +175,6 @@ impl<ArrayImpl: UnsafeRandomAccessByRef<ADIM> + Shape<ADIM>, const ADIM: usize, 
     UnsafeRandom1DAccessByRef for ArraySlice<ArrayImpl, ADIM, NDIM>
 where
     NumberType<ADIM>: IsGreaterByOne<NDIM>,
-    NumberType<NDIM>: IsGreaterZero,
 {
     #[inline(always)]
     unsafe fn get_1d_unchecked(&self, index: usize) -> &Self::Item {
@@ -197,7 +186,6 @@ impl<ArrayImpl: UnsafeRandomAccessMut<ADIM> + Shape<ADIM>, const ADIM: usize, co
     UnsafeRandom1DAccessMut for ArraySlice<ArrayImpl, ADIM, NDIM>
 where
     NumberType<ADIM>: IsGreaterByOne<NDIM>,
-    NumberType<NDIM>: IsGreaterZero,
 {
     #[inline(always)]
     unsafe fn get_1d_unchecked_mut(&mut self, index: usize) -> &mut Self::Item {
@@ -211,7 +199,6 @@ unsafe impl<ArrayImpl, const ADIM: usize, const NDIM: usize> UnsafeDisjointRando
     for ArraySlice<ArrayImpl, ADIM, NDIM>
 where
     NumberType<ADIM>: IsGreaterByOne<NDIM>,
-    NumberType<NDIM>: IsGreaterZero,
     ArrayImpl: UnsafeDisjointRandom1DAccessMut + UnsafeRandomAccessMut<ADIM> + Shape<ADIM>,
 {
 }
@@ -224,7 +211,6 @@ impl<
 > RawAccess for ArraySlice<ArrayImpl, ADIM, NDIM>
 where
     NumberType<ADIM>: IsGreaterByOne<NDIM>,
-    NumberType<NDIM>: IsGreaterZero,
 {
     fn data(&self) -> Option<&[Self::Item]> {
         if self.slice[0] == 0 && matches!(self.arr.memory_layout(), MemoryLayout::RowMajor) {
@@ -251,7 +237,6 @@ impl<
 > RawAccessMut for ArraySlice<ArrayImpl, ADIM, NDIM>
 where
     NumberType<ADIM>: IsGreaterByOne<NDIM>,
-    NumberType<NDIM>: IsGreaterZero,
 {
     fn data_mut(&mut self) -> Option<&mut [Self::Item]> {
         if self.slice[0] == 0 && matches!(self.arr.memory_layout(), MemoryLayout::RowMajor) {
@@ -275,7 +260,6 @@ impl<ArrayImpl, const ADIM: usize, const NDIM: usize> StridedRawAccess
     for ArraySlice<ArrayImpl, ADIM, NDIM>
 where
     NumberType<ADIM>: IsGreaterByOne<NDIM>,
-    NumberType<NDIM>: IsGreaterZero,
     ArrayImpl: StridedRawAccess + Stride<ADIM>,
 {
     fn storage(&self) -> Option<(&[Self::Item], usize)> {
@@ -292,7 +276,6 @@ impl<ArrayImpl, const ADIM: usize, const NDIM: usize> StridedRawAccessMut
     for ArraySlice<ArrayImpl, ADIM, NDIM>
 where
     NumberType<ADIM>: IsGreaterByOne<NDIM>,
-    NumberType<NDIM>: IsGreaterZero,
     ArrayImpl: StridedRawAccessMut + Stride<ADIM>,
 {
     fn storage_mut(&mut self) -> Option<(&mut [Self::Item], usize)> {
@@ -312,7 +295,6 @@ fn multi_index_to_orig<const ADIM: usize, const NDIM: usize>(
 ) -> [usize; ADIM]
 where
     NumberType<ADIM>: IsGreaterByOne<NDIM>,
-    NumberType<NDIM>: IsGreaterZero,
 {
     let mut orig = [0; ADIM];
     for (index, &value) in multi_index.iter().enumerate() {
@@ -330,6 +312,29 @@ mod test {
         assert_storage_addresses_elements, assert_storage_consistent_with_data,
         assert_storage_mut_writes_elements,
     };
+
+    #[test]
+    fn slicing_a_vector_gives_a_zero_dimensional_view() {
+        let mut vec = DynArray::<f64, 1>::from_shape([4]);
+        vec.fill_from_iter([1.0, 2.0, 3.0, 4.0].into_iter());
+
+        let element = vec.r().slice::<0>(0, 2);
+        assert_eq!(element.shape(), [0usize; 0]);
+        assert_eq!(element.len(), 1);
+        assert_eq!(element[[]], 3.0);
+        assert_eq!(element.data(), Some(&[3.0][..]));
+        assert_eq!(assert_storage_addresses_elements(&element), (4, 2));
+
+        *vec.r_mut().slice::<0>(0, 1).scalar_mut() = -2.0;
+        assert_eq!(vec[[1]], -2.0);
+        assert_storage_mut_writes_elements(&mut vec.r_mut().slice::<0>(0, 3));
+
+        let strided = StridedDynArray::<f64, 1>::from_shape_and_stride([3], [2]);
+        assert_eq!(
+            assert_storage_addresses_elements(&strided.r().slice::<0>(0, 2)),
+            (5, 4)
+        );
+    }
 
     #[test]
     fn slices_add_the_offset_of_the_fixed_index() {
