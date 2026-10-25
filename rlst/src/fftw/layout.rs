@@ -249,7 +249,7 @@ impl ArrayStorage {
 /// assert_eq!(layout.logical_size(), 8);
 /// # Ok::<(), rlst::fftw::FftwError>(())
 /// ```
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct Layout {
     dims: Vec<Dim>,
     batch: Vec<Dim>,
@@ -258,6 +258,24 @@ pub struct Layout {
     storage: (Storage, Storage),
     input_span: usize,
     output_span: usize,
+    /// The batch on the input and on the output side alone, normalised, which
+    /// [`fits_array_side`](Layout::fits_array_side) compares with at every execution. It
+    /// follows from `batch`, so it does not change equality.
+    side_batches: (Vec<Dim>, Vec<Dim>),
+}
+
+// By hand, to leave the cached `side_batches` out of the output.
+impl fmt::Debug for Layout {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Layout")
+            .field("dims", &self.dims)
+            .field("batch", &self.batch)
+            .field("placement", &self.placement)
+            .field("storage", &self.storage)
+            .field("input_span", &self.input_span)
+            .field("output_span", &self.output_span)
+            .finish()
+    }
 }
 
 /// One dimension of one side of a layout, for the distinct-output rule and the spans: its
@@ -659,13 +677,30 @@ impl Layout {
                 }
         );
 
+        let batch = normalise_batch(batch);
+        let side_batch = |side: Side| {
+            let on_side: Vec<Dim> = batch
+                .iter()
+                .map(|dim| {
+                    let stride = side_stride(dim, side);
+                    Dim {
+                        n: dim.n,
+                        is: stride,
+                        os: stride,
+                    }
+                })
+                .collect();
+            normalise_batch(&on_side)
+        };
+        let side_batches = (side_batch(Side::Input), side_batch(Side::Output));
         Ok(Self {
             dims: dims.to_vec(),
-            batch: normalise_batch(batch),
+            batch,
             placement,
             storage: (input, output),
             input_span,
             output_span,
+            side_batches,
         })
     }
 
@@ -1907,45 +1942,35 @@ impl Layout {
     /// it; several candidates can exist only on an input, whose elements need not be
     /// distinct.
     pub(crate) fn fits_array_side(&self, side: Side, shape: &[usize], stride: &[usize]) -> bool {
-        match self.gap(side) {
-            None => self.fits_logical_side(side, shape, stride),
-            Some(gap) => part_axes(shape, stride, gap).any(|part| {
-                let (shape, stride) = remove_axis(shape, stride, part);
-                self.fits_logical_side(side, &shape, &stride)
-            }),
-        }
+        part_choices(self.gap(side), shape, stride)
+            .any(|part| self.fits_logical_side(side, (shape, stride, part)))
     }
 
-    /// The check of [`fits_array_side`](Layout::fits_array_side) on axes without a part
-    /// axis.
-    fn fits_logical_side(&self, side: Side, shape: &[usize], stride: &[usize]) -> bool {
-        let on_side = |dim: &Dim| match side {
-            Side::Input => dim.is,
-            Side::Output => dim.os,
-        };
-        let Some(axes) = array_dims(shape, stride, stride) else {
-            return false;
-        };
-        let extent_one = |index: usize| self.extent(index, side) == 1;
-        let Some(used) =
-            match_transform_dims(self.dims.len(), extent_one, axes.len(), |index, axis| {
-                axes[axis].n == self.extent(index, side)
-                    && (extent_one(index) || axes[axis].is == on_side(&self.dims[index]))
+    /// The check of [`fits_array_side`](Layout::fits_array_side) on the axes without the part
+    /// axis `part`, if any. Ranks up to [`INLINE_RANK`] need no allocation.
+    fn fits_logical_side(&self, side: Side, (shape, stride, part): LogicalArray<'_>) -> bool {
+        let rank = shape.len() - usize::from(part.is_some());
+        with_scratch(rank, NO_DIM, |axes| {
+            let (shape, stride) = (without(shape, part), without(stride, part));
+            if !array_dims(shape, stride.clone(), stride, axes) {
+                return false;
+            }
+            with_scratch(rank, false, |used| {
+                let extent_one = |index: usize| self.extent(index, side) == 1;
+                let matched =
+                    match_transform_dims(self.dims.len(), extent_one, used, |index, axis| {
+                        axes[axis].n == self.extent(index, side)
+                            && (extent_one(index)
+                                || axes[axis].is == side_stride(&self.dims[index], side))
+                    });
+                if !matched {
+                    return false;
+                }
+                let rest = keep_unused(axes, used);
+                let len = normalise_in_place(&mut axes[..rest]);
+                axes[..len] == *self.side_batch(side)
             })
-        else {
-            return false;
-        };
-        let rest: Vec<Dim> = unused(&axes, &used);
-        let batch: Vec<Dim> = self
-            .batch
-            .iter()
-            .map(|dim| Dim {
-                n: dim.n,
-                is: on_side(dim),
-                os: on_side(dim),
-            })
-            .collect();
-        normalise_batch(&rest) == normalise_batch(&batch)
+        })
     }
 
     /// Whether an input and an output array of the same rank fit the layout with their axes
@@ -1962,62 +1987,78 @@ impl Layout {
         (input_shape, input_stride): (&[usize], &[usize]),
         (output_shape, output_stride): (&[usize], &[usize]),
     ) -> bool {
-        let without_part = |side: Side, shape: &[usize], stride: &[usize]| -> Vec<_> {
-            match self.gap(side) {
-                None => vec![(shape.to_vec(), stride.to_vec())],
-                Some(gap) => part_axes(shape, stride, gap)
-                    .map(|part| remove_axis(shape, stride, part))
-                    .collect(),
-            }
-        };
-        let outputs = without_part(Side::Output, output_shape, output_stride);
-        without_part(Side::Input, input_shape, input_stride)
-            .iter()
-            .any(|(input_shape, input_stride)| {
-                outputs.iter().any(|(output_shape, output_stride)| {
-                    self.fits_logical_pair(
-                        (input_shape, input_stride),
-                        (output_shape, output_stride),
-                    )
-                })
+        part_choices(self.gap(Side::Input), input_shape, input_stride).any(|input_part| {
+            part_choices(self.gap(Side::Output), output_shape, output_stride).any(|output_part| {
+                self.fits_logical_pair(
+                    (input_shape, input_stride, input_part),
+                    (output_shape, output_stride, output_part),
+                )
             })
+        })
     }
 
-    /// The check of [`fits_array_pair`](Layout::fits_array_pair) on axes without part axes.
+    /// The check of [`fits_array_pair`](Layout::fits_array_pair) on the axes without the part
+    /// axes, if any. Ranks up to [`INLINE_RANK`] need no allocation.
     fn fits_logical_pair(
         &self,
-        (input_shape, input_stride): (&[usize], &[usize]),
-        (output_shape, output_stride): (&[usize], &[usize]),
+        (input_shape, input_stride, input_part): LogicalArray<'_>,
+        (output_shape, output_stride, output_part): LogicalArray<'_>,
     ) -> bool {
-        if input_shape.len() != output_shape.len() {
+        let rank = input_shape.len() - usize::from(input_part.is_some());
+        if rank != output_shape.len() - usize::from(output_part.is_some()) {
             return false;
         }
-        let Some(axes) = array_dims(input_shape, input_stride, output_stride) else {
-            return false;
-        };
-        let Some(output_extents) = output_shape
-            .iter()
-            .map(|&n| isize::try_from(n).ok())
-            .collect::<Option<Vec<isize>>>()
-        else {
-            return false;
-        };
-        let extent_one = |index: usize| {
-            self.extent(index, Side::Input) == 1 && self.extent(index, Side::Output) == 1
-        };
-        let Some(used) =
-            match_transform_dims(self.dims.len(), extent_one, axes.len(), |index, axis| {
-                let dim = &self.dims[index];
-                axes[axis].n == self.extent(index, Side::Input)
-                    && output_extents[axis] == self.extent(index, Side::Output)
-                    && (extent_one(index) || (axes[axis].is == dim.is && axes[axis].os == dim.os))
+        with_scratch(rank, NO_DIM, |axes| {
+            if !array_dims(
+                without(input_shape, input_part),
+                without(input_stride, input_part),
+                without(output_stride, output_part),
+                axes,
+            ) {
+                return false;
+            }
+            with_scratch(rank, 0, |output_extents| {
+                for (extent, n) in output_extents
+                    .iter_mut()
+                    .zip(without(output_shape, output_part))
+                {
+                    let Ok(n) = isize::try_from(n) else {
+                        return false;
+                    };
+                    *extent = n;
+                }
+                with_scratch(rank, false, |used| {
+                    let extent_one = |index: usize| {
+                        self.extent(index, Side::Input) == 1
+                            && self.extent(index, Side::Output) == 1
+                    };
+                    let matched =
+                        match_transform_dims(self.dims.len(), extent_one, used, |index, axis| {
+                            let dim = &self.dims[index];
+                            axes[axis].n == self.extent(index, Side::Input)
+                                && output_extents[axis] == self.extent(index, Side::Output)
+                                && (extent_one(index)
+                                    || (axes[axis].is == dim.is && axes[axis].os == dim.os))
+                        });
+                    if !matched
+                        || !(0..rank).all(|axis| used[axis] || axes[axis].n == output_extents[axis])
+                    {
+                        return false;
+                    }
+                    let rest = keep_unused(axes, used);
+                    let len = normalise_in_place(&mut axes[..rest]);
+                    axes[..len] == *self.batch
+                })
             })
-        else {
-            return false;
-        };
-        let equal_extents =
-            (0..axes.len()).all(|axis| used[axis] || axes[axis].n == output_extents[axis]);
-        equal_extents && normalise_batch(&unused(&axes, &used)) == self.batch
+        })
+    }
+
+    /// The batch on `side` alone, normalised.
+    fn side_batch(&self, side: Side) -> &[Dim] {
+        match side {
+            Side::Input => &self.side_batches.0,
+            Side::Output => &self.side_batches.1,
+        }
     }
 
     /// The dimensions on `side`, for error messages.
@@ -2172,6 +2213,35 @@ fn check_distinct(dims: &[SideDim<'_>], side: Side) -> Result<(), FftwError> {
     Ok(())
 }
 
+/// An array given to the execution checks: its shape, its strides, and its part axis, if one
+/// is removed.
+type LogicalArray<'a> = (&'a [usize], &'a [usize], Option<usize>);
+
+/// The rank up to which the execution checks keep their scratch on the stack.
+const INLINE_RANK: usize = 16;
+
+/// The fill of scratch dimensions.
+const NO_DIM: Dim = Dim { n: 0, is: 0, os: 0 };
+
+/// Run `f` on `len` copies of `fill`: on the stack up to [`INLINE_RANK`], so that executing a
+/// plan does not allocate, and on the heap above it.
+fn with_scratch<T: Copy, R>(len: usize, fill: T, f: impl FnOnce(&mut [T]) -> R) -> R {
+    if len <= INLINE_RANK {
+        let mut scratch = [fill; INLINE_RANK];
+        f(&mut scratch[..len])
+    } else {
+        f(&mut vec![fill; len])
+    }
+}
+
+/// The stride of `dim` on `side`.
+fn side_stride(dim: &Dim, side: Side) -> isize {
+    match side {
+        Side::Input => dim.is,
+        Side::Output => dim.os,
+    }
+}
+
 /// The axes of extent 2 whose stride is `gap`: the candidates for a split array's part axis.
 fn part_axes<'a>(
     shape: &'a [usize],
@@ -2180,6 +2250,18 @@ fn part_axes<'a>(
 ) -> impl Iterator<Item = usize> + 'a {
     (0..shape.len())
         .filter(move |&axis| shape[axis] == 2 && isize::try_from(stride[axis]) == Ok(gap))
+}
+
+/// The part axes to try on a side with `gap`: `None` alone if the side is not split, and
+/// otherwise each candidate of [`part_axes`].
+fn part_choices<'a>(
+    gap: Option<isize>,
+    shape: &'a [usize],
+    stride: &'a [usize],
+) -> impl Iterator<Item = Option<usize>> + 'a {
+    let split = gap.map(|gap| part_axes(shape, stride, gap).map(Some));
+    let interleaved = gap.is_none().then_some(None);
+    split.into_iter().flatten().chain(interleaved)
 }
 
 /// The shape and strides without `axis`.
@@ -2195,76 +2277,114 @@ fn remove_axis(shape: &[usize], stride: &[usize], axis: usize) -> (Vec<usize>, V
     (without(shape), without(stride))
 }
 
-/// The axes of an array as dimensions with the given input and output strides, or `None` if
-/// an extent or a stride does not fit in `isize`.
-fn array_dims(
-    shape: &[usize],
-    input_stride: &[usize],
-    output_stride: &[usize],
-) -> Option<Vec<Dim>> {
-    shape
+/// The values without the one at `skip`, if any.
+fn without(values: &[usize], skip: Option<usize>) -> impl Iterator<Item = usize> + Clone + '_ {
+    values
         .iter()
-        .zip(input_stride.iter().zip(output_stride))
-        .map(|(&n, (&is, &os))| {
-            Some(Dim {
-                n: isize::try_from(n).ok()?,
-                is: isize::try_from(is).ok()?,
-                os: isize::try_from(os).ok()?,
-            })
-        })
-        .collect()
+        .enumerate()
+        .filter(move |&(index, _)| Some(index) != skip)
+        .map(|(_, &value)| value)
 }
 
-/// Match each of the `count` transform dimensions with a distinct one of `axes` axes for
-/// which `fits(dimension, axis)` holds. Dimensions for which `extent_one` holds address one
-/// element, and are matched after the others, so that they take axes of extent 1 that no
-/// other dimension needs. Returns the axes used, or `None` if a dimension has no match.
+/// Write the axes of an array to `axes` as dimensions with the given extents and input and
+/// output strides. Returns `false` if an extent or a stride does not fit in `isize`.
+fn array_dims(
+    shape: impl Iterator<Item = usize>,
+    input_stride: impl Iterator<Item = usize>,
+    output_stride: impl Iterator<Item = usize>,
+    axes: &mut [Dim],
+) -> bool {
+    for (axis, (n, (is, os))) in axes
+        .iter_mut()
+        .zip(shape.zip(input_stride.zip(output_stride)))
+    {
+        let (Ok(n), Ok(is), Ok(os)) =
+            (isize::try_from(n), isize::try_from(is), isize::try_from(os))
+        else {
+            return false;
+        };
+        *axis = Dim { n, is, os };
+    }
+    true
+}
+
+/// Match each of the `count` transform dimensions with a distinct axis for which
+/// `fits(dimension, axis)` holds, marking the axes used in `used`, one entry per axis.
+/// Dimensions for which `extent_one` holds address one element, and are matched after the
+/// others, so that they take axes of extent 1 that no other dimension needs. Returns `false`
+/// if a dimension has no match.
 fn match_transform_dims(
     count: usize,
     extent_one: impl Fn(usize) -> bool,
-    axes: usize,
+    used: &mut [bool],
     fits: impl Fn(usize, usize) -> bool,
-) -> Option<Vec<bool>> {
-    let mut used = vec![false; axes];
+) -> bool {
+    used.fill(false);
     for one in [false, true] {
         for index in (0..count).filter(|&index| extent_one(index) == one) {
-            let axis = (0..axes).find(|&axis| !used[axis] && fits(index, axis))?;
+            let Some(axis) = (0..used.len()).find(|&axis| !used[axis] && fits(index, axis)) else {
+                return false;
+            };
             used[axis] = true;
         }
     }
-    Some(used)
+    true
 }
 
-/// The axes not used by the transform dimensions.
-fn unused(axes: &[Dim], used: &[bool]) -> Vec<Dim> {
-    axes.iter()
-        .zip(used)
-        .filter(|&(_, &used)| !used)
-        .map(|(&dim, _)| dim)
-        .collect()
+/// Move the axes not used by the transform dimensions to the front of `axes`, in their order,
+/// and return their number.
+fn keep_unused(axes: &mut [Dim], used: &[bool]) -> usize {
+    let mut kept = 0;
+    for axis in 0..axes.len() {
+        if !used[axis] {
+            axes[kept] = axes[axis];
+            kept += 1;
+        }
+    }
+    kept
 }
 
 /// Normalise batch dimensions (design Section 4.3): drop those of extent 1, sort by input
 /// stride and then output stride, largest first, and merge each adjacent pair whose outer
 /// strides are the inner extent times the inner strides, on both sides.
 fn normalise_batch(batch: &[Dim]) -> Vec<Dim> {
-    let mut sorted: Vec<Dim> = batch.iter().copied().filter(|dim| dim.n > 1).collect();
-    sorted.sort_by_key(|dim| std::cmp::Reverse((dim.is, dim.os)));
+    let mut dims = batch.to_vec();
+    let len = normalise_in_place(&mut dims);
+    dims.truncate(len);
+    dims
+}
+
+/// [`normalise_batch`] in place: the normalised dimensions are the first ones of `dims`, and
+/// their number is returned. The sort is stable, as the merge depends on the order of
+/// dimensions with equal strides, and for up to 20 dimensions it does not allocate.
+fn normalise_in_place(dims: &mut [Dim]) -> usize {
+    let mut len = 0;
+    for index in 0..dims.len() {
+        if dims[index].n > 1 {
+            dims[len] = dims[index];
+            len += 1;
+        }
+    }
+    let dims = &mut dims[..len];
+    dims.sort_by_key(|dim| std::cmp::Reverse((dim.is, dim.os)));
 
     // Merge from the innermost dimension outwards.
-    let mut merged: Vec<Dim> = Vec::with_capacity(sorted.len());
-    for dim in sorted.into_iter().rev() {
-        if let Some(inner) = merged.last_mut()
+    dims.reverse();
+    let mut merged = 0usize;
+    for index in 0..dims.len() {
+        let dim = dims[index];
+        if let Some(inner) = merged.checked_sub(1).map(|last| &mut dims[last])
             && inner.n.checked_mul(inner.is) == Some(dim.is)
             && inner.n.checked_mul(inner.os) == Some(dim.os)
             && let Some(n) = inner.n.checked_mul(dim.n)
         {
             inner.n = n;
         } else {
-            merged.push(dim);
+            dims[merged] = dim;
+            merged += 1;
         }
     }
-    merged.reverse();
+    dims[..merged].reverse();
     merged
 }
 
@@ -3251,5 +3371,99 @@ mod tests {
         let layout = Layout::r2c_inplace(&data, &[0], 8).unwrap();
         assert!(layout.fits_array_side(Side::Output, &[5, 3], &[1, 5]));
         assert!(layout.fits_array_side(Side::Input, &[8, 3], &[1, 10]));
+    }
+
+    /// `normalise_batch` as it was before it worked in place (issue #44), the reference for
+    /// [`test_normalise_in_place`].
+    fn normalise_reference(batch: &[Dim]) -> Vec<Dim> {
+        let mut sorted: Vec<Dim> = batch.iter().copied().filter(|dim| dim.n > 1).collect();
+        sorted.sort_by_key(|dim| std::cmp::Reverse((dim.is, dim.os)));
+        let mut merged: Vec<Dim> = Vec::with_capacity(sorted.len());
+        for dim in sorted.into_iter().rev() {
+            if let Some(inner) = merged.last_mut()
+                && inner.n.checked_mul(inner.is) == Some(dim.is)
+                && inner.n.checked_mul(inner.os) == Some(dim.os)
+                && let Some(n) = inner.n.checked_mul(dim.n)
+            {
+                inner.n = n;
+            } else {
+                merged.push(dim);
+            }
+        }
+        merged.reverse();
+        merged
+    }
+
+    #[test]
+    fn test_normalise_in_place() {
+        // Every batch of up to three dimensions from these values, including extent 1,
+        // stride 0 and equal strides, whose order decides some merges.
+        let mut values = Vec::new();
+        for n in [1, 2, 3] {
+            for is in [0, 1, 2, 3, 6] {
+                for os in [0, 1, 2, 6] {
+                    values.push(dim(n, is, os));
+                }
+            }
+        }
+        let mut batches: Vec<Vec<Dim>> = vec![vec![]];
+        for _ in 0..3 {
+            let longer: Vec<Vec<Dim>> = batches
+                .iter()
+                .filter(|batch| batch.len() == batches.last().unwrap().len())
+                .flat_map(|batch| {
+                    values.iter().map(move |&value| {
+                        let mut batch = batch.clone();
+                        batch.push(value);
+                        batch
+                    })
+                })
+                .collect();
+            batches.extend(longer);
+        }
+        assert_eq!(batches.len(), 1 + 60 + 60 * 60 + 60 * 60 * 60);
+        for batch in &batches {
+            assert_eq!(
+                super::normalise_batch(batch),
+                normalise_reference(batch),
+                "{batch:?}"
+            );
+        }
+        // Equal strides: (2, 1) and (3, 1) do not merge with each other, and which of them
+        // merges with (2, 2) depends on their order.
+        let batch = [dim(2, 1, 1), dim(3, 1, 1), dim(2, 2, 2)];
+        assert_eq!(super::normalise_batch(&batch), normalise_reference(&batch));
+    }
+
+    #[test]
+    fn test_fits_above_inline_rank() {
+        // Rank 18, above the stack scratch of the execution checks, with 16 axes of extent 1.
+        let mut shape = [1; 18];
+        shape[0] = 4;
+        shape[17] = 3;
+        let input = DynArray::<c64, 18>::from_shape(shape);
+        let output = DynArray::<c64, 18>::from_shape(shape);
+        let layout = Layout::along_axis(&input, &output, 0).unwrap();
+        assert_eq!(layout.dims(), &[dim(4, 1, 1)]);
+        assert_eq!(layout.batch(), &[dim(3, 4, 4)]);
+        let stride = input.stride();
+        assert!(layout.fits_array_side(Side::Input, &shape, &stride));
+        assert!(layout.fits_array_side(Side::Output, &shape, &stride));
+        assert!(layout.fits_array_pair((&shape, &stride), (&shape, &stride)));
+
+        // The batch axis moved to another position still fits each side, and pairs.
+        let mut moved = [1; 18];
+        moved[0] = 4;
+        moved[9] = 3;
+        let moved_stride = DynArray::<c64, 18>::from_shape(moved).stride();
+        assert!(layout.fits_array_side(Side::Input, &moved, &moved_stride));
+        assert!(layout.fits_array_pair((&moved, &moved_stride), (&moved, &moved_stride)));
+
+        // A batch of 2 does not fit.
+        let mut other = shape;
+        other[17] = 2;
+        let other_stride = DynArray::<c64, 18>::from_shape(other).stride();
+        assert!(!layout.fits_array_side(Side::Input, &other, &other_stride));
+        assert!(!layout.fits_array_pair((&other, &other_stride), (&other, &other_stride)));
     }
 }
