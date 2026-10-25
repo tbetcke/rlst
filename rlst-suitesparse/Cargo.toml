@@ -6,7 +6,6 @@ edition = "2024"
 description = "SuiteSparse bindings for RLST sparse matrices."
 readme = "README.md"
 license = "MIT / Apache-2.0"
-homepage = "https://github.com/tbetcke/rlst"
 repository = "https://github.com/tbetcke/rlst"
 keywords = ["numerics", "sparse", "suitesparse", "umfpack"]
 categories = ["mathematics", "science"]
