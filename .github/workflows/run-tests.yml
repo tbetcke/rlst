@@ -1,9 +1,8 @@
 name: 🧪 run-tests
 
+# Temporary, on a throwaway branch: the Linux benchmark of issue #44 (as DC53). Not for merging.
+
 on:
-  push:
-    branches:
-      - main
   pull_request:
     branches:
       - main
@@ -11,134 +10,52 @@ on:
 permissions:
   contents: read
 
-concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
-
 jobs:
-  run-tests-rust:
-    name: run-tests
+  bench:
+    name: bench-44
     runs-on: ubuntu-24.04
     steps:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy, rustfmt
 
       - uses: actions/checkout@v6
-
-      - name: Cache Cargo artifacts
-        uses: Swatinem/rust-cache@v2
+        with:
+          fetch-depth: 0
 
       - name: Install native dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libclang-dev libfftw3-dev libopenblas-dev \
-            openmpi-bin libopenmpi-dev libsuitesparse-dev
+          sudo apt-get install -y libfftw3-dev libopenblas-dev
 
-      - name: Report FFTW
+      - name: Report machine and FFTW
         run: |
-          pkg-config --modversion fftw3 fftw3f
-          ls "$(pkg-config --variable=libdir fftw3)" | grep -E '^libfftw3f?_(threads|omp)' || true
-          printf '#include <fftw3.h>\n#include <stdio.h>\nint main(void){puts(fftw_version);return 0;}\n' > "$RUNNER_TEMP/fv.c"
-          cc "$RUNNER_TEMP/fv.c" $(pkg-config --cflags --libs fftw3) -o "$RUNNER_TEMP/fv"
-          "$RUNNER_TEMP/fv"
+          pkg-config --modversion fftw3
+          grep -m1 'model name' /proc/cpuinfo
+          nproc
 
-      - name: Format
-        run: cargo fmt -- --check
-
-      - name: Default build has no fftw-sys
+      - name: Build the benchmark before (origin/main) and after (this branch's parent)
         run: |
-          tree=$(cargo tree -p rlst -e normal --prefix none)
-          if grep -q '^fftw-sys ' <<< "$tree"; then
-            echo "::error::Default-build check failed: the default build of rlst lists fftw-sys (cargo tree -p rlst -e normal)"
-            exit 1
-          fi
+          git worktree add "$RUNNER_TEMP/before" origin/main
+          git worktree add "$RUNNER_TEMP/after" HEAD~1
+          for v in before after; do
+            (cd "$RUNNER_TEMP/$v" && cargo build --release --example fftw_bench --features fftw_system \
+              && cp target/release/examples/fftw_bench "$RUNNER_TEMP/bench_$v")
+          done
 
-      - name: Clippy
+      - name: Run, alternating
         run: |
-          cargo clippy -- -D warnings
-          cargo clippy --examples -- -D warnings
-          cargo clippy --features "mpi,fftw,fftw_system,strict" -- -D warnings
-          cargo clippy --examples --features "mpi,fftw,fftw_system,strict" -- -D warnings
-          cargo clippy --features "openblas_threading,mkl_threading,blis_threading,strict" -- -D warnings
-          cargo clippy -p rlst-suitesparse -- -D warnings
-          cargo clippy --features "fftw,fftw_system,fftw_threads,strict" -- -D warnings
-          cargo clippy --tests --features "fftw,fftw_system,strict" -- -D warnings
-          cargo clippy --tests --features "fftw,fftw_system,fftw_threads,strict" -- -D warnings
-
-      - name: Run unit tests
-        run: |
-          cargo test
-          RUST_MIN_STACK=8388608 cargo test --features "mpi,fftw,fftw_system,strict"
-          cargo test -p rlst-suitesparse
-          cargo test --features "fftw,fftw_system,fftw_threads,strict"
-
-      - name: Run bounded empty-rank MPI regressions (1, 2, and 4 ranks)
-        run: python3 scripts/run_mpi_tests.py
-
-      - name: Build docs
-        env:
-          RUSTDOCFLAGS: -D warnings
-        run: |
-          cargo doc --no-deps --features "mpi,fftw,fftw_system,strict"
-          cargo doc --no-deps --features "fftw,fftw_system,fftw_threads,strict"
-
-  run-tests-macos:
-    name: run-tests-macos
-    runs-on: macos-26
-    steps:
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy, rustfmt
-
-      - uses: actions/checkout@v6
-
-      - name: Cache Cargo artifacts
-        uses: Swatinem/rust-cache@v2
-
-      - name: Install native dependencies
-        run: brew install fftw pkg-config
-
-      - name: Report FFTW
-        run: |
-          pkg-config --modversion fftw3 fftw3f
-          ls "$(pkg-config --variable=libdir fftw3)" | grep -E '^libfftw3f?_(threads|omp)' || true
-          printf '#include <fftw3.h>\n#include <stdio.h>\nint main(void){puts(fftw_version);return 0;}\n' > "$RUNNER_TEMP/fv.c"
-          cc "$RUNNER_TEMP/fv.c" $(pkg-config --cflags --libs fftw3) -o "$RUNNER_TEMP/fv"
-          "$RUNNER_TEMP/fv"
-
-      - name: Clippy
-        run: |
-          cargo clippy --features "fftw,fftw_system,strict" -- -D warnings
-          cargo clippy --features "fftw,fftw_system,fftw_threads,strict" -- -D warnings
-          cargo clippy --tests --features "fftw,fftw_system,strict" -- -D warnings
-          cargo clippy --tests --features "fftw,fftw_system,fftw_threads,strict" -- -D warnings
-
-      - name: Run unit tests
-        run: |
-          cargo test --features "fftw,fftw_system,strict"
-          cargo test --features "fftw,fftw_system,fftw_threads,strict"
-
-  docs:
-    name: docs
-    runs-on: ubuntu-24.04
-    steps:
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@nightly
-
-      - uses: actions/checkout@v6
-
-      # As docs.rs builds: current nightly, `DOCS_RS` set (build.rs skips FFTW discovery),
-      # `--cfg docsrs`, the features of `[package.metadata.docs.rs]`, and no native packages.
-      - name: Build docs as docs.rs does
-        env:
-          DOCS_RS: 1
-          RUSTDOCFLAGS: --cfg docsrs -D warnings
-        run: |
-          rustc +nightly --version
-          if ! cargo +nightly doc --no-deps --features "fftw,fftw_system,fftw_threads"; then
-            echo "::error::The docs.rs build failed on $(rustc +nightly --version). Only this nightly build is affected if the stable jobs pass; check whether the nightly changed before changing RLST."
-            exit 1
-          fi
+          for run in 1 2; do
+            for v in before after; do
+              echo "::group::$v, run $run"
+              "$RUNNER_TEMP/bench_$v" | tee "$RUNNER_TEMP/out_${v}_$run.md"
+              echo "::endgroup::"
+            done
+          done
+          for run in 1 2; do
+            for v in before after; do
+              {
+                echo "## $v, run $run"
+                grep -E '^\| [0-9]+ \| one plan, batch of 9(, on slices)? \|' "$RUNNER_TEMP/out_${v}_$run.md"
+              } >> "$GITHUB_STEP_SUMMARY"
+            done
+          done
