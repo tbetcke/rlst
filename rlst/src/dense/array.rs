@@ -2102,10 +2102,12 @@ macro_rules! impl_linspace_float {
             ArrayImpl: MutableArrayImpl<$dtype, 1>,
         {
             fn linspace(&mut self, a: $dtype, b: $dtype) {
-                let n = self.len() - 1;
-
+                let len = self.len();
+                assert!(len > 1, "`linspace` requires `self.len() = {len} > 1`");
                 assert!(b > a, "`linspace` requires `{b} = b > a = {a} ");
-                assert!(n > 1, "`linspace` requires `{n} = self.len() > 1");
+
+                // Number of intervals between the `len` points.
+                let n = len - 1;
 
                 let delta = (b - a) / (n as $dtype);
 
@@ -2407,5 +2409,52 @@ mod test {
             count += 1;
         }
         assert_eq!(count, 20);
+    }
+
+    #[test]
+    #[should_panic(expected = "`linspace` requires `self.len() = 0 > 1`")]
+    pub fn test_linspace_len_0() {
+        let mut x = DynArray::<f64, 1>::from_shape([0]);
+        x.linspace(-1.0, 1.0);
+    }
+
+    #[test]
+    #[should_panic(expected = "`linspace` requires `self.len() = 1 > 1`")]
+    pub fn test_linspace_len_1() {
+        let mut x = DynArray::<f64, 1>::from_shape([1]);
+        x.linspace(-1.0, 1.0);
+    }
+
+    #[test]
+    pub fn test_linspace_len_2() {
+        let mut x = DynArray::<f64, 1>::from_shape([2]);
+        x.linspace(-1.0, 1.0);
+        let expected: DynArray<f64, 1> = vec![-1.0, 1.0].into();
+        assert_array_relative_eq!(x, expected, 1E-14);
+
+        let mut x = DynArray::<f32, 1>::from_shape([2]);
+        x.linspace(-1.0, 1.0);
+        let expected: DynArray<f32, 1> = vec![-1.0, 1.0].into();
+        assert_array_relative_eq!(x, expected, 1E-6);
+    }
+
+    #[test]
+    pub fn test_linspace_len_3() {
+        let mut x = DynArray::<f64, 1>::from_shape([3]);
+        x.linspace(-1.0, 1.0);
+        let expected: DynArray<f64, 1> = vec![-1.0, 0.0, 1.0].into();
+        assert_array_relative_eq!(x, expected, 1E-14);
+
+        let mut x = DynArray::<f32, 1>::from_shape([3]);
+        x.linspace(0.0, 2.0);
+        let expected: DynArray<f32, 1> = vec![0.0, 1.0, 2.0].into();
+        assert_array_relative_eq!(x, expected, 1E-6);
+    }
+
+    #[test]
+    #[should_panic(expected = "`linspace` requires `1 = b > a = 1 ")]
+    pub fn test_linspace_b_not_greater_than_a() {
+        let mut x = DynArray::<f64, 1>::from_shape([3]);
+        x.linspace(1.0, 1.0);
     }
 }
