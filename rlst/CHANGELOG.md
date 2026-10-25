@@ -13,6 +13,14 @@ call on macOS, and from about 0.45 µs to about 0.1 µs on Linux
 ([#44](https://github.com/tbetcke/rlst/issues/44)). The checks and their
 errors are unchanged. No migration is needed.
 
+### `linspace` accepts arrays of length 2
+
+`Linspace::linspace` (and so `linspace!`) panicked for an array of length 2, although it is
+documented to panic only for fewer than two elements; it now fills such an array with `[a, b]`.
+For an empty array it now panics with its documented assertion instead of an arithmetic
+overflow in debug builds, and the panic message reports the array's length
+([#28](https://github.com/tbetcke/rlst/issues/28)). No migration is needed.
+
 ## v0.11.0
 
 Changes since [v0.10.3](https://github.com/tbetcke/rlst/releases/tag/v0.10.3).
