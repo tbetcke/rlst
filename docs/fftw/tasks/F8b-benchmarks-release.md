@@ -286,7 +286,8 @@ are in `docs/fftw/F8b-benchmarks.md`.
    layout. Per the brief, F8b reports this and does not tune it. A later change could make
    the check cheaper; it would not change the API. Options: (a) leave it, since nd-fmm's
    boxes at N ≥ 216 lose 2–15 %; (b) an issue to profile the array check after the
-   release. Proposed: (b).
+   release. Proposed: (b). *Decided: (b), by the maintainer; issue
+   [#44](https://github.com/tbetcke/rlst/issues/44).*
 10. **c2r halving the contiguous axis on Linux.** On the Linux runner, c2r over both axes
     with the contiguous axis halved is 21–50 % faster at four of the five sizes. r2c is
     faster at two of the five, and on macOS without SIMD neither is faster below
@@ -295,7 +296,7 @@ are in `docs/fftw/F8b-benchmarks.md`.
     the contiguous axis halved", would be a design change to DC55. Options: (a) keep DC55's
     outcome as it stands; (b) a design change that lets the guide report the c2r result on
     SIMD builds, without a recommendation. Proposed: (a); the findings are in
-    `F8b-benchmarks.md` for anyone who needs them.
+    `F8b-benchmarks.md` for anyone who needs them. *Decided: (a), by the maintainer.*
 11. **Split storage and alignment, measured.** On Linux with SIMD:
     - split plans take 1.5–2.8× the interleaved time;
     - copying the planes into interleaved scratch costs only 1–8 % above the interleaved
@@ -306,7 +307,8 @@ are in `docs/fftw/F8b-benchmarks.md`.
     Without SIMD (macOS) none of these differ. The documentation's notes are confirmed, so by
     work item 2 they do not change. The guide could quote the magnitudes, which nd-fmm's
     choice of design Section 11 item 2 depends on; it is left as it is unless the
-    maintainer asks.
+    maintainer asks. *Decided: the guide is left as it is, by the maintainer; the
+    magnitudes stay in `F8b-benchmarks.md`.*
 
 Raised during F8b-2.
 
