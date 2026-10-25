@@ -35,6 +35,54 @@ stride `[]` and holds exactly one element: `len()` is 1 and `is_empty()` is fals
 - Code that relied on rank 0 being rejected at run time (the `positive rank` panics) or at
   compile time (`slice::<0>`, `insert_empty_axis` from rank 0) now succeeds.
 
+### MPI tests: one self-launching harness
+
+The multi-rank tests are one harness-free test executable, `tests/mpi/`, that `cargo test`
+with the `mpi` feature runs on 1, 2, 3 and 4 ranks. Run without `RLST_MPI_CASE`, the
+executable launches each case as `mpiexec -n <ranks>` of itself, in a process group of its own
+with a deadline of 30 s, and stops the whole group when the run ends. It replaces
+`tests/mpi_empty_ranks.rs` and `scripts/run_mpi_tests.py`, which are removed together with the
+runner's test `scripts/test_run_mpi_tests.py`.
+
+- `RLST_MPIEXEC` selects the launcher (default `mpiexec`); `--oversubscribe` is passed only to
+  Open MPI. Arguments filter the cases by name: `cargo test --features mpi --test mpi -- csr`.
+- Before the cases, the harness checks its own cleanup against fake launchers that fail, hang
+  or succeed while leaving children behind (the checks of the removed runner test).
+- The 21 cases of `mpi_empty_ranks` keep their names. 20 new cases check results on data
+  spread over uneven layouts with an empty rank, against references computed from the global
+  indices rather than from other collectives:
+  - index layouts (`from_equidistributed_chunks` and every query), `remap` of real data,
+    the rooted scatter and gather, `global_size`, and all-to-all exchanges decoded by source;
+  - `IndexEmbedding` maps and data, `DataPermutation` with a random global permutation and
+    `Global2LocalDataMapper` with random owned and ghost dofs, both with chunked data;
+  - the remaining ghost buffer accessors, the neighbourhood communicators and
+    `SparseRoutes::comm`, and the ghost communicator example on three ranks;
+  - `DistributedArray`: scatter and gather of ranks 1 to 3 from the first and last rank,
+    every arithmetic, in-place and unary operation, conversions, views, fills, shapes,
+    column iterators, real and complex reductions, and rejection of incompatible layouts;
+  - `DistributedCsrMatrix`: random real and complex non-square matrices contributed by
+    non-owners with repeated and cancelling entries, `from_aij_iter`, `new`, `local_mut`, the
+    index maps, `nnz`, products with one and three columns and `dot!`, the 507 x 313 Matrix
+    Market example, and the lazy operations of `DistributedSparseMatOpIterator`;
+  - `DistributedArrayVectorSpace`, `DistributedCsrOperator` and operator sums, and conjugate
+    gradients and restarted GMRES on distributed spaces.
+- CI runs Clippy on the tests with `mpi,fftw,fftw_system,strict`.
+
+### Fix: row-major order of distributed CSR entries
+
+`DistributedCsrMatrix::iter_aij_value` now lists the entries of each local row by ascending
+global column. It listed the owned columns of a row before its ghost columns, so a ghost
+column owned by an earlier rank came out of order. The componentwise operations of
+`DistributedSparseMatOpIterator` merge their operands in row-major order, so the elementwise
+product of two matrices built from `iter_aij_value` lost every entry of such a column (sums
+and differences were unaffected, because assembly adds repeated positions). The
+`csr-random-matvec`, `csr-new-direct` and `sparse-mat-ops` cases check the order.
+
+### Fix: panic messages of distributed array operations
+
+The `-`, `*` and `/` operators of `DistributedArray` named `DistributedArray::add` in their
+panic message for incompatible layouts; they now name `sub`, `mul` and `div`.
+
 ### FFTW: execution checks arrays without allocating
 
 Executing an FFTW plan on RLST arrays and views no longer allocates on the heap. The check of
