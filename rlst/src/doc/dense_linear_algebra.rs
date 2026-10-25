@@ -274,6 +274,22 @@
 //! The annotation with the dimension parameter is necessary if the compiler cannot automatically infer from
 //! subsequent operations what the correct number of dimensions after slicing is.
 //!
+//! Slicing a vector gives a view of rank zero, a single element indexed by `[]`, and
+//! [`insert_empty_axis`](crate::Array::insert_empty_axis) turns an array of rank zero into a
+//! vector of length one:
+//! ```
+//! use rlst::dense::array::empty_axis::AxisPosition;
+//!
+//! let mut vec = rlst::rlst_dynamic_array!(f64, [3]);
+//! vec.r_mut().slice::<0>(0, 1)[[]] = 2.0;
+//! assert_eq!(vec[[1]], 2.0);
+//!
+//! let element = vec.r().slice::<0>(0, 1);
+//! let one = element.insert_empty_axis::<1>(AxisPosition::Back);
+//! assert_eq!(one.shape(), [1]);
+//! assert_eq!(one[[0]], 2.0);
+//! ```
+//!
 //! [`Array::multislice`](crate::Array::multislice) fixes several axes at once, while
 //! [`Array::into_subview`](crate::Array::into_subview) keeps every axis and selects a rectangular
 //! region. Views consume their array operand, so use `r()` or `r_mut()` to retain ownership:
@@ -407,8 +423,9 @@
 //! | `[m, k]` | `[k, n]` | `[m, n]` |
 //! | `[p, q, k]` | `[k, r, s]` | `[p, q, r, s]` |
 //!
-//! A vector-vector product returns a [`ZeroDimArray`](crate::ZeroDimArray);
-//! read its scalar value with `*result.scalar()`. Both inputs must have at least one axis.
+//! A vector-vector product returns a [`ZeroDimArray`](crate::ZeroDimArray), the
+//! array `DynArray<_, 0>` of rank zero; read its scalar value with `result[[]]` or
+//! `*result.scalar()`. Both inputs must have at least one axis.
 //! Arbitrary positive input ranks are supported. Supply an output type annotation
 //! when Rust cannot infer the result rank:
 //!
@@ -433,8 +450,8 @@
 //! assert_eq!(*result.scalar(), 12.0);
 //! ```
 //!
-//! For dense arrays, `dot!(a, b)` uses the same rank-dependent storage as
-//! [`rlst_dynamic_array!`](crate::rlst_dynamic_array), then delegates to
+//! For dense arrays, `dot!(a, b)` allocates a `DynArray` as
+//! [`rlst_dynamic_array!`](crate::rlst_dynamic_array) does, then delegates to
 //! `dot_into!(c, a, b)`. The latter returns `()`, overwrites every output
 //! element, and neither allocates nor resizes the destination. Its shape and rank
 //! must already match the result. A contraction of length zero writes zeros; an

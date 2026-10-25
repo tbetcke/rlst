@@ -13,27 +13,11 @@ mod tracing;
 /// follows `|`, as in `rlst_dynamic_array!(f64, [2, 3] | 64)`. The number of dimensions is
 /// inferred from the shape array; elements are initialized with `Default`.
 ///
-/// A shape known to have rank zero, such as `[]` or a variable of type `[usize; 0]`,
-/// creates a `ZeroDimArray<ItemType>` containing one scalar. Use `scalar()`,
-/// `scalar_mut()`, and `into_scalar()` to access it; indexed access is unavailable.
-/// Positive ranks produce the existing heap-backed `DynArray` type.
-///
-/// Dispatch takes place where the macro expands. Inside a function generic over
-/// the rank, the result remains `DynArray<ItemType, NDIM>` and rank zero is rejected
-/// at runtime. Generic reduction code can construct a scalar result explicitly
-/// with `ZeroDimArray::from_scalar(value)`.
-///
-/// For the unaligned form, determine the shape rank through the shape expression
-/// or an explicit expected result type. If neither constrains the rank during
-/// dispatch, it is inferred as zero; subsequent uses cannot change that choice.
-/// For example, annotate `let shape: [usize; 2] = Default::default()` rather than
-/// relying on a later use of the resulting array to infer the shape rank.
-/// `DynArray::from_shape` retains the original inference behavior for positive ranks.
-///
-/// # Panics
-///
-/// Panics if an alignment is requested for rank zero, or if an unresolved generic
-/// rank is instantiated with zero.
+/// The result is a `DynArray<ItemType, NDIM>`, or an `AlignedDynArray` with an alignment, of
+/// the rank `NDIM` of the shape. Rank zero is allowed: the shape `[]` gives an array of one
+/// element (a `ZeroDimArray<ItemType>`), in concrete and in rank-generic code alike. The rank
+/// must be inferable from the shape expression or from the expected result type; annotate a
+/// shape such as `Default::default()` (`let shape: [usize; 2] = Default::default()`) otherwise.
 #[proc_macro]
 pub fn rlst_dynamic_array(items: TokenStream) -> TokenStream {
     dense::rlst_dynamic_array_impl(items)
@@ -51,7 +35,8 @@ pub fn rlst_static_array(items: TokenStream) -> TokenStream {
 /// Expand to the type of a stack-backed RLST array.
 ///
 /// Syntax is `rlst_static_type!(ItemType, literal_dimension, ...)`, without brackets around the
-/// dimensions. At least one dimension is required.
+/// dimensions. At least one dimension is required; `rlst_static_array!(ItemType, [])` creates a
+/// stack-backed array of rank zero.
 #[proc_macro]
 pub fn rlst_static_type(items: TokenStream) -> TokenStream {
     dense::rlst_static_type_impl(items)

@@ -224,7 +224,11 @@ where
                 result[1..].copy_from_slice(&orig_stride)
             }
             AxisPosition::Back => {
-                result[NDIM - 1] = orig_stride[ADIM - 1] * self.arr.shape()[ADIM - 1];
+                // An axis appended to a zero-dimensional array is its only axis.
+                result[NDIM - 1] = match ADIM {
+                    0 => 1,
+                    _ => orig_stride[ADIM - 1] * self.arr.shape()[ADIM - 1],
+                };
                 result[..ADIM].copy_from_slice(&orig_stride)
             }
         }
@@ -278,7 +282,7 @@ where
 mod tests {
     use super::AxisPosition;
     use crate::{
-        DynArray,
+        DynArray, ZeroDimArray,
         dense::array::storage_test_support::{
             assert_storage_addresses_elements, assert_storage_consistent_with_data,
             assert_storage_mut_writes_elements,
@@ -305,6 +309,24 @@ mod tests {
                     .r_mut()
                     .into_subview([1, 1], [2, 3])
                     .insert_empty_axis::<3>(position),
+            );
+        }
+    }
+
+    #[test]
+    fn inserting_an_axis_into_a_zero_dimensional_array() {
+        let mut scalar = ZeroDimArray::from_scalar(2.5);
+        for position in [AxisPosition::Front, AxisPosition::Back] {
+            let value = *scalar.scalar();
+            let view = scalar.r().insert_empty_axis::<1>(position);
+            assert_eq!(view.shape(), [1]);
+            assert_eq!(view.stride(), [1]);
+            assert_eq!(view[[0]], value);
+            assert_eq!(assert_storage_addresses_elements(&view), (1, 0));
+            assert_eq!(assert_storage_consistent_with_data(&view), (1, 0));
+
+            assert_storage_mut_writes_elements(
+                &mut scalar.r_mut().insert_empty_axis::<1>(position),
             );
         }
     }

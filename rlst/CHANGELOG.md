@@ -2,6 +2,39 @@
 
 ## Unreleased
 
+### Arrays of rank 0 — migration required
+
+Arrays of rank 0 are now ordinary arrays, so code generic over the rank covers them without
+special cases ([#29](https://github.com/tbetcke/rlst/issues/29)). Such an array has shape and
+stride `[]` and holds exactly one element: `len()` is 1 and `is_empty()` is false.
+
+- `BaseArray::new` and `StridedBaseArray::new` accept rank 0, so `DynArray<T, 0>`,
+  `AlignedDynArray`, `StridedDynArray`, slice-backed arrays and `rlst_static_array!(T, [])`
+  can be created. `rlst_dynamic_array!(T, [])` works in rank-generic code and with an
+  alignment, where it used to panic.
+- `ZeroDimArray<T>` is now an alias of `DynArray<T, 0>`. It keeps `from_scalar`,
+  `into_scalar`, `scalar`, `scalar_mut` and the `From` conversions; `scalar` and
+  `scalar_mut` are also available on views of rank 0. It now supports indexing with `[]`,
+  iteration, lazy expressions and every other array operation.
+- `slice::<0>` turns a vector into a view of one element, and `insert_empty_axis` turns an
+  array of rank 0 into one of shape `[1]`.
+- `memory_layout()` and `is_contiguous()` report a rank-0 array as column-major and
+  contiguous, its diagonal is its one element (`trace()` returns it), and `empty_array` of
+  rank 0 holds one default element.
+- The Chebyshev conversions return a copy of an array of rank 0 (FFTW design DC44).
+- `DistributedArray::new`, `scatter_from_one_root` and `scatter_from_one` panic for rank 0,
+  which has no axis to distribute along; they panicked before with an index error.
+
+**Migration:**
+
+- `rlst::dense::array::zero_dim::ScalarArrayImpl` is removed. Code that names it, for example
+  `Array<ScalarArrayImpl<T>, 0>`, uses `ZeroDimArray<T>` or `DynArray<T, 0>` instead.
+- `rlst_dynamic_array!` no longer infers rank 0 for a shape whose rank is otherwise
+  unconstrained, such as `Default::default()` without a type; annotate the shape
+  (`let shape: [usize; 0] = Default::default()`) or the result.
+- Code that relied on rank 0 being rejected at run time (the `positive rank` panics) or at
+  compile time (`slice::<0>`, `insert_empty_axis` from rank 0) now succeeds.
+
 ### FFTW: execution checks arrays without allocating
 
 Executing an FFTW plan on RLST arrays and views no longer allocates on the heap. The check of

@@ -326,6 +326,12 @@ where
     }
 }
 
+/// The number of diagonal elements: the smallest extent, or one for a zero-dimensional array,
+/// whose one element is indexed by `[]`.
+fn diagonal_length<const NDIM: usize>(shape: [usize; NDIM]) -> usize {
+    shape.into_iter().min().unwrap_or(1)
+}
+
 /// Diagonal iterator.
 pub struct ArrayDiagIteratorByValue<'a, ArrayImpl, const NDIM: usize> {
     arr: &'a Array<ArrayImpl, NDIM>,
@@ -336,7 +342,7 @@ pub struct ArrayDiagIteratorByValue<'a, ArrayImpl, const NDIM: usize> {
 impl<'a, ArrayImpl: Shape<NDIM>, const NDIM: usize> ArrayDiagIteratorByValue<'a, ArrayImpl, NDIM> {
     /// Create a new diagonal iterator.
     pub fn new(arr: &'a Array<ArrayImpl, NDIM>) -> Self {
-        let nelements = *arr.shape().iter().min().unwrap();
+        let nelements = diagonal_length(arr.shape());
         ArrayDiagIteratorByValue {
             arr,
             pos: 0,
@@ -371,7 +377,7 @@ pub struct ArrayDiagIteratorByRef<'a, ArrayImpl, const NDIM: usize> {
 impl<'a, ArrayImpl: Shape<NDIM>, const NDIM: usize> ArrayDiagIteratorByRef<'a, ArrayImpl, NDIM> {
     /// Create a new diagonal iterator.
     pub fn new(arr: &'a Array<ArrayImpl, NDIM>) -> Self {
-        let nelements = *arr.shape().iter().min().unwrap();
+        let nelements = diagonal_length(arr.shape());
         ArrayDiagIteratorByRef {
             arr,
             pos: 0,
@@ -406,7 +412,7 @@ pub struct ArrayDiagIteratorMut<'a, ArrayImpl, const NDIM: usize> {
 impl<'a, ArrayImpl: Shape<NDIM>, const NDIM: usize> ArrayDiagIteratorMut<'a, ArrayImpl, NDIM> {
     /// Create a new mutable diagonal iterator for the given array.
     pub fn new(arr: &'a mut Array<ArrayImpl, NDIM>) -> Self {
-        let nelements = *arr.shape().iter().min().unwrap();
+        let nelements = diagonal_length(arr.shape());
         ArrayDiagIteratorMut {
             arr,
             pos: 0,

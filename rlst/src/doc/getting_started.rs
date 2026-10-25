@@ -25,21 +25,23 @@
 //! See the [dense-array tutorial](crate::doc::dense_linear_algebra) for storage layouts,
 //! slice-backed and static arrays, views, iteration, and matrix multiplication.
 //!
-//! ## Zero-dimensional scalar results
+//! ## Zero-dimensional arrays
 //!
-//! A [`ZeroDimArray`](crate::ZeroDimArray) has no axes and owns exactly one scalar.
-//! It is useful as a reduction result. Shape `[]` is distinct from shape `[0]`,
-//! which describes an empty one-dimensional array. Scalar containers provide
-//! dedicated borrowing and consuming accessors instead of random indexing:
+//! An array of rank zero has no axes and holds exactly one element; its shape and
+//! stride are `[]`. [`ZeroDimArray<T>`](crate::ZeroDimArray) is another name for
+//! `DynArray<T, 0>`, and is, for example, the result of a vector-vector product.
+//! Shape `[]` is distinct from shape `[0]`, which describes an empty one-dimensional
+//! array. Index the element with the empty multi-index `[]`, or use the scalar
+//! accessors:
 //!
 //! ```
-//! let shape: [usize; 0] = [];
-//! let mut result = rlst::rlst_dynamic_array!(f64, shape);
+//! let mut result = rlst::rlst_dynamic_array!(f64, []);
 //! assert_eq!(result.shape(), [0usize; 0]);
 //! assert_eq!(result.number_of_elements(), 1);
 //! assert!(!result.is_empty());
-//! assert_eq!(*result.scalar(), 0.0);
+//! assert_eq!(result[[]], 0.0);
 //! *result.scalar_mut() = 3.5;
+//! assert_eq!(*result.scalar(), 3.5);
 //! assert_eq!(result.into_scalar(), 3.5);
 //!
 //! let result: rlst::ZeroDimArray<f64> = 7.0.into();
@@ -53,17 +55,26 @@
 //! `into_scalar()`. Rust's orphan rules prevent a blanket reverse `From`
 //! implementation for arbitrary item types.
 //!
-//! The macro also accepts the literal `[]`. Rank-zero dispatch requires the rank
-//! to be known at the macro expansion site: within a const-generic function the
-//! macro retains its `DynArray<T, NDIM>` result type and rejects rank zero at
-//! runtime. Explicitly aligned rank-zero construction is also rejected.
+//! Rank zero is an ordinary rank: code generic over the rank, iteration, lazy
+//! expressions, and the aligned, strided, slice-backed and static storages all
+//! accept it, and the macro gives the same type in concrete and const-generic code.
 //!
-//! In the unaligned form, use a shape with an independently determined rank or
-//! provide an explicit result type. An unconstrained shape such as
-//! `Default::default()` otherwise selects rank zero; inference from subsequent
-//! array uses is not supported. Annotate the shape (for example,
-//! `let shape: [usize; 2] = Default::default()`) or use `DynArray::from_shape`
-//! when later uses must determine a positive rank.
+//! ```
+//! use rlst::EvaluateArray;
+//!
+//! fn sum_of_doubled<const NDIM: usize>(shape: [usize; NDIM]) -> f64 {
+//!     let mut array = rlst::rlst_dynamic_array!(f64, shape);
+//!     array.fill_with_value(1.5);
+//!     (2.0_f64 * array.r()).eval().iter_value().sum()
+//! }
+//!
+//! assert_eq!(sum_of_doubled([2, 2]), 12.0);
+//! assert_eq!(sum_of_doubled([]), 3.0);
+//! ```
+//!
+//! The rank of the macro's result is that of the shape expression, so give
+//! `Default::default()` and similar shapes a type when the rank cannot be inferred
+//! otherwise, for example `let shape: [usize; 2] = Default::default()`.
 //!
 //! ## Selecting a BLAS/LAPACK library
 //!

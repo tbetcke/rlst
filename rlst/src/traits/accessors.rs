@@ -179,8 +179,8 @@ pub trait RawAccessMut: RawAccess {
 ///
 /// Not implemented by lazy expressions, which have no storage; by `transpose()`,
 /// `permute_axes()`, `reverse_axis()` and `into_flat()`, which have no [`Stride`]
-/// implementation; by the shared references of `into_shared` and `into_shared_atomic`, whose
-/// storage sits behind a lock; and by `ZeroDimArray`.
+/// implementation; and by the shared references of `into_shared` and `into_shared_atomic`, whose
+/// storage sits behind a lock.
 ///
 /// [`Stride`]: super::base_operations::Stride
 ///

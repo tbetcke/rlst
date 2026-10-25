@@ -112,14 +112,6 @@ impl<ArrayImpl: UnsafeRandomAccessByRef<NDIM>, const NDIM: usize> UnsafeRandomAc
 /// Array implementation forwarding operations through an exclusive borrow.
 pub struct ArrayRefMut<'a, ArrayImpl, const NDIM: usize>(&'a mut Array<ArrayImpl, NDIM>);
 
-impl<Item: Copy + Default> crate::dense::macros::direct::Output<0>
-    for Array<ArrayRefMut<'_, super::zero_dim::ScalarArrayImpl<Item>, 0>, 0>
-{
-    unsafe fn output_mut(&mut self, _index: [usize; 0]) -> &mut Item {
-        self.imp_mut().0.scalar_mut()
-    }
-}
-
 impl<'a, ArrayImpl, const NDIM: usize> BaseItem for ArrayRefMut<'a, ArrayImpl, NDIM>
 where
     ArrayImpl: BaseItem,
