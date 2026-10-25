@@ -1,11 +1,10 @@
 //! Multi-rank regression contracts for empty local MPI partitions.
 //!
-//! This executable deliberately has `harness = false`: `scripts/run_mpi_tests.py`
-//! launches each case in its own bounded MPI process group.  Keeping cases isolated
-//! means that a pre-fix panic or deadlock cannot prevent the remaining contracts
-//! from being reported.
+//! These cases started as the regressions for ranks without local data. Several have since
+//! grown into general contracts of the ghost communicator, the sparse exchanges and the
+//! parallel sort.
 
-use std::{cmp::Ordering, env, panic::AssertUnwindSafe, rc::Rc};
+use std::{cmp::Ordering, panic::AssertUnwindSafe, rc::Rc};
 
 use mpi::{
     topology::{Color, SimpleCommunicator},
@@ -24,6 +23,8 @@ use rlst::distributed_tools::{
     sparse_all_to_allv,
 };
 use rlst::{AsMatrixApply, FromAijDistributed, InnerProductSpace, LinearSpace, TotalCmp};
+
+use crate::common::{Case, collective_assert};
 
 #[derive(Copy, Clone, Default, Equivalence, Debug, Eq, PartialEq)]
 struct SortRecord {
@@ -70,17 +71,6 @@ impl AsUnique for SortRecord {
     fn from_unique(elem: Self::Unique) -> Self {
         elem.record
     }
-}
-
-/// Make every rank observe an assertion result before this case exits.
-fn collective_assert<C: CommunicatorCollectives>(comm: &C, local: bool, message: &str) {
-    let mut global = false;
-    comm.all_reduce_into(
-        &local,
-        &mut global,
-        mpi::collective::SystemOperation::logical_and(),
-    );
-    assert!(global, "{message}");
 }
 
 /// Contract: all zero-count variable collectives retain all ranks and return empty buffers.
@@ -2045,33 +2035,47 @@ fn sparse_routes_contract<C: CommunicatorCollectives>(comm: &C) {
     );
 }
 
-fn main() {
-    let universe = mpi::initialize().expect("MPI must initialize once per executable");
-    let world = universe.world();
-    let case = env::var("RLST_MPI_EMPTY_CASE").unwrap_or_else(|_| "zero-count-collectives".into());
-
-    match case.as_str() {
-        "zero-count-collectives" => zero_count_collectives(&world),
-        "empty-cumsum" => empty_cumsum(&world),
-        "empty-boundaries" => empty_boundaries(&world),
-        "empty-extrema" => empty_extrema(&world),
-        "sparse-sort" => sparse_sort(&world),
-        "sort-balance" => sort_balance(&world),
-        "mapper-and-permutation" => mapper_and_permutation(&world),
-        "rooted-and-aij-rejection" => rooted_and_aij_rejection(&world),
-        "collective-metadata-rejection" => collective_metadata_rejection(&world),
-        "expanded-empty-contracts" => expanded_empty_contracts(&world),
-        "csr-empty-matrix-contracts" => csr_empty_matrix_contracts(&world),
-        "distributed-dot" => distributed_dot(&world),
-        "distributed-dot-rejection" => distributed_dot_rejection(&world),
-        "remap-layout-agreement" => remap_layout_agreement(&world),
-        "layouts-and-consumers" => layouts_and_consumers(&world),
-        "ghost-variable-chunks" => ghost_variable_chunks(&world),
-        "exchange-buffer-mismatch-panics" => exchange_buffer_mismatch_panics(&world),
-        "ghost-edge-topologies" => ghost_edge_topologies(&world),
-        "sparse-all-to-allv" => sparse_all_to_allv_contract(&world),
-        "ghost-build-oracle" => ghost_build_oracle(&world),
-        "sparse-routes" => sparse_routes_contract(&world),
-        _ => panic!("unknown RLST_MPI_EMPTY_CASE={case}"),
-    }
-}
+/// The cases of this module, run by `main.rs` on every rank count.
+pub const CASES: &[Case] = &[
+    ("zero-count-collectives", |comm| {
+        zero_count_collectives(comm)
+    }),
+    ("empty-cumsum", |comm| empty_cumsum(comm)),
+    ("empty-boundaries", |comm| empty_boundaries(comm)),
+    ("empty-extrema", |comm| empty_extrema(comm)),
+    ("sparse-sort", |comm| sparse_sort(comm)),
+    ("sort-balance", |comm| sort_balance(comm)),
+    ("mapper-and-permutation", |comm| {
+        mapper_and_permutation(comm)
+    }),
+    ("rooted-and-aij-rejection", |comm| {
+        rooted_and_aij_rejection(comm)
+    }),
+    ("collective-metadata-rejection", |comm| {
+        collective_metadata_rejection(comm)
+    }),
+    ("expanded-empty-contracts", |comm| {
+        expanded_empty_contracts(comm)
+    }),
+    ("csr-empty-matrix-contracts", |comm| {
+        csr_empty_matrix_contracts(comm)
+    }),
+    ("distributed-dot", |comm| distributed_dot(comm)),
+    ("distributed-dot-rejection", |comm| {
+        distributed_dot_rejection(comm)
+    }),
+    ("remap-layout-agreement", |comm| {
+        remap_layout_agreement(comm)
+    }),
+    ("layouts-and-consumers", |comm| layouts_and_consumers(comm)),
+    ("ghost-variable-chunks", |comm| ghost_variable_chunks(comm)),
+    ("exchange-buffer-mismatch-panics", |comm| {
+        exchange_buffer_mismatch_panics(comm)
+    }),
+    ("ghost-edge-topologies", |comm| ghost_edge_topologies(comm)),
+    ("sparse-all-to-allv", |comm| {
+        sparse_all_to_allv_contract(comm)
+    }),
+    ("ghost-build-oracle", |comm| ghost_build_oracle(comm)),
+    ("sparse-routes", |comm| sparse_routes_contract(comm)),
+];

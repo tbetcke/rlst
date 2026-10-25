@@ -96,7 +96,8 @@ wildcard_imports = "forbid"
 
 
 [[test]]
-name = "mpi_empty_ranks"
+name = "mpi"
+path = "tests/mpi/main.rs"
 harness = false
 required-features = ["mpi"]
 

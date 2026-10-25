@@ -735,7 +735,7 @@ where
     fn sub(self, rhs: DistributedArray<'a, C, ArrayImplOther, NDIM>) -> Self::Output {
         assert!(
             self.is_compatible_with(&rhs),
-            "DistributedArray::add: The index layout and shape of the arrays do not match."
+            "DistributedArray::sub: The index layout and shape of the arrays do not match."
         );
         DistributedArray::new(self.index_layout.clone(), self.local - rhs.local)
     }
@@ -758,7 +758,7 @@ where
     fn mul(self, rhs: DistributedArray<'a, C, ArrayImplOther, NDIM>) -> Self::Output {
         assert!(
             self.is_compatible_with(&rhs),
-            "DistributedArray::add: The index layout and shape of the arrays do not match."
+            "DistributedArray::mul: The index layout and shape of the arrays do not match."
         );
         DistributedArray::new(self.index_layout.clone(), self.local * rhs.local)
     }
@@ -781,7 +781,7 @@ where
     fn div(self, rhs: DistributedArray<'a, C, ArrayImplOther, NDIM>) -> Self::Output {
         assert!(
             self.is_compatible_with(&rhs),
-            "DistributedArray::add: The index layout and shape of the arrays do not match."
+            "DistributedArray::div: The index layout and shape of the arrays do not match."
         );
         DistributedArray::new(self.index_layout.clone(), self.local / rhs.local)
     }

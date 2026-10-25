@@ -38,7 +38,8 @@ The repository uses the Rust 2024 edition for `rlst` and `rlst-suitesparse`, and
   - `src/doc/` — crate-level user documentation.
   - `examples/` — executable usage examples; MPI examples declare `required-features = ["mpi"]`.
   - `tests/` — integration tests for static-type macros and three feature-gated, harness-free
-    executables: `mpi_empty_ranks` (`mpi`), `fftw_determinism` (`fftw`), which runs each
+    executables: `mpi` (`mpi`, in `tests/mpi/`), which launches each multi-rank case under
+    `mpiexec` as a bounded child of itself, `fftw_determinism` (`fftw`), which runs each
     FFTW determinism case in a fresh child process of itself, and `fftw_check_allocations`
     (`fftw`), which counts the global allocator's allocations to check that executing a plan
     on arrays, views and slices allocates nothing.
@@ -49,8 +50,6 @@ The repository uses the Rust 2024 edition for `rlst` and `rlst-suitesparse`, and
 - `rlst-suitesparse/` — UMFPACK factorization and solves for real (`f64`) and complex (`c64`) CSR
   matrices. `src/umfpack/` contains the FFI, CSR-to-CSC conversion, factorization types, errors,
   and tests; `build.rs` discovers native SuiteSparse.
-- `scripts/run_mpi_tests.py` — bounded MPI regression runner; `scripts/test_run_mpi_tests.py`
-  tests runner process cleanup without requiring MPI.
 - `docs/fftw/` — the record of the FFTW rework of 0.11: the design as implemented
   (`rlst-fftw-design.md`), one brief per task (`tasks/`), the tasks' findings
   (`F0-findings.md`, `F8b-benchmarks.md`), and the task status (`README.md`). See "FFTW
@@ -60,10 +59,10 @@ The repository uses the Rust 2024 edition for `rlst` and `rlst-suitesparse`, and
   `main`, with three jobs:
   - `run-tests` (`ubuntu-24.04`, FFTW 3.3.10 with SIMD): formatting; the check that the default
     build of `rlst` has no `fftw-sys` (`cargo tree -p rlst -e normal`); Clippy on the library,
-    the examples and, with FFTW, the tests; `cargo test` without features (the default build
-    and its doctests), with `mpi,fftw,fftw_system,strict`, for `rlst-suitesparse`, and with
-    `fftw,fftw_system,fftw_threads,strict`; the bounded MPI runner; and `cargo doc` with
-    `-D warnings` with and without `fftw_threads`.
+    the examples and, with FFTW and with MPI, the tests; `cargo test` without features (the
+    default build and its doctests), with `mpi,fftw,fftw_system,strict` (which runs the
+    multi-rank tests), for `rlst-suitesparse`, and with `fftw,fftw_system,fftw_threads,strict`;
+    and `cargo doc` with `-D warnings` with and without `fftw_threads`.
   - `run-tests-macos` (arm64 `macos-26`, Homebrew FFTW 3.3.11 without SIMD): Clippy (library
     and tests) and `cargo test` with `fftw,fftw_system,strict` and with
     `fftw,fftw_system,fftw_threads,strict`.
@@ -277,18 +276,25 @@ changes now go to `main` as ordinary pull requests.
 - The crate root declares BLAS/LAPACK linkage for tests, in the `#[cfg(test)]` block at the bottom
   of `rlst/src/lib.rs`. Preserve this arrangement when adding tests that call native
   linear-algebra routines.
-- MPI tests and examples require a working MPI runtime. `cargo test --features mpi` includes the
-  harness-free `mpi_empty_ranks` executable but does not replace multi-rank validation.
-  `python3 scripts/run_mpi_tests.py` builds with `mpi,strict`, runs each case on 1, 2, and 4 ranks
-  via Open MPI's `mpiexec --oversubscribe`, and enforces per-case timeouts and process-group
-  cleanup. Use this bounded runner for distributed changes rather than an unbounded launcher.
+- MPI tests and examples require a working MPI runtime. Multi-rank tests are cases of the
+  harness-free executable `rlst/tests/mpi/` (`main.rs` lists the modules' `CASES`). `cargo test
+  --features mpi` runs it as a parent that first checks its own launcher, then runs every case
+  on 1, 2, 3 and 4 ranks as `mpiexec -n <ranks>` of itself (`--oversubscribe` with Open MPI;
+  `RLST_MPIEXEC` overrides the launcher), each in its own process group with a 30 s deadline
+  that is stopped as a whole when the run ends. `cargo test --features mpi --test mpi -- csr`
+  runs the cases whose names contain `csr`. Add multi-rank tests there, not as unbounded
+  `mpiexec` invocations.
+- A case checks its results with `common::collective_assert` and computes expected values from
+  the global indices, independently of the collectives under test where possible. Every
+  collective call must run on every rank: never put one behind a `&&` or `if` whose condition
+  can differ between ranks, or a failure on one rank deadlocks the others until the deadline.
 - For distributed operations, cover empty local ranks and globally empty inputs, and preserve
   collective participation and agreement when rejecting invalid metadata.
 
 ## Validation commands
 
 Run commands from the repository root. After every code edit, and again after any corrective
-edit, run all nine Clippy commands below independently so a failure does not prevent later
+edit, run all ten Clippy commands below independently so a failure does not prevent later
 checks. `.github/workflows/run-tests.yml` is authoritative; keep this list synchronized with it.
 
 ```bash
@@ -301,6 +307,7 @@ cargo clippy -p rlst-suitesparse -- -D warnings
 cargo clippy --features "fftw,fftw_system,fftw_threads,strict" -- -D warnings
 cargo clippy --tests --features "fftw,fftw_system,strict" -- -D warnings
 cargo clippy --tests --features "fftw,fftw_system,fftw_threads,strict" -- -D warnings
+cargo clippy --tests --features "mpi,fftw,fftw_system,strict" -- -D warnings
 ```
 
 The feature and SuiteSparse checks require their native dependencies. If those dependencies are
@@ -321,7 +328,10 @@ cargo tree -p rlst -e normal --prefix none | grep '^fftw-sys '
 RUST_MIN_STACK=8388608 cargo test --features "mpi,fftw,fftw_system,strict"
 cargo test -p rlst-suitesparse
 cargo test --features "fftw,fftw_system,fftw_threads,strict"
-python3 scripts/run_mpi_tests.py
+
+# The multi-rank MPI tests alone (part of every `cargo test` with `mpi`); arguments after
+# `--` filter the cases by name
+cargo test --features "mpi,strict" --test mpi
 
 # The documentation, with warnings denied. The guide's links into `rlst::fftw` are
 # checked only in builds with `fftw_threads`
@@ -345,9 +355,6 @@ cargo test --features "fftw,fftw_system,fftw_threads" --test fftw_determinism
 # Work on the proc-macro crate directly
 cargo test -p rlst-proc-macro
 cargo clippy -p rlst-proc-macro -- -D warnings
-
-# Test the MPI runner itself (no native MPI installation needed)
-python3 scripts/test_run_mpi_tests.py
 ```
 
 Use `cargo fmt --all` to apply formatting after Rust changes.

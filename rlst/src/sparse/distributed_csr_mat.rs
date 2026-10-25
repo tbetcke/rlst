@@ -259,12 +259,28 @@ where
     Item: Copy + Default + Equivalence,
     C: Communicator,
 {
+    /// Iterate over the local rows with global indices, in row-major order.
+    ///
+    /// The local matrix numbers the owned domain columns before the ghost columns, so a row
+    /// is sorted by its global columns here. Componentwise operations on the entries, such as
+    /// those of [`DistributedSparseMatOpIterator`](super::mat_operations_distributed::DistributedSparseMatOpIterator),
+    /// rely on this order.
     fn iter_aij_value(&self) -> impl Iterator<Item = ([usize; 2], Self::Item)> + '_ {
-        self.local_matrix.iter_aij_value().map(|(index, value)| {
-            let global_row = index[0] + self.range_layout().local_range().0;
-            let global_col = self.local2global[index[1]];
-            ([global_row, global_col], value)
-        })
+        let first_row = self.range_layout.local_range().0;
+        let indptr = self.local_matrix.indptr().data().unwrap();
+        let indices = self.local_matrix.indices().data().unwrap();
+        let data = self.local_matrix.data().data().unwrap();
+        indptr
+            .iter()
+            .tuple_windows()
+            .enumerate()
+            .flat_map(move |(row, (&start, &end))| {
+                let mut entries = (start..end)
+                    .map(|k| ([first_row + row, self.local2global[indices[k]]], data[k]))
+                    .collect::<Vec<_>>();
+                entries.sort_unstable_by_key(|&(index, _)| index[1]);
+                entries
+            })
     }
 }
 
