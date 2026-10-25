@@ -55,7 +55,7 @@ The repository uses the Rust 2024 edition for `rlst` and `rlst-suitesparse`, and
   interface (0.11)" below.
 - `.github/workflows/` — GitHub Actions CI on hosted runners. `run-tests.yml` is the
   authoritative validation matrix and the only workflow. It runs on pushes and pull requests to
-  `main` and `fftw-0.11`, with three jobs:
+  `main`, with three jobs:
   - `run-tests` (`ubuntu-24.04`, FFTW 3.3.10 with SIMD): formatting; the check that the default
     build of `rlst` has no `fftw-sys` (`cargo tree -p rlst -e normal`); Clippy on the library,
     the examples and, with FFTW, the tests; `cargo test` without features (the default build
