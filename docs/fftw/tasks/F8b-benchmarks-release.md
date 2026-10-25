@@ -3,7 +3,7 @@
 | | |
 | --- | --- |
 | Task | F8b (design, Section 9) |
-| Status | not started |
+| Status | done |
 | Depends on | F0 to F8a |
 | Pull requests | three, in this order: F8b-1, the benchmarks and their findings, into `fftw-0.11`; F8b-2, the release preparation (versions, CHANGELOG, documentation), into `fftw-0.11`; F8b-3, `fftw-0.11` into `main`. The tag, the publication on crates.io and the GitHub release follow the merge of F8b-3 (work item 4) |
 | Read first | design (draft 0.19): Section 1.1 (goals), Section 2.5 (what nd-fmm needs), Section 4.3 (the halved axis, DC2), Section 4.5 (split storage and SIMD), Section 4.6 (alignment classes, `.unaligned()`), Section 7.7 (the F8b item), Section 9 (F8b row, "Release (DC10)"), Section 10 (DF8, DC2, DC9, DC10), Section 10.2 (the earlier timings), Section 11 items 2 and 9; `docs/fftw/F0-findings.md`; the "Open questions" of `docs/fftw/tasks/F3-split.md` and `F8a-ci.md`; `rlst/CHANGELOG.md` (the v0.10.2 and v0.10.3 entries, for the form of a release); `CLAUDE.md` |

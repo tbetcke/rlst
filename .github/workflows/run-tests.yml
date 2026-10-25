@@ -4,11 +4,9 @@ on:
   push:
     branches:
       - main
-      - fftw-0.11
   pull_request:
     branches:
       - main
-      - fftw-0.11
 
 permissions:
   contents: read

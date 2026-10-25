@@ -63,7 +63,7 @@ so that every later family is written against the separate-process determinism t
 | F6 | Wisdom; `fftw_threads` | `tasks/F6-wisdom-threads.md` | done | [#24](https://github.com/tbetcke/rlst/pull/24) (F6a), [#25](https://github.com/tbetcke/rlst/pull/25) (F6b) |
 | F7 | Removal of the 0.10 module; Chebyshev port; documentation; licence warning; CHANGELOG | `tasks/F7-removal-docs.md` | done | [#30](https://github.com/tbetcke/rlst/pull/30) (F7a), [#32](https://github.com/tbetcke/rlst/pull/32) (F7b), [#33](https://github.com/tbetcke/rlst/pull/33) (F7c) |
 | F8a | CI on Linux and macOS, default-build check, docs | `tasks/F8a-ci.md` | done | [#36](https://github.com/tbetcke/rlst/pull/36) |
-| F8b | Benchmarks; release 0.11.0 | `tasks/F8b-benchmarks-release.md` | in progress | [#40](https://github.com/tbetcke/rlst/pull/40) (F8b-1) |
+| F8b | Benchmarks; release 0.11.0 | `tasks/F8b-benchmarks-release.md` | done | [#40](https://github.com/tbetcke/rlst/pull/40) (F8b-1), [#41](https://github.com/tbetcke/rlst/pull/41) (F8b-2), [#42](https://github.com/tbetcke/rlst/pull/42) (F8b-3) |
 
 ## Local setup
 
