@@ -61,27 +61,31 @@ impl<T: FftwReal, F: Family, P: Policy> Plan<T, F, P> {
         // more than the real one.
         let logical_rank =
             |rank: usize, side: Side| rank.saturating_sub(usize::from(layout.gap(side).is_some()));
-        if let (Some(input), Some(output)) = (input.array_geometry(), output.array_geometry())
-            && logical_rank(input.shape.len(), Side::Input)
-                == logical_rank(output.shape.len(), Side::Output)
-            && !layout.fits_array_pair(
-                (&input.shape, &input.stride),
-                (&output.shape, &output.stride),
-            )
-        {
-            return Err(FftwError::LayoutMismatch {
-                side: Side::Output,
-                expected: format!(
-                    "an input and an output array whose axes pair by index as in {}",
-                    layout.describe()
-                ),
-                found: format!(
-                    "an input of shape {:?} and strides {:?} and an output of shape {:?} and \
-                     strides {:?}",
-                    input.shape, input.stride, output.shape, output.stride
-                ),
-            });
-        }
+        let mut result = Ok(());
+        input.with_array_geometry(&mut |input| {
+            output.with_array_geometry(&mut |output| {
+                if let (Some((input_shape, input_stride)), Some((output_shape, output_stride))) =
+                    (input, output)
+                    && logical_rank(input_shape.len(), Side::Input)
+                        == logical_rank(output_shape.len(), Side::Output)
+                    && !layout
+                        .fits_array_pair((input_shape, input_stride), (output_shape, output_stride))
+                {
+                    result = Err(FftwError::LayoutMismatch {
+                        side: Side::Output,
+                        expected: format!(
+                            "an input and an output array whose axes pair by index as in {}",
+                            layout.describe()
+                        ),
+                        found: format!(
+                            "an input of shape {input_shape:?} and strides {input_stride:?} and \
+                             an output of shape {output_shape:?} and strides {output_stride:?}"
+                        ),
+                    });
+                }
+            })
+        });
+        result?;
         Ok((input_ptr, output_ptr))
     }
 
@@ -122,11 +126,11 @@ impl<T: FftwReal, P: Policy> Plan<T, C2c, P> {
     ///
     /// # Safety
     ///
-    /// `input` and `output` are pointers that the side checks (`check_side`, or
-    /// `check_side_mut` for a buffer that is written) returned for this plan's layout, and
-    /// that `check_pointers` accepted; their buffers are borrowed for the duration of the call
-    /// (`output` mutably, and `input` mutably unless the plan is `Preserving`), and for an
-    /// in-place plan `input == output`.
+    /// `input` and `output` are pointers that the side checks (`check_side`, or for a buffer that
+    /// is written `check_side_mut`, or `check_span_mut` after `check_side`) returned for this
+    /// plan's layout, and that `check_pointers` accepted; their buffers are borrowed for the
+    /// duration of the call (`output` mutably, and `input` mutably unless the plan is
+    /// `Preserving`), and for an in-place plan `input == output`.
     unsafe fn execute_unchecked(&self, input: *mut Complex<T>, output: *mut Complex<T>) {
         // SAFETY: FFTW's four new-array conditions (design, Section 3 item 1) hold:
         // 1. sizes and strides: the plan was made for `self.layout()`, and the side checks
@@ -148,7 +152,7 @@ impl<T: FftwReal, P: Policy> Plan<T, C2c, P> {
         // 4. alignment: unless the plan was made with `FFTW_UNALIGNED`, the alignment class of
         //    each pointer equals the class of the corresponding planning array modulo 64, so
         //    FFTW's alignment (modulo 16 or less) is equal too.
-        // `output`, and `input` unless the plan is `Preserving`, come from `check_side_mut`
+        // `output`, and `input` unless the plan is `Preserving`, come from a `SealedMut` check
         // and derive from exclusive borrows, of a slice or of an array's whole storage through
         // `StridedRawAccessMut`, so writing through them is permitted. For a `Preserving`
         // plan, `input` may derive from a shared borrow: FFTW was given `FFTW_PRESERVE_INPUT`,
@@ -250,7 +254,7 @@ impl<T: FftwReal> Plan<T, C2c, Preserving> {
         O: FftBufferMut<Complex<T>> + ?Sized,
     {
         let (input, _) = self.check_layout(input, &*output)?;
-        let output = output.check_side_mut(self.layout(), Side::Output)?;
+        let output = output.check_span_mut(self.layout(), Side::Output)?;
         self.check_pointers(input, output)?;
         // SAFETY: the pointers come from the side checks and passed `check_pointers`;
         // `output` is borrowed mutably and `input` shared, which suffices for a `Preserving`
@@ -288,8 +292,8 @@ impl<T: FftwReal> Plan<T, C2c, Destroying> {
         O: FftBufferMut<Complex<T>> + ?Sized,
     {
         self.check_layout(&*input, &*output)?;
-        let input = input.check_side_mut(self.layout(), Side::Input)?;
-        let output = output.check_side_mut(self.layout(), Side::Output)?;
+        let input = input.check_span_mut(self.layout(), Side::Input)?;
+        let output = output.check_span_mut(self.layout(), Side::Output)?;
         self.check_pointers(input, output)?;
         // SAFETY: the pointers come from the side checks on the exclusive borrows of both
         // buffers, and passed `check_pointers`.
@@ -325,7 +329,7 @@ impl<T: FftwReal> Plan<T, C2c, InPlace> {
     {
         self.check_layout(&*data, &*data)?;
         // In place the input and output spans are equal, so one check covers both sides.
-        let data = data.check_side_mut(self.layout(), Side::Input)?;
+        let data = data.check_span_mut(self.layout(), Side::Input)?;
         self.check_pointers(data, data)?;
         // SAFETY: the pointer comes from the side check on the exclusive borrow of the
         // buffer, passed `check_pointers`, and is passed as both input and output of the
@@ -340,11 +344,11 @@ impl<T: FftwReal, P: Policy> Plan<T, SplitC2c, P> {
     ///
     /// # Safety
     ///
-    /// `input` and `output` are pointers that the side checks (`check_side`, or
-    /// `check_side_mut` for a buffer that is written) returned for this plan's layout, and
-    /// that `check_pointers` accepted; their buffers are borrowed for the duration of the call
-    /// (`output` mutably, and `input` mutably unless the plan is `Preserving`), and for an
-    /// in-place plan `input == output`.
+    /// `input` and `output` are pointers that the side checks (`check_side`, or for a buffer that
+    /// is written `check_side_mut`, or `check_span_mut` after `check_side`) returned for this
+    /// plan's layout, and that `check_pointers` accepted; their buffers are borrowed for the
+    /// duration of the call (`output` mutably, and `input` mutably unless the plan is
+    /// `Preserving`), and for an in-place plan `input == output`.
     unsafe fn execute_split_unchecked(&self, input: *mut T, output: *mut T) {
         let [(ri, ii), (ro, io)] = self.split_offsets();
         // SAFETY: FFTW's four new-array conditions (design, Section 3 item 1) hold:
@@ -376,7 +380,7 @@ impl<T: FftwReal, P: Policy> Plan<T, SplitC2c, P> {
         //    modulo 64. The class of each imaginary part is that class plus the gap times the
         //    size of `T`, modulo 64, with the gap of planning, so all four pointers have the
         //    classes of planning, and FFTW's alignment (modulo 16 or less) is equal too.
-        // `output`, and `input` unless the plan is `Preserving`, come from `check_side_mut`
+        // `output`, and `input` unless the plan is `Preserving`, come from a `SealedMut` check
         // and derive from exclusive borrows; the imaginary parts' pointers derive from them,
         // so writing through them is permitted. For a `Preserving` plan, `input` may derive
         // from a shared borrow: FFTW was given `FFTW_PRESERVE_INPUT`, so it never writes
@@ -434,7 +438,7 @@ impl<T: FftwReal> Plan<T, SplitC2c, Preserving> {
         O: FftBufferMut<T> + ?Sized,
     {
         let (input, _) = self.check_layout(input, &*output)?;
-        let output = output.check_side_mut(self.layout(), Side::Output)?;
+        let output = output.check_span_mut(self.layout(), Side::Output)?;
         self.check_pointers(input, output)?;
         // SAFETY: the pointers come from the side checks and passed `check_pointers`;
         // `output` is borrowed mutably and `input` shared, which suffices for a `Preserving`
@@ -488,8 +492,8 @@ impl<T: FftwReal> Plan<T, SplitC2c, Destroying> {
         O: FftBufferMut<T> + ?Sized,
     {
         self.check_layout(&*input, &*output)?;
-        let input = input.check_side_mut(self.layout(), Side::Input)?;
-        let output = output.check_side_mut(self.layout(), Side::Output)?;
+        let input = input.check_span_mut(self.layout(), Side::Input)?;
+        let output = output.check_span_mut(self.layout(), Side::Output)?;
         self.check_pointers(input, output)?;
         // SAFETY: the pointers come from the side checks on the exclusive borrows of both
         // buffers, and passed `check_pointers`.
@@ -539,7 +543,7 @@ impl<T: FftwReal> Plan<T, SplitC2c, InPlace> {
     {
         self.check_layout(&*data, &*data)?;
         // In place the input and output spans are equal, so one check covers both sides.
-        let data = data.check_side_mut(self.layout(), Side::Input)?;
+        let data = data.check_span_mut(self.layout(), Side::Input)?;
         self.check_pointers(data, data)?;
         // SAFETY: the pointer comes from the side check on the exclusive borrow of the
         // buffer, passed `check_pointers`, and is passed as both input and output of the
@@ -554,12 +558,12 @@ impl<T: FftwReal, P: Policy> Plan<T, R2c, P> {
     ///
     /// # Safety
     ///
-    /// `input` and `output` are pointers that the side checks (`check_side`, or
-    /// `check_side_mut` for a buffer that is written) returned for this plan's layout, and
-    /// that `check_pointers` accepted; their buffers are borrowed for the duration of the call
-    /// (`output` mutably, and `input` mutably unless the plan is `Preserving`). For an
-    /// in-place plan both are the first element of the one complex buffer, checked against
-    /// the complex side, `input` cast to reals.
+    /// `input` and `output` are pointers that the side checks (`check_side`, or for a buffer that
+    /// is written `check_side_mut`, or `check_span_mut` after `check_side`) returned for this
+    /// plan's layout, and that `check_pointers` accepted; their buffers are borrowed for the
+    /// duration of the call (`output` mutably, and `input` mutably unless the plan is
+    /// `Preserving`). For an in-place plan both are the first element of the one complex buffer,
+    /// checked against the complex side, `input` cast to reals.
     unsafe fn execute_unchecked(&self, input: *mut T, output: *mut Complex<T>) {
         // SAFETY: FFTW's four new-array conditions (design, Section 3 item 1) hold:
         // 1. sizes and strides: the plan was made for `self.layout()`, whose input strides
@@ -583,7 +587,7 @@ impl<T: FftwReal, P: Policy> Plan<T, R2c, P> {
         // 3. split storage does not apply to interleaved r2c plans;
         // 4. alignment: unless the plan was made with `FFTW_UNALIGNED`, the alignment class of
         //    each pointer equals the class of the corresponding planning array modulo 64.
-        // `output`, and `input` unless the plan is `Preserving`, come from `check_side_mut`
+        // `output`, and `input` unless the plan is `Preserving`, come from a `SealedMut` check
         // and derive from exclusive borrows, so writing through them is permitted. For a
         // `Preserving` plan, `input` may derive from a shared borrow: FFTW was given
         // `FFTW_PRESERVE_INPUT`, so it never writes through it. Execution needs no lock.
@@ -624,7 +628,7 @@ impl<T: FftwReal> Plan<T, R2c, Preserving> {
         O: FftBufferMut<Complex<T>> + ?Sized,
     {
         let (input, _) = self.check_layout(input, &*output)?;
-        let output = output.check_side_mut(self.layout(), Side::Output)?;
+        let output = output.check_span_mut(self.layout(), Side::Output)?;
         self.check_pointers(input, output)?;
         // SAFETY: the pointers come from the side checks and passed `check_pointers`;
         // `output` is borrowed mutably and `input` shared, which suffices for a `Preserving`
@@ -658,8 +662,8 @@ impl<T: FftwReal> Plan<T, R2c, Destroying> {
         O: FftBufferMut<Complex<T>> + ?Sized,
     {
         self.check_layout(&*input, &*output)?;
-        let input = input.check_side_mut(self.layout(), Side::Input)?;
-        let output = output.check_side_mut(self.layout(), Side::Output)?;
+        let input = input.check_span_mut(self.layout(), Side::Input)?;
+        let output = output.check_span_mut(self.layout(), Side::Output)?;
         self.check_pointers(input, output)?;
         // SAFETY: the pointers come from the side checks on the exclusive borrows of both
         // buffers, and passed `check_pointers`.
@@ -784,7 +788,7 @@ impl<T: FftwReal> Plan<T, C2r, Preserving> {
         O: FftBufferMut<T> + ?Sized,
     {
         let (input, _) = self.check_layout(input, &*output)?;
-        let output = output.check_side_mut(self.layout(), Side::Output)?;
+        let output = output.check_span_mut(self.layout(), Side::Output)?;
         self.check_pointers(input, output)?;
         // SAFETY: the pointers come from the side checks and passed `check_pointers`;
         // `output` is borrowed mutably and `input` shared, which suffices for a `Preserving`
@@ -822,8 +826,8 @@ impl<T: FftwReal> Plan<T, C2r, Destroying> {
         O: FftBufferMut<T> + ?Sized,
     {
         self.check_layout(&*input, &*output)?;
-        let input = input.check_side_mut(self.layout(), Side::Input)?;
-        let output = output.check_side_mut(self.layout(), Side::Output)?;
+        let input = input.check_span_mut(self.layout(), Side::Input)?;
+        let output = output.check_span_mut(self.layout(), Side::Output)?;
         self.check_pointers(input, output)?;
         // SAFETY: the pointers come from the side checks on the exclusive borrows of both
         // buffers, and passed `check_pointers`.
@@ -872,11 +876,11 @@ impl<T: FftwReal, P: Policy> Plan<T, R2r, P> {
     ///
     /// # Safety
     ///
-    /// `input` and `output` are pointers that the side checks (`check_side`, or
-    /// `check_side_mut` for a buffer that is written) returned for this plan's layout, and
-    /// that `check_pointers` accepted; their buffers are borrowed for the duration of the call
-    /// (`output` mutably, and `input` mutably unless the plan is `Preserving`), and for an
-    /// in-place plan `input == output`.
+    /// `input` and `output` are pointers that the side checks (`check_side`, or for a buffer that
+    /// is written `check_side_mut`, or `check_span_mut` after `check_side`) returned for this
+    /// plan's layout, and that `check_pointers` accepted; their buffers are borrowed for the
+    /// duration of the call (`output` mutably, and `input` mutably unless the plan is
+    /// `Preserving`), and for an in-place plan `input == output`.
     unsafe fn execute_unchecked(&self, input: *mut T, output: *mut T) {
         // SAFETY: FFTW's four new-array conditions (design, Section 3 item 1) hold:
         // 1. sizes and strides: the plan was made for `self.layout()`, whose strides and spans
@@ -893,7 +897,7 @@ impl<T: FftwReal, P: Policy> Plan<T, R2r, P> {
         // 3. split storage does not apply to real-to-real plans;
         // 4. alignment: unless the plan was made with `FFTW_UNALIGNED`, the alignment class of
         //    each pointer equals the class of the corresponding planning array modulo 64.
-        // `output`, and `input` unless the plan is `Preserving`, come from `check_side_mut`
+        // `output`, and `input` unless the plan is `Preserving`, come from a `SealedMut` check
         // and derive from exclusive borrows. A `Preserving` plan was planned with
         // `FFTW_PRESERVE_INPUT`, also with an HC2R kind, and FFTW returned a plan, so it never
         // writes through `input`, which may derive from a shared borrow. Execution needs no
@@ -939,7 +943,7 @@ impl<T: FftwReal> Plan<T, R2r, Preserving> {
         O: FftBufferMut<T> + ?Sized,
     {
         let (input, _) = self.check_layout(input, &*output)?;
-        let output = output.check_side_mut(self.layout(), Side::Output)?;
+        let output = output.check_span_mut(self.layout(), Side::Output)?;
         self.check_pointers(input, output)?;
         // SAFETY: the pointers come from the side checks and passed `check_pointers`;
         // `output` is borrowed mutably and `input` shared, which suffices for a `Preserving`
@@ -975,8 +979,8 @@ impl<T: FftwReal> Plan<T, R2r, Destroying> {
         O: FftBufferMut<T> + ?Sized,
     {
         self.check_layout(&*input, &*output)?;
-        let input = input.check_side_mut(self.layout(), Side::Input)?;
-        let output = output.check_side_mut(self.layout(), Side::Output)?;
+        let input = input.check_span_mut(self.layout(), Side::Input)?;
+        let output = output.check_span_mut(self.layout(), Side::Output)?;
         self.check_pointers(input, output)?;
         // SAFETY: the pointers come from the side checks on the exclusive borrows of both
         // buffers, and passed `check_pointers`.
@@ -1013,7 +1017,7 @@ impl<T: FftwReal> Plan<T, R2r, InPlace> {
     {
         self.check_layout(&*data, &*data)?;
         // In place the input and output spans are equal, so one check covers both sides.
-        let data = data.check_side_mut(self.layout(), Side::Input)?;
+        let data = data.check_span_mut(self.layout(), Side::Input)?;
         self.check_pointers(data, data)?;
         // SAFETY: the pointer comes from the side check on the exclusive borrow of the
         // buffer, passed `check_pointers`, and is passed as both input and output of the
@@ -1038,10 +1042,11 @@ impl<T: FftwReal, P: Policy> Plan<T, SplitR2c, P> {
     ///
     /// # Safety
     ///
-    /// `input` and `output` are pointers that the side checks (`check_side`, or
-    /// `check_side_mut` for a buffer that is written) returned for this plan's layout, and
-    /// that `check_pointers` accepted; their buffers are borrowed for the duration of the call
-    /// (`output` mutably, and `input` mutably unless the plan is `Preserving`).
+    /// `input` and `output` are pointers that the side checks (`check_side`, or for a buffer that
+    /// is written `check_side_mut`, or `check_span_mut` after `check_side`) returned for this
+    /// plan's layout, and that `check_pointers` accepted; their buffers are borrowed for the
+    /// duration of the call (`output` mutably, and `input` mutably unless the plan is
+    /// `Preserving`).
     unsafe fn execute_unchecked(&self, input: *mut T, output: *mut T) {
         let gap = split_real_gap(self.layout(), Side::Output);
         // SAFETY: FFTW's four new-array conditions (design, Section 3 item 1) hold:
@@ -1104,7 +1109,7 @@ impl<T: FftwReal> Plan<T, SplitR2c, Preserving> {
         O: FftBufferMut<T> + ?Sized,
     {
         let (input, _) = self.check_layout(input, &*output)?;
-        let output = output.check_side_mut(self.layout(), Side::Output)?;
+        let output = output.check_span_mut(self.layout(), Side::Output)?;
         self.check_pointers(input, output)?;
         // SAFETY: the pointers come from the side checks and passed `check_pointers`;
         // `output` is borrowed mutably and `input` shared, which suffices for a `Preserving`
@@ -1138,8 +1143,8 @@ impl<T: FftwReal> Plan<T, SplitR2c, Destroying> {
         O: FftBufferMut<T> + ?Sized,
     {
         self.check_layout(&*input, &*output)?;
-        let input = input.check_side_mut(self.layout(), Side::Input)?;
-        let output = output.check_side_mut(self.layout(), Side::Output)?;
+        let input = input.check_span_mut(self.layout(), Side::Input)?;
+        let output = output.check_span_mut(self.layout(), Side::Output)?;
         self.check_pointers(input, output)?;
         // SAFETY: the pointers come from the side checks on the exclusive borrows of both
         // buffers, and passed `check_pointers`.
@@ -1207,7 +1212,7 @@ impl<T: FftwReal> Plan<T, SplitC2r, Preserving> {
         O: FftBufferMut<T> + ?Sized,
     {
         let (input, _) = self.check_layout(input, &*output)?;
-        let output = output.check_side_mut(self.layout(), Side::Output)?;
+        let output = output.check_span_mut(self.layout(), Side::Output)?;
         self.check_pointers(input, output)?;
         // SAFETY: the pointers come from the side checks and passed `check_pointers`;
         // `output` is borrowed mutably and `input` shared, which suffices for a `Preserving`
@@ -1241,8 +1246,8 @@ impl<T: FftwReal> Plan<T, SplitC2r, Destroying> {
         O: FftBufferMut<T> + ?Sized,
     {
         self.check_layout(&*input, &*output)?;
-        let input = input.check_side_mut(self.layout(), Side::Input)?;
-        let output = output.check_side_mut(self.layout(), Side::Output)?;
+        let input = input.check_span_mut(self.layout(), Side::Input)?;
+        let output = output.check_span_mut(self.layout(), Side::Output)?;
         self.check_pointers(input, output)?;
         // SAFETY: the pointers come from the side checks on the exclusive borrows of both
         // buffers, and passed `check_pointers`.

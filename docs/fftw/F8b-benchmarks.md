@@ -67,6 +67,25 @@ Linux:
   at N = 140 and 2–3 % at N = 1080. The cost is reported here and raised in the brief's
   "Open questions"; F8b does not tune it.
 
+**Later (2026-10-25, issue [#44](https://github.com/tbetcke/rlst/issues/44)).** The array
+check allocated 40–48 times per execution: the shapes, strides and normalised batches it
+compared were built as `Vec`s, and a buffer that the plan writes was compared twice. It now
+works on the stack for arrays of rank up to 16, the layout normalises its batch on each side
+once, when it is made, and a written buffer's second check covers its storage and span only.
+The checks and their errors are unchanged. On macOS (the same machine and FFTW), the batch of
+9 on arrays, before and after, against the same plan on slices:
+
+| N | Arrays, before (µs) | Arrays, after | On slices |
+| ---: | ---: | ---: | ---: |
+| 140 | 3.22 | 2.58 | 2.43 |
+| 216 | 5.25 | 4.60 | 4.45 |
+| 336 | 8.62 | 7.95 | 7.83 |
+| 588 | 14.59 | 13.73 | 13.61 |
+| 1080 | 29.03 | 28.10 | 27.95 |
+
+The cost of checking arrays falls from about 0.8 µs to about 0.15 µs per call: 6 % of the time
+at N = 140, and within the rounds' range at N = 1080.
+
 ### 2. Split against interleaved
 
 c2c forward along axis 0 of the box:

@@ -37,9 +37,11 @@ The repository uses the Rust 2024 edition for `rlst` and `rlst-suitesparse`, and
   - `src/fftw/`, `src/chebychev.rs` — FFTW-gated transforms and Chebyshev tools.
   - `src/doc/` — crate-level user documentation.
   - `examples/` — executable usage examples; MPI examples declare `required-features = ["mpi"]`.
-  - `tests/` — integration tests for static-type macros and two feature-gated, harness-free
-    executables: `mpi_empty_ranks` (`mpi`) and `fftw_determinism` (`fftw`), which runs each
-    FFTW determinism case in a fresh child process of itself.
+  - `tests/` — integration tests for static-type macros and three feature-gated, harness-free
+    executables: `mpi_empty_ranks` (`mpi`), `fftw_determinism` (`fftw`), which runs each
+    FFTW determinism case in a fresh child process of itself, and `fftw_check_allocations`
+    (`fftw`), which counts the global allocator's allocations to check that executing a plan
+    on arrays, views and slices allocates nothing.
   - `build.rs` — system FFTW library discovery.
 - `proc-macro/` — `rlst-proc-macro`, which supplies the array-construction, static-type, and
   tracing macros re-exported by `rlst`. Use `-p rlst-proc-macro` or

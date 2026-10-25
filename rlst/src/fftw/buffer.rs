@@ -9,14 +9,8 @@ pub(crate) mod sealed {
     use crate::fftw::error::{FftwError, Side};
     use crate::fftw::layout::Layout;
 
-    /// The shape and strides of an array buffer, for the pairing of input and output axes at
-    /// execution (DC15).
-    pub struct ArrayGeometry {
-        /// The shape.
-        pub shape: Vec<usize>,
-        /// The strides.
-        pub stride: Vec<usize>,
-    }
+    /// The shape and strides of an array buffer.
+    pub type ArrayGeometry<'a> = (&'a [usize], &'a [usize]);
 
     /// Seals [`FftBuffer`](super::FftBuffer) and carries the check of a buffer against one
     /// side of a layout.
@@ -28,9 +22,11 @@ pub(crate) mod sealed {
         /// implementation of `StridedRawAccess` may return another slice each time.
         fn check_side(&self, layout: &Layout, side: Side) -> Result<*const E, FftwError>;
 
-        /// The shape and strides of an array buffer; `None` for a slice.
-        fn array_geometry(&self) -> Option<ArrayGeometry> {
-            None
+        /// Call `f` with the shape and strides of an array buffer, for the pairing of input
+        /// and output axes at execution (DC15), or with `None` for a slice. A callback rather
+        /// than a return value, so that an array's shape and strides stay on the stack.
+        fn with_array_geometry(&self, f: &mut dyn FnMut(Option<ArrayGeometry<'_>>)) {
+            f(None)
         }
     }
 
@@ -40,6 +36,14 @@ pub(crate) mod sealed {
         /// The check of [`Sealed::check_side`] through the exclusive borrow, returning the
         /// mutable pointer that the check validated, which derives from that borrow.
         fn check_side_mut(&mut self, layout: &Layout, side: Side) -> Result<*mut E, FftwError>;
+
+        /// The check of [`check_side_mut`](SealedMut::check_side_mut) without the comparison
+        /// of an array's shape and strides with the layout, for execution after
+        /// [`Sealed::check_side`] compared them on the shared borrow: an array's storage is
+        /// exposed and holds the layout's span from the first element on, the check that
+        /// execution's memory safety rests on; a slice holds the span. Returns the mutable
+        /// pointer that the check validated, which derives from the exclusive borrow.
+        fn check_span_mut(&mut self, layout: &Layout, side: Side) -> Result<*mut E, FftwError>;
     }
 }
 
@@ -181,6 +185,10 @@ impl<E> sealed::SealedMut<E> for [E] {
         check_slice(self.len(), layout, side)?;
         Ok(self.as_mut_ptr())
     }
+
+    fn check_span_mut(&mut self, layout: &Layout, side: Side) -> Result<*mut E, FftwError> {
+        self.check_side_mut(layout, side)
+    }
 }
 
 impl<E> FftBuffer<E> for [E] {
@@ -203,13 +211,14 @@ impl<E> FftBufferMut<E> for [E] {
 
 /// Check an array against `side` of `layout`, in the order of the F2 brief: its storage is
 /// exposed, as `storage` (the length and the offset of the first element); its shape and
-/// strides fit that side; and the storage holds the layout's span from the first element on.
-fn check_array<const N: usize>(
+/// strides, `geometry`, fit that side, unless `geometry` is `None` because a check of the
+/// shared borrow compared them already; and the storage holds the layout's span from the
+/// first element on.
+fn check_array(
     layout: &Layout,
     side: Side,
     storage: Option<(usize, usize)>,
-    shape: [usize; N],
-    stride: [usize; N],
+    geometry: Option<sealed::ArrayGeometry<'_>>,
 ) -> Result<(), FftwError> {
     let mismatch = |expected: String, found: String| FftwError::LayoutMismatch {
         side,
@@ -222,7 +231,9 @@ fn check_array<const N: usize>(
             "an array whose storage is not exposed".to_string(),
         ));
     };
-    if !layout.fits_array_side(side, &shape, &stride) {
+    if let Some((shape, stride)) = geometry
+        && !layout.fits_array_side(side, shape, stride)
+    {
         return Err(mismatch(
             format!("{}, the layout's {side} side", layout.describe_side(side)),
             format!("an array of shape {shape:?} and strides {stride:?}"),
@@ -251,18 +262,15 @@ where
         let parts = storage
             .as_ref()
             .map(|(slice, offset)| (slice.len(), *offset));
-        check_array(layout, side, parts, self.shape(), self.stride())?;
+        check_array(layout, side, parts, Some((&self.shape(), &self.stride())))?;
         // `check_array` accepted this storage, so the offset lies inside it.
         Ok(storage.map_or(std::ptr::null(), |(slice, offset)| {
             slice.as_ptr().wrapping_add(offset)
         }))
     }
 
-    fn array_geometry(&self) -> Option<sealed::ArrayGeometry> {
-        Some(sealed::ArrayGeometry {
-            shape: self.shape().to_vec(),
-            stride: self.stride().to_vec(),
-        })
+    fn with_array_geometry(&self, f: &mut dyn FnMut(Option<sealed::ArrayGeometry<'_>>)) {
+        f(Some((&self.shape(), &self.stride())))
     }
 }
 
@@ -292,11 +300,31 @@ where
 {
     fn check_side_mut(&mut self, layout: &Layout, side: Side) -> Result<*mut A::Item, FftwError> {
         let (shape, stride) = (self.shape(), self.stride());
+        self.check_storage_mut(layout, side, Some((&shape, &stride)))
+    }
+
+    fn check_span_mut(&mut self, layout: &Layout, side: Side) -> Result<*mut A::Item, FftwError> {
+        self.check_storage_mut(layout, side, None)
+    }
+}
+
+impl<A, const N: usize> Array<A, N>
+where
+    A: StridedRawAccessMut + Shape<N> + Stride<N>,
+{
+    /// The check of [`check_array`] through the exclusive borrow of the storage, comparing
+    /// `geometry` with the layout if it is given.
+    fn check_storage_mut(
+        &mut self,
+        layout: &Layout,
+        side: Side,
+        geometry: Option<sealed::ArrayGeometry<'_>>,
+    ) -> Result<*mut A::Item, FftwError> {
         let storage = self.storage_mut();
         let parts = storage
             .as_ref()
             .map(|(slice, offset)| (slice.len(), *offset));
-        check_array(layout, side, parts, shape, stride)?;
+        check_array(layout, side, parts, geometry)?;
         // From the exclusive borrow of the storage that `check_array` accepted (design
         // Section 4.4), so that FFTW may write through it.
         Ok(storage.map_or(std::ptr::null_mut(), |(slice, offset)| {
