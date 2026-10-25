@@ -54,6 +54,13 @@ For an empty array it now panics with its documented assertion instead of an ari
 overflow in debug builds, and the panic message reports the array's length
 ([#28](https://github.com/tbetcke/rlst/issues/28)). No migration is needed.
 
+### Manifests: `homepage` removed
+
+The manifests of `rlst`, `rlst-proc-macro` and `rlst-suitesparse` no longer set `homepage`,
+which repeated `repository`, so newer cargo no longer warns that it is redundant
+(`cargo::redundant_homepage`, [#37](https://github.com/tbetcke/rlst/issues/37)). `repository`
+still points to <https://github.com/tbetcke/rlst>. No migration is needed.
+
 ## v0.11.0
 
 Changes since [v0.10.3](https://github.com/tbetcke/rlst/releases/tag/v0.10.3).
