@@ -7,9 +7,10 @@
 Executing an FFTW plan on RLST arrays and views no longer allocates on the heap. The check of
 the arrays' shapes and strides against the plan's layout (design Section 4.8) works on the
 stack for arrays of rank up to 16; the layout normalises its batch on each side once, when it
-is made; and a buffer that the plan writes is compared with the layout once, not twice. On
-macOS this cuts the cost of executing on arrays rather than slices from about 0.8 µs to about
-0.15 µs per call ([#44](https://github.com/tbetcke/rlst/issues/44)). The checks and their
+is made; and a buffer that the plan writes is compared with the layout once, not twice. This
+cuts the cost of executing on arrays rather than slices from about 0.8 µs to about 0.15 µs per
+call on macOS, and from about 0.45 µs to about 0.1 µs on Linux
+([#44](https://github.com/tbetcke/rlst/issues/44)). The checks and their
 errors are unchanged. No migration is needed.
 
 ## v0.11.0

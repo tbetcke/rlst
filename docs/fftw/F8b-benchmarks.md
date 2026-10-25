@@ -83,8 +83,23 @@ The checks and their errors are unchanged. On macOS (the same machine and FFTW),
 | 588 | 14.59 | 13.73 | 13.61 |
 | 1080 | 29.03 | 28.10 | 27.95 |
 
-The cost of checking arrays falls from about 0.8 µs to about 0.15 µs per call: 6 % of the time
-at N = 140, and within the rounds' range at N = 1080.
+On Linux, before and after were built and run in one job on the `ubuntu-24.04` runner,
+alternating, twice each (the means of the two runs' medians below). That runner had an AMD
+EPYC 9V45 and FFTW 3.3.10 with SIMD, a different CPU from the table above, so its times are
+compared only with each other:
+
+| N | Arrays, before (µs) | On slices | Arrays, after | On slices |
+| ---: | ---: | ---: | ---: | ---: |
+| 140 | 1.65 | 1.25 | 1.35 | 1.23 |
+| 216 | 3.96 | 3.50 | 3.64 | 3.55 |
+| 336 | 5.21 | 4.70 | 4.95 | 4.79 |
+| 588 | 10.20 | 9.77 | 9.84 | 9.62 |
+| 1080 | 23.78 | 22.91 | 23.06 | 22.75 |
+
+The cost of checking arrays falls from about 0.8 µs to about 0.15 µs per call on macOS, and
+from about 0.45 µs to about 0.1 µs on Linux at N ≤ 336; at larger N the shared runner's
+round-to-round variation, up to 0.3 µs, is as large as the remaining cost. At N = 140 it is now
+6 % of the time on macOS and 8 % on Linux, from a quarter.
 
 ### 2. Split against interleaved
 

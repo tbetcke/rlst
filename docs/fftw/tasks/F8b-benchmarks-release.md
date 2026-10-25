@@ -288,8 +288,8 @@ are in `docs/fftw/F8b-benchmarks.md`.
    boxes at N ≥ 216 lose 2–15 %; (b) an issue to profile the array check after the
    release. Proposed: (b). *Decided: (b), by the maintainer; issue
    [#44](https://github.com/tbetcke/rlst/issues/44).* *Later: #44 removed the check's heap
-   allocations, which cut the cost to about 0.15 µs on macOS; see `F8b-benchmarks.md`,
-   comparison 1.*
+   allocations, which cut the cost to about 0.15 µs on macOS and about 0.1 µs on Linux; see
+   `F8b-benchmarks.md`, comparison 1.*
 10. **c2r halving the contiguous axis on Linux.** On the Linux runner, c2r over both axes
     with the contiguous axis halved is 21–50 % faster at four of the five sizes. r2c is
     faster at two of the five, and on macOS without SIMD neither is faster below
