@@ -67,13 +67,12 @@ use crate::{
 use super::{data_container::ArrayContainer, layout::row_major_stride_from_shape};
 
 pub mod empty_axis;
+pub mod flattened;
 pub mod iterators;
 pub mod mult_into;
+pub mod multislice;
 pub mod operations;
 pub mod operators;
-// pub mod rank1_array;
-pub mod flattened;
-pub mod multislice;
 pub mod reference;
 pub mod shared_array;
 pub mod slice;

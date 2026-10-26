@@ -45,7 +45,6 @@ pub mod fftw;
 pub mod interface;
 pub mod interpolation;
 pub mod io;
-pub mod simd;
 pub mod sparse;
 pub mod tracing;
 pub mod traits;

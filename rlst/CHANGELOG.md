@@ -35,6 +35,25 @@ stride `[]` and holds exactly one element: `len()` is 1 and `is_empty()` is fals
 - Code that relied on rank 0 being rejected at run time (the `positive rank` panics) or at
   compile time (`slice::<0>`, `insert_empty_axis` from rank 0) now succeeds.
 
+### `simd` module removed — migration required
+
+The module `rlst::simd`, a thin wrapper over `pulp`, is removed together with the `pulp` and
+`coe-rs` dependencies ([#54](https://github.com/tbetcke/rlst/issues/54)). Nothing else in RLST
+used it.
+
+- `rlst::simd::SimdFor` and the trait `RlstSimd` (also re-exported as `rlst::RlstSimd`) are
+  removed, with their implementations for `f32` and `f64`.
+- `RlstScalar` no longer has `bytemuck::Pod` as a supertrait, and `bytemuck` is no longer a
+  dependency. `c32` and `c64` implemented `Pod` only because `pulp` enabled the `bytemuck`
+  feature of `num-complex`.
+
+**Migration:**
+
+- Code that used `SimdFor` or `RlstSimd` uses `pulp` directly.
+- Generic code that relied on `T: RlstScalar` implying `Pod` adds the bound
+  `T: RlstScalar + bytemuck::Pod`. For `c32` and `c64` to satisfy it, depend on
+  `num-complex = { version = "0.4", features = ["bytemuck"] }`.
+
 ### MPI tests: one self-launching harness
 
 The multi-rank tests are one harness-free test executable, `tests/mpi/`, that `cargo test`

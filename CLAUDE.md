@@ -23,8 +23,8 @@ The repository uses the Rust 2024 edition for `rlst` and `rlst-suitesparse`, and
     LAPACK-based dense linear algebra. `src/dense/linalg/lapack/` contains factorization, solve,
     eigenvalue, generalized Schur (QZ), Sylvester, and QR/LQ implementations; shared contracts
     live in `src/traits/linalg/`.
-  - `src/base_types/`, `src/simd.rs`, `src/threading.rs` — numerical base types, SIMD support,
-    and backend threading controls.
+  - `src/base_types/`, `src/threading.rs` — numerical base types and backend threading
+    controls.
   - `src/io/` — Matrix Market I/O; `src/interface/burn.rs` — optional Burn integration.
   - `src/interpolation.rs` — interpolation utilities.
   - `src/sparse/` — CSR matrices and sparse operations; distributed variants are gated by `mpi`.

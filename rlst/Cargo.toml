@@ -35,9 +35,6 @@ typenum = { version = "1", features = ["const-generics"]}
 paste = "1"
 aligned-vec = "0.6"
 
-coe-rs = "0.1.2"
-pulp = { version = "0.22" }
-bytemuck = "1.25.2"
 num_cpus = "1"
 
 mpi = { version = "0.8.2", optional = true , features = ["derive","complex"]}
