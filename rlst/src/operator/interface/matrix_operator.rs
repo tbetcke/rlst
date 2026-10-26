@@ -152,6 +152,7 @@ where
 }
 
 #[cfg(feature = "mpi")]
+#[cfg_attr(docsrs, doc(cfg(feature = "mpi")))]
 /// Borrowed distributed CSR matrix viewed as an abstract operator.
 ///
 /// Domain and range reuse the matrix's distributed index layouts; application

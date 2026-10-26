@@ -128,15 +128,22 @@ jobs:
 
       - uses: actions/checkout@v6
 
+      # `mpi-sys` needs libclang and an MPI; docs.rs's image provides MPICH, so use it here.
+      - name: Install native dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libclang-dev mpich
+
       # As docs.rs builds: current nightly, `DOCS_RS` set (build.rs skips FFTW discovery),
-      # `--cfg docsrs`, the features of `[package.metadata.docs.rs]`, and no native packages.
+      # `--cfg docsrs`, the features of `[package.metadata.docs.rs]`, and of the native
+      # packages only libclang and MPICH.
       - name: Build docs as docs.rs does
         env:
           DOCS_RS: 1
           RUSTDOCFLAGS: --cfg docsrs -D warnings
         run: |
           rustc +nightly --version
-          if ! cargo +nightly doc --no-deps --features "fftw,fftw_system,fftw_threads"; then
+          if ! cargo +nightly doc --no-deps --features "mpi,fftw,fftw_system,fftw_threads"; then
             echo "::error::The docs.rs build failed on $(rustc +nightly --version). Only this nightly build is affected if the stable jobs pass; check whether the nightly changed before changing RLST."
             exit 1
           fi

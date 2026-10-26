@@ -5,6 +5,7 @@ pub mod accessors;
 pub mod base_operations;
 pub mod data_container;
 #[cfg(feature = "mpi")]
+#[cfg_attr(docsrs, doc(cfg(feature = "mpi")))]
 pub mod distributed;
 pub mod io;
 pub mod iterators;

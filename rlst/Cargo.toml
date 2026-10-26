@@ -13,10 +13,11 @@ categories = ["mathematics", "science"]
 [lib]
 name = "rlst"
 
-# docs.rs builds the FFTW interface too, threads included; `build.rs` skips FFTW discovery
-# there (`DOCS_RS`), and `--cfg docsrs` marks the feature-gated items.
+# docs.rs builds the MPI and FFTW interfaces too, FFTW threads included; `mpi-sys` builds
+# against the MPICH and libclang of the docs.rs image, `build.rs` skips FFTW discovery there
+# (`DOCS_RS`), and `--cfg docsrs` marks the feature-gated items.
 [package.metadata.docs.rs]
-features = ["fftw", "fftw_system", "fftw_threads"]
+features = ["mpi", "fftw", "fftw_system", "fftw_threads"]
 rustdoc-args = ["--cfg", "docsrs"]
 
 [dependencies]

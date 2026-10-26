@@ -66,9 +66,9 @@ The repository uses the Rust 2024 edition for `rlst` and `rlst-suitesparse`, and
   - `run-tests-macos` (arm64 `macos-26`, Homebrew FFTW 3.3.11 without SIMD): Clippy (library
     and tests) and `cargo test` with `fftw,fftw_system,strict` and with
     `fftw,fftw_system,fftw_threads,strict`.
-  - `docs` (`ubuntu-24.04`, current nightly, no native packages): the documentation as docs.rs
-    builds it (`DOCS_RS=1`, `--cfg docsrs`, `-D warnings`). A failure there alone usually
-    means the nightly changed.
+  - `docs` (`ubuntu-24.04`, current nightly, only `libclang-dev` and MPICH for `mpi-sys`): the
+    documentation as docs.rs builds it (`DOCS_RS=1`, `--cfg docsrs`, `-D warnings`, with
+    `mpi`). A failure there alone usually means the nightly changed.
 
   The two test jobs first report the FFTW that pkg-config finds: its version, the threads
   libraries beside it, and `fftw_version`.
@@ -102,9 +102,11 @@ changes:
   set, `build.rs` skips discovery. Set `PKG_CONFIG_PATH` for custom installations;
   cross-compilation must use target libraries, not host Homebrew paths. The interface was
   rewritten for 0.11 (see "FFTW interface (0.11)" below); `fftw_source` and `fftw_mkl` were
-  removed. docs.rs builds with `fftw`, `fftw_system` and
+  removed. docs.rs builds with `mpi`, `fftw`, `fftw_system` and
   `fftw_threads` and `--cfg docsrs` (`[package.metadata.docs.rs]` in `rlst/Cargo.toml`), and
-  `pub mod fftw` and `pub mod chebychev` carry `doc(cfg(feature = "fftw"))` there. `rlst`'s
+  `pub mod fftw` and `pub mod chebychev` carry `doc(cfg(feature = "fftw"))` there, as the
+  public items gated by `mpi` carry `doc(cfg(feature = "mpi"))`. `mpi-sys` builds on docs.rs
+  against the image's MPICH and libclang. `rlst`'s
   only build dependency is `pkg-config`, with `fftw_system`; task F7c removed the unused
   `bindgen`, `cc`, `cmake` and `git2`, so `libclang` is needed only by `mpi-sys`, with `mpi`.
 - `fftw_threads` — implies `fftw_system`; adds threaded plans (`Planner::threads`) and
@@ -338,8 +340,9 @@ cargo test --features "mpi,strict" --test mpi
 RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --features "mpi,fftw,fftw_system,strict"
 RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --features "fftw,fftw_system,fftw_threads,strict"
 
-# The documentation as docs.rs builds it (CI job `docs`; current nightly, no FFTW needed)
-DOCS_RS=1 RUSTDOCFLAGS="--cfg docsrs -D warnings" cargo +nightly doc --no-deps --features "fftw,fftw_system,fftw_threads"
+# The documentation as docs.rs builds it (CI job `docs`; current nightly, libclang and an
+# MPI needed, no FFTW)
+DOCS_RS=1 RUSTDOCFLAGS="--cfg docsrs -D warnings" cargo +nightly doc --no-deps --features "mpi,fftw,fftw_system,fftw_threads"
 
 # The macOS CI job (Homebrew FFTW and pkg-config; BLAS/LAPACK through Accelerate)
 cargo clippy --features "fftw,fftw_system,strict" -- -D warnings

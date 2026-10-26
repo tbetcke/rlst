@@ -37,6 +37,7 @@ pub mod base_types;
 pub mod chebychev;
 pub mod dense;
 #[cfg(feature = "mpi")]
+#[cfg_attr(docsrs, doc(cfg(feature = "mpi")))]
 pub mod distributed_tools;
 pub mod doc;
 #[cfg(feature = "fftw")]

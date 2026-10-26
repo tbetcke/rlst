@@ -72,6 +72,7 @@ where
 }
 
 #[cfg(feature = "mpi")]
+#[cfg_attr(docsrs, doc(cfg(feature = "mpi")))]
 /// Construct a sparse matrix from Aij style slices for  distributed matrices.
 pub trait FromAijDistributed<'a>
 where
