@@ -109,6 +109,14 @@ which repeated `repository`, so newer cargo no longer warns that it is redundant
 (`cargo::redundant_homepage`, [#37](https://github.com/tbetcke/rlst/issues/37)). `repository`
 still points to <https://github.com/tbetcke/rlst>. No migration is needed.
 
+### docs.rs documents the MPI interface
+
+docs.rs now builds the documentation with the `mpi` feature as well as `fftw`, `fftw_system`
+and `fftw_threads`, so the distributed arrays, distributed CSR matrices and the guide
+`doc::distributed_computations` appear there instead of a stub saying that MPI is not
+enabled. Items that need `mpi` carry a feature badge, as the FFTW items do. Local builds are
+unchanged: without `mpi` they still omit these items. No migration is needed.
+
 ## v0.11.0
 
 Changes since [v0.10.3](https://github.com/tbetcke/rlst/releases/tag/v0.10.3).

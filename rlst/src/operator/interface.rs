@@ -2,6 +2,7 @@
 
 pub mod array_vector_space;
 #[cfg(feature = "mpi")]
+#[cfg_attr(docsrs, doc(cfg(feature = "mpi")))]
 pub mod distributed_array_vector_space;
 // #[cfg(feature = "mpi")]
 // pub mod distributed_sparse_operator;
