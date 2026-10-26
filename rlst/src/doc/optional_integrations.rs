@@ -22,7 +22,7 @@
 //!
 //! ```toml
 //! [dependencies]
-//! rlst = { version = "0.11", features = ["fftw_system"] }
+//! rlst = { version = "0.12", features = ["fftw_system"] }
 //! ```
 //!
 //! - **Versions.** RLST needs FFTW 3.3.4 or later, in both precisions (`fftw3` and

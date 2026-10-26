@@ -1,6 +1,9 @@
 # Changelog
 
-## Unreleased
+## v0.12.0
+
+Changes since [v0.11.0](https://github.com/tbetcke/rlst/releases/tag/v0.11.0).
+All workspace crates (`rlst`, `rlst-proc-macro`, and `rlst-suitesparse`) use version 0.12.0.
 
 ### Arrays of rank 0 — migration required
 

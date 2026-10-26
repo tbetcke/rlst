@@ -1,6 +1,6 @@
 [package]
 name = "rlst"
-version = "0.11.0"
+version = "0.12.0"
 authors = ["The rlst contributors"]
 edition = "2024"
 description = "A Rust native linear algebra library."
@@ -21,7 +21,7 @@ features = ["mpi", "fftw", "fftw_system", "fftw_threads"]
 rustdoc-args = ["--cfg", "docsrs"]
 
 [dependencies]
-rlst-proc-macro = { path = "../proc-macro", version = "0.11.0" }
+rlst-proc-macro = { path = "../proc-macro", version = "0.12.0" }
 num = { version = "0.4", features = ["serde", "rand"] }
 rand = "0.10"
 rand_chacha = "0.10"
